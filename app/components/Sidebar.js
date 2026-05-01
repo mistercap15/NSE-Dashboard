@@ -5,18 +5,19 @@ import { usePathname } from "next/navigation";
 import { useTheme } from "next-themes";
 import {
   Sun, Moon,
-  LayoutDashboard, TrendingUp, CalendarDays, Wallet, SlidersHorizontal,
+  LayoutDashboard, TrendingUp, CalendarDays, Wallet, SlidersHorizontal, Search,
 } from "lucide-react";
 import { MONTHS } from "../lib/api";
 
 const currentMonth = new Date().getMonth() + 1;
 
 const navItems = [
-  { href: "/",          label: "Overview",  Icon: LayoutDashboard },
-  { href: "/rankings",  label: "Rankings",  Icon: TrendingUp },
-  { href: "/calendar",  label: "Calendar",  Icon: CalendarDays },
-  { href: "/portfolio", label: "Portfolio", Icon: Wallet },
-  { href: "/screener",  label: "Screener",  Icon: SlidersHorizontal },
+  { href: "/",          label: "Overview",       Icon: LayoutDashboard },
+  { href: "/rankings",  label: "Rankings",       Icon: TrendingUp },
+  { href: "/analysis",  label: "Stock Analysis", Icon: Search },
+  { href: "/calendar",  label: "Calendar",       Icon: CalendarDays },
+  { href: "/portfolio", label: "Portfolio",      Icon: Wallet },
+  { href: "/screener",  label: "Screener",       Icon: SlidersHorizontal },
 ];
 
 export default function Sidebar() {

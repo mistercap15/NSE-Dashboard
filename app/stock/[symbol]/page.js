@@ -86,10 +86,19 @@ export default function StockPage() {
       <main className="ml-[200px] flex-1 p-8">
 
         {/* Breadcrumb */}
-        <div className="font-mono text-[11px] text-dim mb-4">
-          <Link href="/rankings" className="hover:text-accent transition-colors">Rankings</Link>
-          <span className="mx-2">›</span>
-          <span className="text-text">{symbol}</span>
+        <div className="font-mono text-[11px] text-dim mb-4 flex items-center justify-between">
+          <div>
+            <Link href="/rankings" className="hover:text-accent transition-colors">Rankings</Link>
+            <span className="mx-2">›</span>
+            <span className="text-text">{symbol}</span>
+          </div>
+          <Link
+            href={`/analysis?symbol=${symbol}`}
+            className="flex items-center gap-1.5 text-dim hover:text-accent transition-colors"
+          >
+            <span>←</span>
+            <span>Full Analysis</span>
+          </Link>
         </div>
 
         {/* Header */}
