@@ -180,15 +180,6 @@ export default function HomePage() {
           </div>
         </div>
 
-        {/* Footer */}
-        <div className="border-t border-border pt-4 flex items-center justify-between">
-          <div className="font-mono text-[10px] text-muted">
-            Data: NSE via GOOGLEFINANCE · 2009–{currentYear} · Real monthly closes
-          </div>
-          <div className="font-mono text-[10px] text-muted">
-            Not SEBI-registered advice · Trade at your own risk
-          </div>
-        </div>
       </main>
     </div>
   );

@@ -89,7 +89,7 @@ export default function ScreenerPage() {
               </label>
               <input type="range" min={30} max={100} value={minWR}
                 onChange={e => setMinWR(parseInt(e.target.value))}
-                className="w-full accent-[#00D4FF]" />
+                className="w-full accent-[#4D9FFF]" />
               <div className="flex justify-between font-mono text-[9px] text-muted mt-1">
                 <span>30%</span><span>65%</span><span>80%</span><span>100%</span>
               </div>

@@ -147,9 +147,9 @@ export default function StockPage() {
               <h2 className="font-display text-sm font-semibold text-text mb-4">Price History (Monthly)</h2>
               <ResponsiveContainer width="100%" height={220}>
                 <LineChart data={chartData}>
-                  <XAxis dataKey="date" tick={{ fontSize: 10, fontFamily: "IBM Plex Mono", fill: "#6B7280" }}
+                  <XAxis dataKey="date" tick={{ fontSize: 10, fontFamily: "JetBrains Mono", fill: "#6B7280" }}
                     tickLine={false} axisLine={false} interval={11} />
-                  <YAxis tick={{ fontSize: 10, fontFamily: "IBM Plex Mono", fill: "#6B7280" }}
+                  <YAxis tick={{ fontSize: 10, fontFamily: "JetBrains Mono", fill: "#6B7280" }}
                     tickLine={false} axisLine={false} width={60}
                     tickFormatter={v => `₹${v >= 1000 ? (v/1000).toFixed(1)+"k" : v}`} />
                   <Tooltip content={<CustomTooltip />} />
