@@ -104,7 +104,7 @@ export default function PortfolioPage() {
   return (
     <div className="flex min-h-screen bg-bg">
       <Sidebar />
-      <main className="ml-[200px] flex-1 p-8">
+      <main className="ml-0 md:ml-[200px] flex-1 min-w-0 p-4 md:p-8">
 
         {/* Header */}
         <div className="mb-6">
@@ -120,7 +120,7 @@ export default function PortfolioPage() {
         {/* Add position form */}
         <div className="bg-card border border-border rounded-lg p-5 mb-6">
           <h2 className="font-display text-sm font-semibold text-text mb-4">Add Position</h2>
-          <div className="grid grid-cols-2 lg:grid-cols-6 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3">
             {[
               { key:"symbol",  label:"Symbol",    placeholder:"TITAN" },
               { key:"price",   label:"Entry ₹",   placeholder:"4410" },

@@ -28,7 +28,7 @@ export default function StockPage() {
   if (loading) return (
     <div className="flex min-h-screen bg-bg">
       <Sidebar />
-      <main className="ml-[200px] flex-1 p-8 flex items-center justify-center">
+      <main className="ml-0 md:ml-[200px] flex-1 min-w-0 p-4 md:p-8 flex items-center justify-center">
         <div className="flex items-center gap-3">
           <div className="w-4 h-4 border border-accent border-t-transparent rounded-full animate-spin" />
           <span className="font-mono text-sm text-dim">Fetching real data for {symbol}…</span>
@@ -40,7 +40,7 @@ export default function StockPage() {
   if (error) return (
     <div className="flex min-h-screen bg-bg">
       <Sidebar />
-      <main className="ml-[200px] flex-1 p-8">
+      <main className="ml-0 md:ml-[200px] flex-1 min-w-0 p-4 md:p-8">
         <div className="bg-red/10 border border-red/20 rounded-lg p-4 font-mono text-sm text-red">{error}</div>
       </main>
     </div>
@@ -83,7 +83,7 @@ export default function StockPage() {
   return (
     <div className="flex min-h-screen bg-bg">
       <Sidebar />
-      <main className="ml-[200px] flex-1 p-8">
+      <main className="ml-0 md:ml-[200px] flex-1 min-w-0 p-4 md:p-8">
 
         {/* Breadcrumb */}
         <div className="font-mono text-[11px] text-dim mb-4 flex items-center justify-between">
@@ -102,7 +102,7 @@ export default function StockPage() {
         </div>
 
         {/* Header */}
-        <div className="flex items-start justify-between mb-6">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between mb-6">
           <div>
             <h1 className="font-display text-4xl font-bold text-accent tracking-tight">{symbol}</h1>
             <div className="font-mono text-xs text-dim mt-1">
@@ -131,7 +131,7 @@ export default function StockPage() {
         </div>
 
         {/* Tabs */}
-        <div className="flex gap-1 mb-6 border-b border-border">
+        <div className="flex gap-1 mb-6 border-b border-border overflow-x-auto">
           {["overview","heatmap","seasonality","returns"].map(t => (
             <button
               key={t}

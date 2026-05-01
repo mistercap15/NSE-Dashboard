@@ -51,6 +51,11 @@ body {
   padding-bottom: 52px; /* space for fixed footer */
 }
 
+/* Mobile: offset for fixed top bar */
+@media (max-width: 767px) {
+  body { padding-top: 56px; }
+}
+
 /* Scrollbar */
 ::-webkit-scrollbar { width: 4px; height: 4px; }
 ::-webkit-scrollbar-track { background: rgb(var(--color-bg)); }

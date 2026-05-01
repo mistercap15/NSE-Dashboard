@@ -31,7 +31,7 @@ export default function CalendarPage() {
   return (
     <div className="flex min-h-screen bg-bg">
       <Sidebar />
-      <main className="ml-[200px] flex-1 p-8">
+      <main className="ml-0 md:ml-[200px] flex-1 min-w-0 p-4 md:p-8">
 
         {/* Header */}
         <div className="mb-6">

@@ -28,7 +28,7 @@ export default function HomePage() {
     <div className="flex min-h-screen bg-bg">
       <Sidebar />
 
-      <main className="ml-[200px] flex-1 p-8">
+      <main className="ml-0 md:ml-[200px] flex-1 min-w-0 p-4 md:p-8">
 
         {/* Header */}
         <div className="mb-8">
@@ -45,7 +45,7 @@ export default function HomePage() {
         </div>
 
         {/* Current month banner */}
-        <div className="mb-6 rounded-lg border border-accent/20 bg-accent/5 px-5 py-4 flex items-center justify-between">
+        <div className="mb-6 rounded-lg border border-accent/20 bg-accent/5 px-5 py-4 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <div className="font-mono text-[10px] text-accent uppercase tracking-widest mb-1">
               Current month
@@ -54,7 +54,7 @@ export default function HomePage() {
               {MONTH_FULL[currentMonth - 1]} {currentYear}
             </div>
           </div>
-          <div className="flex gap-3">
+          <div className="flex gap-3 flex-wrap">
             <Link
               href={`/rankings?month=${currentMonth}`}
               className="font-mono text-xs bg-accent/10 border border-accent/30 text-accent px-4 py-2 rounded hover:bg-accent/20 transition-colors"

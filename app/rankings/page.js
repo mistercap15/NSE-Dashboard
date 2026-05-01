@@ -84,7 +84,7 @@ function RankingsContent() {
       </div>
 
       {/* Sector filter */}
-      <div className="mb-6 flex items-center gap-3 flex-wrap">
+      <div className="mb-6 flex flex-col gap-2">
         <span className="font-mono text-[10px] text-dim uppercase tracking-widest">Sector:</span>
         <div className="flex gap-1.5 flex-wrap">
           {["ALL","Banking","IT","Pharma","FMCG","Auto","Defence","Energy","Cement","Real Estate","Consumer","Finance"].map(s => (
@@ -128,15 +128,17 @@ function RankingsContent() {
       {!loading && top.length > 0 && (
         <>
           <div className="bg-card border border-border rounded-lg mb-6 overflow-hidden">
-            <div className="px-5 py-3 border-b border-border flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className="w-2 h-2 rounded-full bg-green" />
-                <h2 className="font-display text-base font-semibold text-text">
+            <div className="px-5 py-3 border-b border-border flex items-center justify-between gap-3">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-2 h-2 rounded-full bg-green shrink-0" />
+                <h2 className="font-display text-base font-semibold text-text truncate">
                   Top Picks — {mName}
                 </h2>
-                <span className="font-mono text-[10px] text-dim">{top.length} stocks</span>
+                <span className="font-mono text-[10px] text-dim shrink-0">{top.length} stocks</span>
               </div>
-              <span className="font-mono text-[10px] text-dim">Ranked by composite score (WR×0.6 + Avg×4)</span>
+              <span className="font-mono text-[10px] text-dim shrink-0 hidden sm:block">
+                Ranked by composite score (WR×0.6 + Avg×4)
+              </span>
             </div>
             <RankingsTable stocks={top} />
           </div>
@@ -144,15 +146,15 @@ function RankingsContent() {
           {/* Avoid section */}
           {avoid.length > 0 && (
             <div className="bg-card border border-red/10 rounded-lg overflow-hidden">
-              <div className="px-5 py-3 border-b border-red/10 flex items-center gap-3">
-                <div className="w-2 h-2 rounded-full bg-red" />
+              <div className="px-5 py-3 border-b border-red/10 flex items-center gap-3 flex-wrap">
+                <div className="w-2 h-2 rounded-full bg-red shrink-0" />
                 <h2 className="font-display text-base font-semibold text-text">
                   Avoid in {MONTHS[month - 1]}
                 </h2>
                 <span className="font-mono text-[10px] text-dim">Worst performers historically</span>
               </div>
               <div className="overflow-x-auto">
-                <table className="w-full text-sm">
+                <table className="w-full min-w-[500px] text-sm">
                   <thead>
                     <tr className="border-b border-border">
                       <th className="text-left py-2.5 px-3 font-mono text-[11px] text-dim font-normal">Symbol</th>
@@ -203,7 +205,7 @@ export default function RankingsPage() {
   return (
     <div className="flex min-h-screen bg-bg">
       <Sidebar />
-      <main className="ml-[200px] flex-1 p-8">
+      <main className="ml-0 md:ml-[200px] flex-1 min-w-0 p-4 md:p-8">
         <Suspense fallback={
           <div className="flex items-center gap-3 py-12 justify-center">
             <div className="w-4 h-4 border border-accent border-t-transparent rounded-full animate-spin" />

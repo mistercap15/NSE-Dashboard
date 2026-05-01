@@ -11,7 +11,7 @@ export default function RankingsTable({ stocks, showRank = true }) {
 
   return (
     <div className="overflow-x-auto">
-      <table className="w-full text-sm">
+      <table className="w-full min-w-[700px] text-sm">
         <thead>
           <tr className="border-b border-border">
             {showRank && <th className="text-left py-2.5 px-3 font-mono text-[11px] text-dim font-normal w-10">#</th>}

@@ -241,7 +241,7 @@ function AnalysisContent() {
 
             {/* Best / Worst month strip */}
             {seasonality.length > 0 && (
-              <div className="flex gap-4 mt-5 pt-5 border-t border-border">
+              <div className="flex flex-wrap gap-4 mt-5 pt-5 border-t border-border">
                 <div className="flex items-center gap-2">
                   <span className="font-mono text-[10px] text-dim uppercase tracking-widest">Best month:</span>
                   <span className="font-mono text-xs text-green font-medium">{bestMonth?.month}</span>
@@ -442,7 +442,7 @@ export default function AnalysisPage() {
   return (
     <div className="flex min-h-screen bg-bg">
       <Sidebar />
-      <main className="ml-[200px] flex-1 p-8">
+      <main className="ml-0 md:ml-[200px] flex-1 min-w-0 p-4 md:p-8">
         <Suspense fallback={
           <div className="flex items-center gap-3 py-20 justify-center">
             <div className="w-4 h-4 border border-accent border-t-transparent rounded-full animate-spin" />
