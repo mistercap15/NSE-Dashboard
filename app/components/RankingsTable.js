@@ -46,7 +46,9 @@ export default function RankingsTable({ stocks, showRank = true }) {
                   {s.win_rate?.toFixed(1)}%
                 </span>
                 <span className="text-muted text-[10px] ml-1">
-                  ({s.positive_years}/{s.data_points})
+                  ({s.positive_years}/{s.win_rate > 0
+                    ? Math.round(s.positive_years / (s.win_rate / 100))
+                    : Math.round((s.data_points || 0) / 12)})
                 </span>
               </td>
               <td className={`py-2.5 px-3 font-mono text-[12px] text-right ${

@@ -12,6 +12,12 @@ export default function WinRateChart({ seasonality, highlightMonth }) {
         const wr      = s.win_rate || 0;
         const avg     = s.avg_return || 0;
         const isHigh  = i === highlightMonth;
+        // How many times did this specific month appear in history?
+        // positive_years / (win_rate/100) gives the per-month total.
+        // Fall back to data_points/12 when win_rate is 0 (no positives).
+        const monthTotal = wr > 0
+          ? Math.round(s.positive_years / (wr / 100))
+          : Math.round((s.data_points || 0) / 12);
         const barColor =
           wr === 100 ? "#10B981" :
           wr >= 80   ? "#34D399" :
@@ -49,7 +55,7 @@ export default function WinRateChart({ seasonality, highlightMonth }) {
 
             {/* Pos/Neg years */}
             <div className="font-mono text-[10px] text-dim w-10 text-right shrink-0">
-              {s.positive_years}/{s.data_points}
+              {s.positive_years}/{monthTotal}
             </div>
           </div>
         );
