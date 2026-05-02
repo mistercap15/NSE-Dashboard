@@ -9,6 +9,8 @@ import WinRateChart from "../components/WinRateChart";
 import StockSearch from "../components/StockSearch";
 import Link from "next/link";
 import { MONTHS, MONTH_FULL, getSignalLabel } from "../lib/api";
+import { StockPDFButton } from "../components/PDFDownloadButton";
+import StopLossCard from "../components/StopLossCard";
 import {
   AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer,
 } from "recharts";
@@ -200,7 +202,7 @@ function AnalysisContent() {
 
               {/* Left — identity */}
               <div className="flex-1">
-                <div className="flex items-center gap-3 mb-1">
+                <div className="flex items-center gap-3 mb-1 flex-wrap">
                   <h2 className="font-display text-4xl font-bold text-accent tracking-tight">
                     {data.symbol || symbol}
                   </h2>
@@ -209,6 +211,7 @@ function AnalysisContent() {
                       {data.sector}
                     </span>
                   )}
+                  <StockPDFButton data={data} />
                 </div>
                 <div className="font-mono text-xs text-dim">
                   {data.exchange} · {fmtMonth(prices[0]?.date)} – {fmtMonth(prices[prices.length - 1]?.date)} · {prices.length} monthly closes
@@ -303,6 +306,16 @@ function AnalysisContent() {
                 })}
               </div>
             </div>
+          )}
+
+          {/* ── Stop Loss Card ────────────────────────────────────────────── */}
+          {seasonality.length > 0 && (
+            <StopLossCard
+              seasonality={seasonality}
+              currentMonth={currentMonth}
+              entryPrice={prices[prices.length - 1]?.close}
+              symbol={data.symbol || symbol}
+            />
           )}
 
           {/* ── SECTION 3 — Heatmap ───────────────────────────────────────── */}

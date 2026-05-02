@@ -5,6 +5,7 @@ import Sidebar from "../components/Sidebar";
 import RankingsTable from "../components/RankingsTable";
 import StatCard from "../components/StatCard";
 import { MONTHS, MONTH_FULL, SECTORS, getSignalLabel } from "../lib/api";
+import { RankingsPDFButton } from "../components/PDFDownloadButton";
 
 const CURRENT_MONTH = new Date().getMonth() + 1;
 
@@ -60,6 +61,7 @@ function RankingsContent() {
               Updated: {data.last_updated}
             </span>
           )}
+          {data && !loading && <div className="mb-0.5"><RankingsPDFButton month={month} data={data} /></div>}
         </div>
       </div>
 
@@ -146,43 +148,19 @@ function RankingsContent() {
           {/* Avoid section */}
           {avoid.length > 0 && (
             <div className="bg-card border border-red/10 rounded-lg overflow-hidden">
-              <div className="px-5 py-3 border-b border-red/10 flex items-center gap-3 flex-wrap">
-                <div className="w-2 h-2 rounded-full bg-red shrink-0" />
-                <h2 className="font-display text-base font-semibold text-text">
-                  Avoid in {MONTHS[month - 1]}
-                </h2>
-                <span className="font-mono text-[10px] text-dim">Worst performers historically</span>
+              <div className="px-5 py-3 border-b border-red/10 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="w-2 h-2 rounded-full bg-red shrink-0" />
+                  <h2 className="font-display text-base font-semibold text-text truncate">
+                    Avoid in {mName}
+                  </h2>
+                  <span className="font-mono text-[10px] text-dim shrink-0">{avoid.length} stocks</span>
+                </div>
+                <span className="font-mono text-[10px] text-dim shrink-0 hidden sm:block">
+                  Short-sell candidates — worst historical performers
+                </span>
               </div>
-              <div className="overflow-x-auto">
-                <table className="w-full min-w-[500px] text-sm">
-                  <thead>
-                    <tr className="border-b border-border">
-                      <th className="text-left py-2.5 px-3 font-mono text-[11px] text-dim font-normal">Symbol</th>
-                      <th className="text-left py-2.5 px-3 font-mono text-[11px] text-dim font-normal">Sector</th>
-                      <th className="text-right py-2.5 px-3 font-mono text-[11px] text-dim font-normal">Win Rate</th>
-                      <th className="text-right py-2.5 px-3 font-mono text-[11px] text-dim font-normal">Avg Return</th>
-                      <th className="text-right py-2.5 px-3 font-mono text-[11px] text-dim font-normal">Worst</th>
-                      <th className="text-center py-2.5 px-3 font-mono text-[11px] text-dim font-normal">Signal</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {avoid.map(s => (
-                      <tr key={s.symbol} className="table-row">
-                        <td className="py-2.5 px-3 font-mono text-[13px] text-red">{s.symbol}</td>
-                        <td className="py-2.5 px-3 font-body text-[12px] text-dim">{s.sector}</td>
-                        <td className="py-2.5 px-3 font-mono text-[12px] text-right text-red">{s.win_rate?.toFixed(1)}%</td>
-                        <td className="py-2.5 px-3 font-mono text-[12px] text-right text-red">
-                          {s.avg_return >= 0 ? "+" : ""}{s.avg_return?.toFixed(2)}%
-                        </td>
-                        <td className="py-2.5 px-3 font-mono text-[11px] text-right text-red">{s.worst?.toFixed(1)}%</td>
-                        <td className="py-2.5 px-3 text-center">
-                          <span className="badge badge-avoid">{getSignalLabel(s.win_rate)}</span>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+              <RankingsTable stocks={avoid} />
             </div>
           )}
         </>
