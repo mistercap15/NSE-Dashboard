@@ -44,7 +44,40 @@ export async function GET(request) {
       });
     }
 
-    return NextResponse.json(raw);
+    // Build short candidates from avoid_stocks + bottom of top_stocks
+    const allStocks = [
+      ...(raw.avoid_stocks || []),
+      ...(raw.top_stocks || []).filter(s => s.win_rate < 50)
+    ]
+
+    // Deduplicate by symbol
+    const seen = new Set()
+    const shortCandidates = allStocks
+      .filter(s => {
+        if (seen.has(s.symbol)) return false
+        seen.add(s.symbol)
+        return true
+      })
+      .sort((a, b) => {
+        // Primary: lowest win rate first
+        if (a.win_rate !== b.win_rate) return a.win_rate - b.win_rate
+        // Secondary: most negative avg return first
+        return a.avg_return - b.avg_return
+      })
+      .map(s => ({
+        ...s,
+        // Short SL = 1.3x the best positive month (worst case squeeze)
+        short_sl_pct: Math.min(Math.max(Math.abs(s.best || 0) * 1.3, 4), 20),
+        // Short score: lower is better short candidate
+        short_score: (s.win_rate * 0.6) + (s.avg_return * 4),
+        // Probability of profit on short = 100 - win_rate
+        short_win_prob: 100 - s.win_rate,
+      }))
+
+    return NextResponse.json({
+      ...raw,
+      short_candidates: shortCandidates.slice(0, 20),
+    });
   } catch (e) {
     console.error("Rankings API error:", e.message);
     return NextResponse.json(

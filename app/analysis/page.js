@@ -11,6 +11,7 @@ import Link from "next/link";
 import { MONTHS, MONTH_FULL, getSignalLabel } from "../lib/api";
 import { StockPDFButton } from "../components/PDFDownloadButton";
 import StopLossCard from "../components/StopLossCard";
+import ShortStopLossCard from "../components/ShortStopLossCard";
 import {
   AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer,
 } from "recharts";
@@ -98,6 +99,7 @@ function AnalysisContent() {
   const [error,         setError]         = useState(null);
   const [showRaw,       setShowRaw]       = useState(false);
   const [highlightMonth, setHighlightMonth] = useState(null); // 0-indexed
+  const [showShortSL,   setShowShortSL]   = useState(false);
 
   const fetchData = async (sym) => {
     if (!sym) return;
@@ -310,12 +312,34 @@ function AnalysisContent() {
 
           {/* ── Stop Loss Card ────────────────────────────────────────────── */}
           {seasonality.length > 0 && (
-            <StopLossCard
-              seasonality={seasonality}
-              currentMonth={currentMonth}
-              entryPrice={prices[prices.length - 1]?.close}
-              symbol={data.symbol || symbol}
-            />
+            <>
+              <StopLossCard
+                seasonality={seasonality}
+                currentMonth={currentMonth}
+                entryPrice={prices[prices.length - 1]?.close}
+                symbol={data.symbol || symbol}
+              />
+              <div className="mt-3">
+                <button
+                  onClick={() => setShowShortSL(prev => !prev)}
+                  className="font-mono text-[11px] text-dim hover:text-text
+                    transition-colors flex items-center gap-2"
+                >
+                  <span>{showShortSL ? "▲" : "▼"}</span>
+                  {showShortSL ? "Hide" : "Show"} short selling stop loss levels
+                </button>
+                {showShortSL && seasonality.length > 0 && (
+                  <div className="mt-3">
+                    <ShortStopLossCard
+                      seasonality={seasonality}
+                      currentMonth={currentMonth}
+                      entryPrice={prices[prices.length - 1]?.close}
+                      symbol={data.symbol || symbol}
+                    />
+                  </div>
+                )}
+              </div>
+            </>
           )}
 
           {/* ── SECTION 3 — Heatmap ───────────────────────────────────────── */}

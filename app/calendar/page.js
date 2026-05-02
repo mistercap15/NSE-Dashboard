@@ -8,9 +8,10 @@ import { MONTHS, MONTH_FULL } from "../lib/api";
 const CURRENT_MONTH = new Date().getMonth() + 1;
 
 export default function CalendarPage() {
-  const [data,    setData]    = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [top,     setTop]     = useState(5);
+  const [data,      setData]      = useState(null);
+  const [shortData, setShortData] = useState(null);
+  const [loading,   setLoading]   = useState(true);
+  const [top,       setTop]       = useState(5);
 
   useEffect(() => {
     // Fetch top stocks for all 12 months
@@ -22,8 +23,13 @@ export default function CalendarPage() {
       )
     ).then(results => {
       const mapped = {};
-      MONTHS.forEach((m, i) => { mapped[m] = results[i].top_stocks || []; });
+      const shortMapped = {};
+      MONTHS.forEach((m, i) => {
+        mapped[m]      = results[i].top_stocks      || [];
+        shortMapped[m] = results[i].short_candidates || [];
+      });
       setData(mapped);
+      setShortData(shortMapped);
       setLoading(false);
     });
   }, [top]);
@@ -133,6 +139,31 @@ export default function CalendarPage() {
                           </span>
                         </Link>
                       ))
+                    )}
+
+                    {/* Short candidates */}
+                    {shortData?.[m] && shortData[m].length > 0 && (
+                      <div className="mt-2 pt-2 border-t border-red/10">
+                        <div className="font-mono text-[9px] text-red mb-1 uppercase tracking-wider">
+                          Short candidates
+                        </div>
+                        {shortData[m].slice(0, 2).map((s) => (
+                          <Link
+                            key={s.symbol}
+                            href={`/stock/${s.symbol}`}
+                            className="flex items-center gap-2 px-2 py-1 rounded
+                              hover:bg-red/[0.05] transition-colors group"
+                          >
+                            <span className="font-mono text-[11px] text-red group-hover:text-white
+                              transition-colors flex-1">
+                              {s.symbol}
+                            </span>
+                            <span className="font-mono text-[10px] text-red">
+                              {s.short_win_prob?.toFixed(0)}% short
+                            </span>
+                          </Link>
+                        ))}
+                      </div>
                     )}
                   </div>
                 </div>

@@ -6,17 +6,19 @@ import RankingsTable from "../components/RankingsTable";
 import StatCard from "../components/StatCard";
 import { MONTHS, MONTH_FULL, SECTORS, getSignalLabel } from "../lib/api";
 import { RankingsPDFButton } from "../components/PDFDownloadButton";
+import ShortCandidatesTable from "../components/ShortCandidatesTable";
 
 const CURRENT_MONTH = new Date().getMonth() + 1;
 
 function RankingsContent() {
   const searchParams  = useSearchParams();
   const router        = useRouter();
-  const [month,   setMonth]   = useState(parseInt(searchParams.get("month") || CURRENT_MONTH));
-  const [sector,  setSector]  = useState("ALL");
-  const [data,    setData]    = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [error,   setError]   = useState(null);
+  const [month,     setMonth]     = useState(parseInt(searchParams.get("month") || CURRENT_MONTH));
+  const [sector,    setSector]    = useState("ALL");
+  const [data,      setData]      = useState(null);
+  const [loading,   setLoading]   = useState(false);
+  const [error,     setError]     = useState(null);
+  const [direction, setDirection] = useState("LONG"); // "LONG" or "SHORT"
 
   const fetchRankings = useCallback(async (m, s) => {
     setLoading(true);
@@ -38,14 +40,24 @@ function RankingsContent() {
     router.push(`/rankings?month=${month}`, { scroll: false });
   }, [month, sector]);
 
-  const top    = data?.top_stocks    || [];
-  const avoid  = data?.avoid_stocks  || [];
-  const total  = data?.total_stocks  || 0;
+  const top    = data?.top_stocks       || [];
+  const avoid  = data?.avoid_stocks     || [];
+  const short  = data?.short_candidates || [];
+  const total  = data?.total_stocks     || 0;
   const mName  = MONTH_FULL[month - 1];
 
   const perfect  = top.filter(s => s.win_rate === 100).length;
   const avgWR    = top.length > 0 ? (top.slice(0,10).reduce((a,s) => a + s.win_rate, 0) / Math.min(top.length,10)).toFixed(1) : "—";
   const avgRet   = top.length > 0 ? (top.slice(0,10).reduce((a,s) => a + (s.avg_return||0), 0) / Math.min(top.length,10)).toFixed(2) : "—";
+
+  // Short stats
+  const zeroWR    = short.filter(s => s.win_rate === 0).length;
+  const avgNegRet = short.length > 0
+    ? (short.reduce((a, s) => a + (s.avg_return || 0), 0) / short.length).toFixed(2)
+    : "—";
+  const bestProb  = short.length > 0
+    ? Math.max(...short.map(s => s.short_win_prob || 0)).toFixed(1)
+    : "—";
 
   return (
     <>
@@ -105,13 +117,53 @@ function RankingsContent() {
         </div>
       </div>
 
-      {/* Stats */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-        <StatCard label="Stocks scanned" value={total || "—"} sub="F&O stocks" />
-        <StatCard label="Perfect (100%)" value={perfect} sub="Never negative" color="text-green" />
-        <StatCard label="Top 10 avg WR" value={top.length ? `${avgWR}%` : "—"} sub="Win rate" color="text-accent" />
-        <StatCard label="Top 10 avg ret" value={top.length ? `+${avgRet}%` : "—"} sub="Avg monthly return" color="text-green" />
+      {/* Direction toggle */}
+      <div className="flex items-center gap-2 mb-5">
+        <div className="flex rounded-lg border border-border overflow-hidden">
+          <button
+            onClick={() => setDirection("LONG")}
+            className={`px-5 py-2 font-mono text-sm transition-colors ${
+              direction === "LONG"
+                ? "bg-green/15 text-green border-r border-border"
+                : "text-dim hover:text-text border-r border-border"
+            }`}
+          >
+            ↑ Long
+          </button>
+          <button
+            onClick={() => setDirection("SHORT")}
+            className={`px-5 py-2 font-mono text-sm transition-colors ${
+              direction === "SHORT"
+                ? "bg-red/15 text-red"
+                : "text-dim hover:text-text"
+            }`}
+          >
+            ↓ Short
+          </button>
+        </div>
+        <span className="font-mono text-[10px] text-muted">
+          {direction === "LONG"
+            ? "Stocks with highest seasonal buy probability"
+            : "Stocks with highest seasonal short probability"}
+        </span>
       </div>
+
+      {/* Stats */}
+      {direction === "LONG" ? (
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+          <StatCard label="Stocks scanned" value={total || "—"} sub="F&O stocks" />
+          <StatCard label="Perfect (100%)" value={perfect} sub="Never negative" color="text-green" />
+          <StatCard label="Top 10 avg WR" value={top.length ? `${avgWR}%` : "—"} sub="Win rate" color="text-accent" />
+          <StatCard label="Top 10 avg ret" value={top.length ? `+${avgRet}%` : "—"} sub="Avg monthly return" color="text-green" />
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+          <StatCard label="Short candidates" value={short.length || "—"} sub="Historical weak stocks" />
+          <StatCard label="0% win rate" value={zeroWR} sub="Never positive" color="text-red" />
+          <StatCard label="Avg neg return" value={short.length ? `${avgNegRet}%` : "—"} sub="Avg monthly return" color="text-red" />
+          <StatCard label="Best short prob" value={short.length ? `${bestProb}%` : "—"} sub="Highest short probability" color="text-amber" />
+        </div>
+      )}
 
       {/* Loading / Error */}
       {loading && (
@@ -126,8 +178,8 @@ function RankingsContent() {
         </div>
       )}
 
-      {/* Top picks table */}
-      {!loading && top.length > 0 && (
+      {/* Content — conditional on direction */}
+      {!loading && direction === "LONG" && top.length > 0 && (
         <>
           <div className="bg-card border border-border rounded-lg mb-6 overflow-hidden">
             <div className="px-5 py-3 border-b border-border flex items-center justify-between gap-3">
@@ -145,7 +197,6 @@ function RankingsContent() {
             <RankingsTable stocks={top} />
           </div>
 
-          {/* Avoid section */}
           {avoid.length > 0 && (
             <div className="bg-card border border-red/10 rounded-lg overflow-hidden">
               <div className="px-5 py-3 border-b border-red/10 flex items-center justify-between gap-3">
@@ -166,8 +217,28 @@ function RankingsContent() {
         </>
       )}
 
+      {!loading && direction === "SHORT" && (
+        <div className="bg-card border border-red/20 rounded-lg mb-6 overflow-hidden">
+          <div className="px-5 py-3 border-b border-red/20 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-2 h-2 rounded-full bg-red" />
+              <h2 className="font-display text-base font-semibold text-text">
+                Short Candidates — {mName}
+              </h2>
+              <span className="font-mono text-[10px] text-dim">
+                {data?.short_candidates?.length || 0} stocks
+              </span>
+            </div>
+            <span className="font-mono text-[10px] text-red hidden sm:block">
+              Sell futures on these — historically weak in {mName}
+            </span>
+          </div>
+          <ShortCandidatesTable stocks={data?.short_candidates || []} />
+        </div>
+      )}
+
       {/* Empty state */}
-      {!loading && !error && top.length === 0 && (
+      {!loading && !error && direction === "LONG" && top.length === 0 && (
         <div className="text-center py-16 border border-border rounded-lg">
           <div className="font-mono text-sm text-dim mb-2">No ranking data found</div>
           <div className="font-mono text-[11px] text-muted">

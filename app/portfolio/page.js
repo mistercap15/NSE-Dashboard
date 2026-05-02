@@ -2,6 +2,7 @@
 import { useState, Fragment } from "react"
 import Sidebar from "../components/Sidebar"
 import StopLossCard from "../components/StopLossCard"
+import ShortStopLossCard from "../components/ShortStopLossCard"
 
 // ── F&O symbols list ──────────────────────────────────────────────────────────
 
@@ -106,14 +107,15 @@ async function fetchStockForPortfolio(symbol) {
 // ── Page component ────────────────────────────────────────────────────────────
 
 export default function PortfolioPage() {
-  const [positions,  setPositions]  = useState([])
-  const [symbol,     setSymbol]     = useState("")
-  const [price,      setPrice]      = useState("")
-  const [lots,       setLots]       = useState("1")
-  const [dropdown,   setDropdown]   = useState([])
-  const [fetching,   setFetching]   = useState(false)
-  const [fetchError, setFetchError] = useState(null)
-  const [selected,   setSelected]   = useState(null)
+  const [positions,    setPositions]    = useState([])
+  const [symbol,       setSymbol]       = useState("")
+  const [price,        setPrice]        = useState("")
+  const [lots,         setLots]         = useState("1")
+  const [dropdown,     setDropdown]     = useState([])
+  const [fetching,     setFetching]     = useState(false)
+  const [fetchError,   setFetchError]   = useState(null)
+  const [selected,     setSelected]     = useState(null)
+  const [posDirection, setPosDirection] = useState("LONG")
 
   const handleSymbolChange = (val) => {
     const v = val.toUpperCase()
@@ -138,18 +140,33 @@ export default function PortfolioPage() {
       const totalShares = lotSize * lotMult
       const notional    = entryPrice * totalShares
 
-      const bearPnl  = notional * (stockData.avg_return * 0.3) / 100
-      const basePnl  = notional * stockData.avg_return          / 100
-      const bullPnl  = notional * (stockData.avg_return * 1.5) / 100
-      const slAmount = notional * stockData.suggested_sl        / 100
-      const slPrice  = entryPrice * (1 - stockData.suggested_sl / 100)
-      const rrRatio  = stockData.suggested_sl > 0
-        ? stockData.avg_return / stockData.suggested_sl
-        : 0
+      let bearPnl, basePnl, bullPnl, slAmount, slPrice, rrRatio, suggestedSl
+
+      if (posDirection === "SHORT") {
+        const shortSL = Math.min(Math.max(Math.abs(stockData.best || 0) * 1.3, 4), 20)
+        slPrice      = entryPrice * (1 + shortSL / 100)
+        slAmount     = notional * shortSL / 100
+        bearPnl      = notional * Math.abs(stockData.avg_return) * 1.5 / 100
+        basePnl      = notional * Math.abs(stockData.avg_return) / 100
+        bullPnl      = notional * Math.abs(stockData.avg_return) * 0.3 / 100
+        rrRatio      = shortSL > 0 ? Math.abs(stockData.avg_return) / shortSL : 0
+        suggestedSl  = shortSL
+      } else {
+        bearPnl      = notional * (stockData.avg_return * 0.3) / 100
+        basePnl      = notional * stockData.avg_return          / 100
+        bullPnl      = notional * (stockData.avg_return * 1.5) / 100
+        slAmount     = notional * stockData.suggested_sl        / 100
+        slPrice      = entryPrice * (1 - stockData.suggested_sl / 100)
+        rrRatio      = stockData.suggested_sl > 0
+          ? stockData.avg_return / stockData.suggested_sl
+          : 0
+        suggestedSl  = stockData.suggested_sl
+      }
 
       setPositions(prev => [...prev, {
         id:             Date.now(),
         symbol,
+        direction:      posDirection,
         entry_price:    entryPrice,
         lot_size:       lotSize,
         lot_multiplier: lotMult,
@@ -162,7 +179,7 @@ export default function PortfolioPage() {
         data_points:    stockData.data_points,
         positive_years: stockData.positive_years,
         signal:         stockData.signal,
-        suggested_sl:   stockData.suggested_sl,
+        suggested_sl:   suggestedSl,
         sl_price:       slPrice,
         sl_amount:      slAmount,
         rr_ratio:       rrRatio,
@@ -195,9 +212,37 @@ export default function PortfolioPage() {
     maxLoss:  acc.maxLoss  + p.sl_amount,
   }), { notional: 0, bear: 0, base: 0, bull: 0, maxLoss: 0 })
 
+  const longPositions  = positions.filter(p => p.direction !== "SHORT")
+  const shortPositions = positions.filter(p => p.direction === "SHORT")
+
+  const longTotals = longPositions.reduce((acc, p) => ({
+    notional: acc.notional + p.notional,
+    base:     acc.base     + p.base_pnl,
+    maxLoss:  acc.maxLoss  + p.sl_amount,
+  }), { notional: 0, base: 0, maxLoss: 0 })
+
+  const shortTotals = shortPositions.reduce((acc, p) => ({
+    notional: acc.notional + p.notional,
+    base:     acc.base     + p.base_pnl,
+    maxLoss:  acc.maxLoss  + p.sl_amount,
+  }), { notional: 0, base: 0, maxLoss: 0 })
+
   const portfolioWinProb = positions.length > 0
-    ? positions.reduce((a, p) => a * (p.win_rate / 100), 1) * 100
+    ? positions.reduce((a, p) => {
+        const prob = p.direction === "SHORT" ? (100 - p.win_rate) / 100 : p.win_rate / 100
+        return a * prob
+      }, 1) * 100
     : 0
+
+  const longWinProb = longPositions.length > 0
+    ? longPositions.reduce((a, p) => a * (p.win_rate / 100), 1) * 100
+    : 0
+
+  const shortWinProb = shortPositions.length > 0
+    ? shortPositions.reduce((a, p) => a * ((100 - p.win_rate) / 100), 1) * 100
+    : 0
+
+  const hasBothDirections = longPositions.length > 0 && shortPositions.length > 0
 
   return (
     <div className="flex min-h-screen bg-bg">
@@ -223,6 +268,30 @@ export default function PortfolioPage() {
         {/* ADD POSITION FORM */}
         <div className="bg-card border border-border rounded-lg p-6 mb-6">
           <h2 className="font-display text-sm font-semibold text-text mb-4">Add Position</h2>
+
+          {/* Direction toggle */}
+          <div className="flex rounded-lg border border-border overflow-hidden w-fit mb-4">
+            <button
+              onClick={() => setPosDirection("LONG")}
+              className={`px-4 py-2 font-mono text-sm transition-colors ${
+                posDirection === "LONG"
+                  ? "bg-green/15 text-green border-r border-border"
+                  : "text-dim border-r border-border hover:text-text"
+              }`}
+            >
+              ↑ Long
+            </button>
+            <button
+              onClick={() => setPosDirection("SHORT")}
+              className={`px-4 py-2 font-mono text-sm transition-colors ${
+                posDirection === "SHORT"
+                  ? "bg-red/15 text-red"
+                  : "text-dim hover:text-text"
+              }`}
+            >
+              ↓ Short
+            </button>
+          </div>
 
           <div className="flex gap-4 items-end flex-wrap">
 
@@ -322,24 +391,89 @@ export default function PortfolioPage() {
         {/* PORTFOLIO SUMMARY + TABLE */}
         {positions.length > 0 && (
           <>
-            <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 mb-6">
-              {[
-                { label: "Total Notional",    value: `₹${(totals.notional / 100000).toFixed(2)}L`, color: "text-text" },
-                { label: "Bear P&L",          value: fmt(totals.bear),    color: "text-amber" },
-                { label: "Base P&L",          value: fmt(totals.base),    color: "text-green" },
-                { label: "Bull P&L",          value: fmt(totals.bull),    color: "text-accent" },
-                {
-                  label: "Portfolio Win Prob",
-                  value: `${portfolioWinProb.toFixed(1)}%`,
-                  color: portfolioWinProb > 70 ? "text-green" : "text-amber",
-                },
-              ].map(st => (
-                <div key={st.label} className="bg-card border border-border rounded-lg p-4">
-                  <div className="font-mono text-[10px] text-dim uppercase tracking-widest mb-2">{st.label}</div>
-                  <div className={`font-mono text-lg font-medium ${st.color}`}>{st.value}</div>
+            {hasBothDirections ? (
+              <>
+                {/* Long positions row */}
+                <div className="mb-3">
+                  <div className="font-mono text-[10px] text-dim uppercase tracking-widest mb-2 px-1">↑ Long Positions</div>
+                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                    <div className="bg-card border border-green/20 rounded-lg p-4">
+                      <div className="font-mono text-[10px] text-dim uppercase tracking-widest mb-2">Notional</div>
+                      <div className="font-mono text-lg font-medium text-text">₹{(longTotals.notional / 100000).toFixed(2)}L</div>
+                    </div>
+                    <div className="bg-card border border-green/20 rounded-lg p-4">
+                      <div className="font-mono text-[10px] text-dim uppercase tracking-widest mb-2">Base P&L</div>
+                      <div className="font-mono text-lg font-medium text-green">{fmt(longTotals.base)}</div>
+                    </div>
+                    <div className="bg-card border border-green/20 rounded-lg p-4">
+                      <div className="font-mono text-[10px] text-dim uppercase tracking-widest mb-2">Max Loss (SL)</div>
+                      <div className="font-mono text-lg font-medium text-red">-₹{Math.round(longTotals.maxLoss).toLocaleString("en-IN")}</div>
+                    </div>
+                    <div className="bg-card border border-green/20 rounded-lg p-4">
+                      <div className="font-mono text-[10px] text-dim uppercase tracking-widest mb-2">Long Win Prob</div>
+                      <div className={`font-mono text-lg font-medium ${longWinProb > 70 ? "text-green" : "text-amber"}`}>{longWinProb.toFixed(1)}%</div>
+                    </div>
+                  </div>
                 </div>
-              ))}
-            </div>
+                {/* Short positions row */}
+                <div className="mb-3">
+                  <div className="font-mono text-[10px] text-dim uppercase tracking-widest mb-2 px-1">↓ Short Positions</div>
+                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                    <div className="bg-card border border-red/20 rounded-lg p-4">
+                      <div className="font-mono text-[10px] text-dim uppercase tracking-widest mb-2">Notional</div>
+                      <div className="font-mono text-lg font-medium text-text">₹{(shortTotals.notional / 100000).toFixed(2)}L</div>
+                    </div>
+                    <div className="bg-card border border-red/20 rounded-lg p-4">
+                      <div className="font-mono text-[10px] text-dim uppercase tracking-widest mb-2">Base P&L</div>
+                      <div className="font-mono text-lg font-medium text-green">{fmt(shortTotals.base)}</div>
+                    </div>
+                    <div className="bg-card border border-red/20 rounded-lg p-4">
+                      <div className="font-mono text-[10px] text-dim uppercase tracking-widest mb-2">Max Loss (SL)</div>
+                      <div className="font-mono text-lg font-medium text-red">-₹{Math.round(shortTotals.maxLoss).toLocaleString("en-IN")}</div>
+                    </div>
+                    <div className="bg-card border border-red/20 rounded-lg p-4">
+                      <div className="font-mono text-[10px] text-dim uppercase tracking-widest mb-2">Short Win Prob</div>
+                      <div className={`font-mono text-lg font-medium ${shortWinProb > 70 ? "text-green" : "text-amber"}`}>{shortWinProb.toFixed(1)}%</div>
+                    </div>
+                  </div>
+                </div>
+                {/* Net portfolio row */}
+                <div className="font-mono text-[10px] text-dim uppercase tracking-widest mb-2 px-1">Net Portfolio</div>
+                <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 mb-6">
+                  {[
+                    { label: "Total Notional",    value: `₹${(totals.notional / 100000).toFixed(2)}L`, color: "text-text" },
+                    { label: "Bear P&L",          value: fmt(totals.bear),    color: "text-amber" },
+                    { label: "Base P&L",          value: fmt(totals.base),    color: "text-green" },
+                    { label: "Bull P&L",          value: fmt(totals.bull),    color: "text-accent" },
+                    { label: "Combined Win Prob", value: `${portfolioWinProb.toFixed(1)}%`, color: portfolioWinProb > 70 ? "text-green" : "text-amber" },
+                  ].map(st => (
+                    <div key={st.label} className="bg-card border border-border rounded-lg p-4">
+                      <div className="font-mono text-[10px] text-dim uppercase tracking-widest mb-2">{st.label}</div>
+                      <div className={`font-mono text-lg font-medium ${st.color}`}>{st.value}</div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 mb-6">
+                {[
+                  { label: "Total Notional",    value: `₹${(totals.notional / 100000).toFixed(2)}L`, color: "text-text" },
+                  { label: "Bear P&L",          value: fmt(totals.bear),    color: "text-amber" },
+                  { label: "Base P&L",          value: fmt(totals.base),    color: "text-green" },
+                  { label: "Bull P&L",          value: fmt(totals.bull),    color: "text-accent" },
+                  {
+                    label: "Portfolio Win Prob",
+                    value: `${portfolioWinProb.toFixed(1)}%`,
+                    color: portfolioWinProb > 70 ? "text-green" : "text-amber",
+                  },
+                ].map(st => (
+                  <div key={st.label} className="bg-card border border-border rounded-lg p-4">
+                    <div className="font-mono text-[10px] text-dim uppercase tracking-widest mb-2">{st.label}</div>
+                    <div className={`font-mono text-lg font-medium ${st.color}`}>{st.value}</div>
+                  </div>
+                ))}
+              </div>
+            )}
 
             <div className="bg-card border border-border rounded-lg overflow-hidden mb-6">
               <div className="px-5 py-3.5 border-b border-border flex items-center justify-between">
@@ -358,7 +492,7 @@ export default function PortfolioPage() {
                       {[
                         "Symbol","Entry ₹","Lots","Notional",
                         "Win Rate","Avg Return","Bear","Base","Bull",
-                        "Suggested SL","SL Price","R:R","Signal","",
+                        "Suggested SL","SL Price","R:R","Signal","Dir","",
                       ].map(h => (
                         <th
                           key={h}
@@ -400,10 +534,10 @@ export default function PortfolioPage() {
                           <td className="py-3 px-3 font-mono text-[11px] text-right text-amber">{fmt(p.bear_pnl)}</td>
                           <td className="py-3 px-3 font-mono text-[12px] text-right text-green font-medium">{fmt(p.base_pnl)}</td>
                           <td className="py-3 px-3 font-mono text-[11px] text-right text-accent">{fmt(p.bull_pnl)}</td>
-                          <td className="py-3 px-3 font-mono text-[12px] text-right text-red">
-                            -{p.suggested_sl.toFixed(1)}%
+                          <td className={`py-3 px-3 font-mono text-[12px] text-right ${p.direction === "SHORT" ? "text-amber" : "text-red"}`}>
+                            {p.direction === "SHORT" ? "+" : "-"}{p.suggested_sl.toFixed(1)}%
                           </td>
-                          <td className="py-3 px-3 font-mono text-[11px] text-right text-red">
+                          <td className={`py-3 px-3 font-mono text-[11px] text-right ${p.direction === "SHORT" ? "text-amber" : "text-red"}`}>
                             ₹{p.sl_price.toFixed(1)}
                           </td>
                           <td className={`py-3 px-3 font-mono text-[11px] text-right ${p.rr_ratio >= 2 ? "text-green" : p.rr_ratio >= 1 ? "text-amber" : "text-red"}`}>
@@ -411,6 +545,12 @@ export default function PortfolioPage() {
                           </td>
                           <td className="py-3 px-3 text-center">
                             <span className={`badge ${getSignalClass(p.win_rate)}`}>{p.signal}</span>
+                          </td>
+                          <td className="py-3 px-3 text-center">
+                            {p.direction === "SHORT"
+                              ? <span className="font-mono text-[11px] text-red font-medium">↓ S</span>
+                              : <span className="font-mono text-[11px] text-green font-medium">↑ L</span>
+                            }
                           </td>
                           <td className="py-3 px-3">
                             <button
@@ -421,14 +561,23 @@ export default function PortfolioPage() {
                         </tr>
 
                         {selected === p.id && (
-                          <tr>
-                            <td colSpan={14} className="px-4 pb-4 bg-accent/[0.02]">
-                              <StopLossCard
-                                seasonality={p.seasonality}
-                                currentMonth={currentMonth}
-                                entryPrice={p.entry_price}
-                                symbol={p.symbol}
-                              />
+                          <tr key={`${p.id}-sl`}>
+                            <td colSpan={15} className="px-4 pb-4">
+                              {p.direction === "SHORT" ? (
+                                <ShortStopLossCard
+                                  seasonality={p.seasonality}
+                                  currentMonth={currentMonth}
+                                  entryPrice={p.entry_price}
+                                  symbol={p.symbol}
+                                />
+                              ) : (
+                                <StopLossCard
+                                  seasonality={p.seasonality}
+                                  currentMonth={currentMonth}
+                                  entryPrice={p.entry_price}
+                                  symbol={p.symbol}
+                                />
+                              )}
                             </td>
                           </tr>
                         )}
@@ -447,7 +596,7 @@ export default function PortfolioPage() {
                         <td className="py-3 px-3 font-mono text-[11px] text-right text-amber font-medium">{fmt(totals.bear)}</td>
                         <td className="py-3 px-3 font-mono text-[12px] text-right text-green font-medium">{fmt(totals.base)}</td>
                         <td className="py-3 px-3 font-mono text-[11px] text-right text-accent font-medium">{fmt(totals.bull)}</td>
-                        <td colSpan={5} />
+                        <td colSpan={6} />
                       </tr>
                     </tfoot>
                   )}
