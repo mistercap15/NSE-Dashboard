@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 import { useTheme } from "next-themes";
 import {
   Sun, Moon, Menu, X,
-  LayoutDashboard, TrendingUp, CalendarDays, Wallet, SlidersHorizontal, Search,
+  LayoutDashboard, TrendingUp, CalendarDays, Wallet, SlidersHorizontal, Search, RotateCcw,
 } from "lucide-react";
 import { MONTHS } from "../lib/api";
 
@@ -15,8 +15,9 @@ const navItems = [
   { href: "/",          label: "Overview",       Icon: LayoutDashboard },
   { href: "/rankings",  label: "Rankings",       Icon: TrendingUp },
   { href: "/analysis",  label: "Stock Analysis", Icon: Search },
-  { href: "/calendar",  label: "Calendar",       Icon: CalendarDays },
-  { href: "/portfolio", label: "Portfolio",      Icon: Wallet },
+  { href: "/calendar",        label: "Calendar",       Icon: CalendarDays },
+  { href: "/sector-rotation", label: "Sector Rotation", Icon: RotateCcw },
+  { href: "/portfolio",       label: "Portfolio",      Icon: Wallet },
   { href: "/screener",  label: "Screener",       Icon: SlidersHorizontal },
 ];
 
