@@ -16,7 +16,7 @@ export default function ShortCandidatesTable({ stocks }) {
             {[
               "#", "Symbol", "Sector",
               "Short Win Prob",
-              "Avg Return",
+              "Avg / Median",
               "Best (worst case squeeze)",
               "Worst (best case for us)",
               "Lot", "Suggested SL", "Signal"
@@ -66,10 +66,21 @@ export default function ShortCandidatesTable({ stocks }) {
                 })()}
               </td>
               {/* Avg return - negative is good for short */}
-              <td className={`py-2.5 px-3 font-mono text-[12px] text-right ${
-                (s.avg_return || 0) < 0 ? "text-red font-medium" : "text-dim"
-              }`}>
-                {(s.avg_return || 0) >= 0 ? "+" : ""}{(s.avg_return || 0).toFixed(2)}%
+              <td className="py-2.5 px-3 text-right">
+                <div className={`font-mono text-[12px] font-medium ${
+                  (s.avg_return || 0) < 0 ? "text-red" : "text-dim"
+                }`}>
+                  {(s.avg_return || 0) >= 0 ? "+" : ""}
+                  {(s.avg_return || 0).toFixed(2)}%
+                </div>
+                {s.median_return !== undefined && s.median_return !== null && (
+                  <div className={`font-mono text-[10px] ${
+                    (s.median_return || 0) < 0 ? "text-red/60" : "text-dim/60"
+                  }`}>
+                    med {(s.median_return || 0) >= 0 ? "+" : ""}
+                    {(s.median_return || 0).toFixed(2)}%
+                  </div>
+                )}
               </td>
               {/* Best month = worst case squeeze */}
               <td className="py-2.5 px-3 font-mono text-[11px] text-right text-amber">

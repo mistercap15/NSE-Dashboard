@@ -18,7 +18,7 @@ export default function RankingsTable({ stocks, showRank = true }) {
             <th className="text-left py-2.5 px-3 font-mono text-[11px] text-dim font-normal">Symbol</th>
             <th className="text-left py-2.5 px-3 font-mono text-[11px] text-dim font-normal">Sector</th>
             <th className="text-right py-2.5 px-3 font-mono text-[11px] text-dim font-normal">Win Rate</th>
-            <th className="text-right py-2.5 px-3 font-mono text-[11px] text-dim font-normal">Avg Return</th>
+            <th className="text-right py-2.5 px-3 font-mono text-[11px] text-dim font-normal">Avg / Median</th>
             <th className="text-right py-2.5 px-3 font-mono text-[11px] text-dim font-normal">Best</th>
             <th className="text-right py-2.5 px-3 font-mono text-[11px] text-dim font-normal">Worst</th>
             <th className="text-right py-2.5 px-3 font-mono text-[11px] text-dim font-normal">Lot</th>
@@ -51,10 +51,21 @@ export default function RankingsTable({ stocks, showRank = true }) {
                     : Math.round((s.data_points || 0) / 12)})
                 </span>
               </td>
-              <td className={`py-2.5 px-3 font-mono text-[12px] text-right ${
-                s.avg_return >= 0 ? "text-green" : "text-red"
-              }`}>
-                {s.avg_return >= 0 ? "+" : ""}{s.avg_return?.toFixed(2)}%
+              <td className="py-2.5 px-3 text-right">
+                <div className={`font-mono text-[12px] font-medium ${
+                  (s.avg_return || 0) >= 0 ? "text-green" : "text-red"
+                }`}>
+                  {(s.avg_return || 0) >= 0 ? "+" : ""}
+                  {(s.avg_return || 0).toFixed(2)}%
+                </div>
+                {s.median_return !== undefined && s.median_return !== null && (
+                  <div className={`font-mono text-[10px] ${
+                    (s.median_return || 0) >= 0 ? "text-green/60" : "text-red/60"
+                  }`}>
+                    med {(s.median_return || 0) >= 0 ? "+" : ""}
+                    {(s.median_return || 0).toFixed(2)}%
+                  </div>
+                )}
               </td>
               <td className="py-2.5 px-3 font-mono text-[11px] text-right text-green">
                 +{s.best?.toFixed(1)}%
