@@ -1,0 +1,193 @@
+// Instrument keys sourced from Upstox instruments master (assets.upstox.com)
+// Some ISINs differ from NSE records due to bonus/restructuring share series
+// Stocks not listed here fall back to NSE_EQ|SYMBOL (works for most)
+const ISIN_MAP = {
+  // Banking
+  HDFCBANK:   "INE040A01034",
+  ICICIBANK:  "INE090A01021",
+  AXISBANK:   "INE238A01034",
+  KOTAKBANK:  "INE237A01036",
+  SBIN:       "INE062A01020",
+  INDUSINDBK: "INE095A01012",
+  BANKBARODA: "INE028A01039",
+  PNB:        "INE160A01022",
+  FEDERALBNK: "INE171A01029",
+  CANBK:      "INE476A01022",
+  IDFCFIRSTB: "INE092T01019",
+  BANDHANBNK: "INE545U01014",
+  RBLBANK:    "INE976G01028",
+  AUBANK:     "INE949L01017",
+  // NBFC & Finance
+  BAJFINANCE: "INE296A01032",
+  BAJAJFINSV: "INE918I01026",
+  CHOLAFIN:   "INE121A08PJ0",
+  MUTHOOTFIN: "INE414G01012",
+  MANAPPURAM: "INE522D01027",
+  LICHSGFIN:  "INE115A01026",
+  ABCAPITAL:  "INE674K01013",
+  ANGELONE:   "INE732I01021",
+  CDSL:       "INE736A01011",
+  MCX:        "INE745G01043",
+  // Insurance
+  SBILIFE:    "INE123W01016",
+  HDFCLIFE:   "INE795G01014",
+  ICICIPRULI: "INE726G01019",
+  NIACL:      "INE470Y01017",
+  ICICIGI:    "INE765G01017",
+  HDFCAMC:    "INE127D01025",
+  "NAM-INDIA":"INE298J01013",
+  // IT
+  TCS:        "INE467B01029",
+  INFY:       "INE009A01021",
+  WIPRO:      "INE075A01022",
+  HCLTECH:    "INE860A01027",
+  TECHM:      "INE669C01036",
+  MPHASIS:    "INE356A01018",
+  COFORGE:    "INE591G01025",
+  PERSISTENT: "INE262H01021",
+  LTTS:       "INE010V01017",
+  OFSS:       "INE881D01027",
+  // Large Cap
+  RELIANCE:   "INE002A01018",
+  LT:         "INE018A01030",
+  ADANIENT:   "INE423A01024",
+  ADANIPORTS: "INE742F01042",
+  ATGL:       "INE399L01023",
+  BHARTIARTL: "INE397D01024",
+  // FMCG
+  HINDUNILVR: "INE030A01027",
+  ITC:        "INE154A01025",
+  NESTLEIND:  "INE239A01024",
+  BRITANNIA:  "INE216A01030",
+  DABUR:      "INE016A01026",
+  MARICO:     "INE196A01026",
+  COLPAL:     "INE259A01022",
+  GODREJCP:   "INE102D01028",
+  TATACONSUM: "INE192A01025",
+  UBL:        "INE686F01025",
+  UNITDSPR:   "INE854D01024",
+  RADICO:     "INE944F01028",
+  // Pharma
+  SUNPHARMA:  "INE044A01036",
+  DRREDDY:    "INE089A01031",
+  CIPLA:      "INE059A01026",
+  DIVISLAB:   "INE361B01024",
+  BIOCON:     "INE376G01013",
+  LUPIN:      "INE326A01037",
+  AUROPHARMA: "INE406A01037",
+  ALKEM:      "INE540L01014",
+  TORNTPHARM: "INE685A01028",
+  APOLLOHOSP: "INE437A01024",
+  GLENMARK:   "INE935A01035",
+  PIIND:      "INE603J01030",
+  // Auto
+  MARUTI:     "INE585B01010",
+  "M&M":      "INE101A01026",
+  "BAJAJ-AUTO":"INE917I01010",
+  HEROMOTOCO: "INE158A01026",
+  EICHERMOT:  "INE066A01021",
+  TVSMOTOR:   "INE494B01023",
+  ASHOKLEY:   "INE208A01029",
+  ESCORTS:    "INE042A01014",
+  // Auto Ancillary
+  APOLLOTYRE: "INE438A01022",
+  MRF:        "INE883A01011",
+  BALKRISIND: "INE787D01026",
+  MOTHERSON:  "INE775A01035",
+  // Metals
+  TATASTEEL:  "INE081A01020",
+  HINDALCO:   "INE038A01020",
+  JSWSTEEL:   "INE019A01038",
+  SAIL:       "INE114A01011",
+  JINDALSTEL: "INE749A01030",
+  COALINDIA:  "INE522F01014",
+  NMDC:       "INE584A01023",
+  VEDL:       "INE205A01025",
+  // Energy & Oil
+  ONGC:       "INE213A01029",
+  BPCL:       "INE029A01011",
+  IOC:        "INE242A01010",
+  GAIL:       "INE129A01019",
+  NTPC:       "INE733E01010",
+  POWERGRID:  "INE752E01010",
+  TATAPOWER:  "INE245A01021",
+  PETRONET:   "INE347G01014",
+  TORNTPOWER: "INE813H01021",
+  CESC:       "INE486A01021",
+  NHPC:       "INE848E01016",
+  // Consumer & Retail
+  TITAN:      "INE280A01028",
+  ASIANPAINT: "INE021A01026",
+  PIDILITIND: "INE318A01026",
+  DMART:      "INE192R01011",
+  TRENT:      "INE849A01020",
+  BATAINDIA:  "INE176A01028",
+  PAGEIND:    "INE761H01022",
+  JUBLFOOD:   "INE797F01020",
+  PHOENIXLTD: "INE211B01039",
+  PRESTIGE:   "INE811K01011",
+  OBEROIRLTY: "INE093I01010",
+  // Cement
+  ULTRACEMCO: "INE481G01011",
+  SHREECEM:   "INE070A01015",
+  ACC:        "INE012A01025",
+  AMBUJACEM:  "INE079A01024",
+  RAMCOCEM:   "INE331A01037",
+  // Paints
+  BERGEPAINT: "INE463A01038",
+  KANSAINER:  "INE531A01024",
+  // Capital Goods
+  CUMMINSIND: "INE298A01020",
+  HAVELLS:    "INE176B01034",
+  ABB:        "INE117A01022",
+  SIEMENS:    "INE003A01024",
+  BEL:        "INE263A01024",
+  HAL:        "INE066F01020",
+  CONCOR:     "INE111A01025",
+  POLYCAB:    "INE455K01017",
+  DIXON:      "INE935N01020",
+  // Chemicals
+  ASTRAL:     "INE006I01046",
+  SRF:        "INE647A01010",
+  DEEPAKNTR:  "INE288B01029",
+  // Gas
+  IGL:        "INE203G01027",
+  MGL:        "INE002S01010",
+  GUJGASLTD:  "INE844O01030",
+  // Infra / Finance
+  RECLTD:     "INE020B01018",
+  PFC:        "INE134E01011",
+  IRFC:       "INE053F01010",
+  IRCTC:      "INE335Y01020",
+}
+
+// Convert NSE symbol to Upstox instrument key
+// Uses ISIN-based key from master when available, falls back to symbol
+export function toInstrumentKey(symbol) {
+  const isin = ISIN_MAP[symbol]
+  return isin ? `NSE_EQ|${isin}` : `NSE_EQ|${symbol}`
+}
+
+export function toFuturesKey(symbol) {
+  const now   = new Date()
+  const year  = String(now.getFullYear()).slice(2)
+  const month = String(now.getMonth() + 1).padStart(2, "0")
+  return `NSE_FO|${symbol}${year}${month}`
+}
+
+export function toNextMonthFuturesKey(symbol) {
+  const now   = new Date()
+  const next  = new Date(now.getFullYear(), now.getMonth() + 1, 1)
+  const year  = String(next.getFullYear()).slice(2)
+  const month = String(next.getMonth() + 1).padStart(2, "0")
+  return `NSE_FO|${symbol}${year}${month}`
+}
+
+export const WATCHLIST = [
+  "TVSMOTOR", "DIVISLAB", "PIDILITIND", "HINDUNILVR", "BRITANNIA",
+  "CUMMINSIND", "M&M", "HEROMOTOCO", "BIOCON", "DMART",
+  "ASTRAL", "FEDERALBNK", "CANBK", "JINDALSTEL", "SAIL",
+  "HDFCBANK", "ICICIBANK", "RELIANCE", "TCS", "INFY",
+  "TITAN", "ASIANPAINT", "SUNPHARMA", "DRREDDY", "CIPLA",
+  "AXISBANK", "KOTAKBANK", "LT", "BAJFINANCE", "NESTLEIND",
+]
