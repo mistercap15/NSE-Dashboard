@@ -1,8 +1,11 @@
 import { NextResponse } from "next/server"
-import { getBatchQuotes } from "@/app/lib/upstox"
+import { getBatchQuotes, setAccessToken } from "@/app/lib/upstox"
 import { toInstrumentKey, WATCHLIST } from "@/app/lib/instruments"
 
 export async function GET(request) {
+  const cookie = request.cookies.get("upstox_token")?.value
+  if (cookie) setAccessToken(cookie)
+
   const { searchParams } = new URL(request.url)
   const symbolsParam = searchParams.get("symbols")
 

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { getDailyCandles, getQuote } from "@/app/lib/upstox"
+import { getDailyCandles, getQuote, setAccessToken } from "@/app/lib/upstox"
 import { toInstrumentKey } from "@/app/lib/instruments"
 import { computeSupportZones, computePriceContext, computeSignalScore } from "@/app/lib/technicals"
 
@@ -40,6 +40,9 @@ async function callMCP(toolName, args) {
 }
 
 export async function GET(request) {
+  const cookie = request.cookies.get("upstox_token")?.value
+  if (cookie) setAccessToken(cookie)
+
   const { searchParams } = new URL(request.url)
   const targetMonth = parseInt(searchParams.get("month") || String(new Date().getMonth() + 2)) // next month default
   const currentMonth = targetMonth === 1 ? 12 : targetMonth - 1

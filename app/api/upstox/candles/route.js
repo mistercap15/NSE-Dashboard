@@ -1,8 +1,11 @@
 import { NextResponse } from "next/server"
-import { getDailyCandles } from "@/app/lib/upstox"
+import { getDailyCandles, setAccessToken } from "@/app/lib/upstox"
 import { toInstrumentKey } from "@/app/lib/instruments"
 
 export async function GET(request) {
+  const cookie = request.cookies.get("upstox_token")?.value
+  if (cookie) setAccessToken(cookie)
+
   const { searchParams } = new URL(request.url)
   const symbol = searchParams.get("symbol")?.toUpperCase()
   const days   = parseInt(searchParams.get("days") || "60")

@@ -19,14 +19,18 @@ export async function GET(request) {
   try {
     const tokenData = await exchangeCodeForToken(code)
 
-    // Store token in env for this session
-    // In production: save to Vercel KV or encrypted cookie
-    process.env.UPSTOX_ACCESS_TOKEN = tokenData.access_token
-
-    // Redirect to dashboard with success message
-    return NextResponse.redirect(
+    // Store token in HttpOnly cookie — persists across Vercel serverless invocations
+    const response = NextResponse.redirect(
       new URL("/?upstox_connected=true", request.url)
     )
+    response.cookies.set("upstox_token", tokenData.access_token, {
+      httpOnly: true,
+      secure:   process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      maxAge:   60 * 60 * 24, // 24 hours (Upstox tokens expire daily)
+      path:     "/",
+    })
+    return response
   } catch (e) {
     return NextResponse.redirect(
       new URL(`/?upstox_error=${encodeURIComponent(e.message)}`, request.url)

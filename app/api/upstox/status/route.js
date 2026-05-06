@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server"
-import { hasValidToken } from "@/app/lib/upstox"
+import { hasValidToken, setAccessToken } from "@/app/lib/upstox"
 
-export async function GET() {
+export async function GET(request) {
+  const cookie = request.cookies.get("upstox_token")?.value
+  if (cookie) setAccessToken(cookie)
   return NextResponse.json({ connected: hasValidToken() })
 }
