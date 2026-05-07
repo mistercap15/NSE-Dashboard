@@ -3,7 +3,118 @@ import { getDailyCandles, getQuote, setAccessToken } from "@/app/lib/upstox"
 import { toInstrumentKey } from "@/app/lib/instruments"
 import { computeSupportZones, computePriceContext, computeSignalScore } from "@/app/lib/technicals"
 
-const MCP_URL = process.env.MCP_URL || "https://nse-data-mcp.vercel.app/mcp"
+const MCP_URL   = process.env.MCP_URL || "https://nse-data-mcp.vercel.app/mcp"
+const MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
+
+function runPreTradeChecklist(stock, context, candles) {
+  const checks = []
+
+  // CHECK 1: Data quality — minimum 5 years per month
+  const totalYears = (stock.nextMonth.positive_years || 0) +
+                     (stock.nextMonth.negative_years || 0)
+  const check1 = {
+    name:    "Data Quality",
+    desc:    `${totalYears} years of ${stock.nextMonth.monthName} data`,
+    passed:  totalYears >= 5,
+    warning: totalYears >= 3 && totalYears < 5,
+    detail:  totalYears >= 5
+      ? `✓ ${totalYears} years of real data — reliable signal`
+      : totalYears >= 3
+      ? `⚠ Only ${totalYears} years — treat with caution`
+      : `✗ Less than 3 years — signal unreliable`,
+  }
+  checks.push(check1)
+
+  // CHECK 2: Median vs Average gap
+  // If avg is more than 2.5x the median, outliers are distorting the avg
+  const avg    = Math.abs(stock.nextMonth.avg_return   || 0)
+  const median = Math.abs(stock.nextMonth.median_return || 0)
+  const gap    = median > 0 ? avg / median : 999
+  const check2 = {
+    name:    "Signal Reliability",
+    desc:    `Avg +${stock.nextMonth.avg_return?.toFixed(1)}% vs Median +${stock.nextMonth.median_return?.toFixed(1)}%`,
+    passed:  gap <= 2.5,
+    warning: gap > 1.8 && gap <= 2.5,
+    detail:  gap <= 1.5
+      ? `✓ Avg and median are close — consistent returns`
+      : gap <= 2.5
+      ? `⚠ Avg higher than median — a few big years pulling it up. Use median as target.`
+      : `✗ Avg is ${gap.toFixed(1)}x the median — outlier driven. Avg is misleading.`,
+  }
+  checks.push(check2)
+
+  // CHECK 3: Current month weakness confirms dip setup
+  const currentWR = stock.currentMonth?.win_rate || 50
+  const check3 = {
+    name:    "Dip Month Confirmed",
+    desc:    `Current month win rate: ${currentWR}%`,
+    passed:  currentWR <= 60,
+    warning: currentWR > 60 && currentWR <= 70,
+    detail:  currentWR <= 40
+      ? `✓ Current month very weak (${currentWR}% WR) — strong dip setup`
+      : currentWR <= 60
+      ? `✓ Current month weak (${currentWR}% WR) — dip setup confirmed`
+      : currentWR <= 70
+      ? `⚠ Current month neutral (${currentWR}% WR) — weaker early entry case`
+      : `✗ Current month strong (${currentWR}% WR) — not a dip month`,
+  }
+  checks.push(check3)
+
+  // CHECK 4: Next month win rate minimum threshold
+  const nextWR = stock.nextMonth.win_rate || 0
+  const check4 = {
+    name:    "Next Month Strength",
+    desc:    `${stock.nextMonth.monthName} win rate: ${nextWR}%`,
+    passed:  nextWR >= 75,
+    warning: nextWR >= 65 && nextWR < 75,
+    detail:  nextWR >= 85
+      ? `✓ Very strong next month (${nextWR}% WR) — high conviction`
+      : nextWR >= 75
+      ? `✓ Strong next month (${nextWR}% WR) — tradeable setup`
+      : nextWR >= 65
+      ? `⚠ Moderate next month (${nextWR}% WR) — borderline`
+      : `✗ Weak next month (${nextWR}% WR) — below threshold`,
+  }
+  checks.push(check4)
+
+  // CHECK 5: Roll Opportunity — informational only
+  const check5 = {
+    name:            "Roll Opportunity",
+    desc:            "Next-next month seasonality",
+    passed:          true,
+    warning:         false,
+    detail:          "Check next month rankings to see if roll is possible",
+    isInformational: true,
+  }
+  checks.push(check5)
+
+  const hardChecks = checks.filter(c => !c.isInformational)
+  const hardPassed = hardChecks.filter(c => c.passed).length
+  const hasWarning = hardChecks.some(c => c.warning)
+
+  const checklistResult =
+    hardPassed === 4 && !hasWarning ? "PASS"    :
+    hardPassed === 4 && hasWarning  ? "CAUTION" :
+    hardPassed >= 3                 ? "CAUTION" : "FAIL"
+
+  const scorePenalty =
+    checklistResult === "FAIL"    ? 25 :
+    checklistResult === "CAUTION" ? 10 : 0
+
+  return {
+    checks,
+    result:      checklistResult,
+    passCount:   hardPassed,
+    totalChecks: hardChecks.length,
+    scorePenalty,
+    summary:
+      checklistResult === "PASS"
+        ? "All checks passed — high quality setup"
+        : checklistResult === "CAUTION"
+        ? "Minor concerns — trade with awareness"
+        : "Setup has issues — reduced confidence",
+  }
+}
 
 function detectDipType(context) {
   if (!context) return "NO_DIP"
@@ -132,40 +243,66 @@ export async function GET(request) {
           detectDipType(context)
         )
 
+        // Pre-trade checklist
+        const checklist = runPreTradeChecklist(
+          {
+            nextMonth: {
+              win_rate:       stock.win_rate,
+              avg_return:     stock.avg_return,
+              median_return:  stock.median_return,
+              positive_years: stock.positive_years,
+              negative_years: stock.negative_years,
+              monthName:      MONTH_NAMES[targetMonth - 1],
+            },
+            currentMonth: { win_rate: currentMonthWR },
+          },
+          context,
+          candles
+        )
+
+        const adjustedScore = Math.max(0, Math.min(100, (signal.score || 0) - checklist.scorePenalty))
+        const adjustedStatus =
+          adjustedScore >= 75 ? "BUY"      :
+          adjustedScore >= 65 ? "BUY_HALF" :
+          adjustedScore >= 55 ? "WATCH"    :
+          adjustedScore >= 40 ? "MONITOR"  : "SKIP"
+
         return {
-          symbol:       stock.symbol,
-          sector:       stock.sector,
-          lot_size:     stock.lot_size,
+          symbol:   stock.symbol,
+          sector:   stock.sector,
+          lot_size: stock.lot_size,
           // Seasonality
           nextMonth: {
-            month:         targetMonth,
-            win_rate:      stock.win_rate,
-            avg_return:    stock.avg_return,
-            median_return: stock.median_return,
-            data_points:   stock.data_points,
+            month:          targetMonth,
+            win_rate:       stock.win_rate,
+            avg_return:     stock.avg_return,
+            median_return:  stock.median_return,
+            data_points:    stock.data_points,
           },
           currentMonth: {
-            month:   currentMonth,
+            month:    currentMonth,
             win_rate: currentMonthWR,
             is_weak:  currentMonthWR < 55,
           },
           // Live price data
           price: {
-            current:  currentPrice,
-            error:    priceError,
-            candles:  candles.slice(-5), // last 5 days for preview
+            current: currentPrice,
+            error:   priceError,
+            candles: candles.slice(-5),
           },
           // Technical
           support,
           context,
-          // Signal
-          signal,
-          // Status
-          status:
-            signal.score >= 75 ? "BUY" :
-            signal.score >= 65 ? "BUY_HALF" :
-            signal.score >= 55 ? "WATCH" :
-            signal.score >= 40 ? "MONITOR" : "SKIP",
+          // Checklist
+          checklist,
+          // Signal (score already adjusted by checklist penalty)
+          signal: {
+            ...signal,
+            score:         adjustedScore,
+            originalScore: signal.score,
+            scorePenalty:  checklist.scorePenalty,
+          },
+          status: adjustedStatus,
         }
       })
     )

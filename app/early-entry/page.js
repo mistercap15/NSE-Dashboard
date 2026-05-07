@@ -52,6 +52,74 @@ function getMomentumText(momentum) {
   return   { icon: "📈", text: "Rising — price moving away from support zone, wait" }
 }
 
+// ── Pre-Trade Checklist Display ───────────────────────────────────
+function ChecklistDisplay({ checklist, originalScore }) {
+  if (!checklist) return null
+
+  const resultColors = {
+    PASS:    "border-green/20 bg-green/5",
+    CAUTION: "border-amber/20 bg-amber/5",
+    FAIL:    "border-red/20 bg-red/5",
+  }
+  const resultTextColors = {
+    PASS:    "text-green",
+    CAUTION: "text-amber",
+    FAIL:    "text-red",
+  }
+  const resultIcons = {
+    PASS:    "✓",
+    CAUTION: "⚠",
+    FAIL:    "✗",
+  }
+
+  return (
+    <div className={`rounded-lg border p-4 mb-4 ${resultColors[checklist.result]}`}>
+      <div className="flex items-center justify-between mb-3">
+        <div className="font-mono text-[11px] text-dim uppercase tracking-widest">
+          Pre-Trade Checklist
+        </div>
+        <div className={`font-mono text-[11px] font-bold px-2 py-1 rounded ${resultTextColors[checklist.result]}`}>
+          {resultIcons[checklist.result]} {checklist.result}
+          {" · "}{checklist.passCount}/{checklist.totalChecks} checks passed
+        </div>
+      </div>
+
+      <div className="space-y-2">
+        {checklist.checks
+          .filter(c => !c.isInformational)
+          .map((check, i) => (
+            <div key={i} className="flex items-start gap-3">
+              <span className={`font-mono text-[12px] mt-0.5 shrink-0 ${
+                check.passed && !check.warning ? "text-green" :
+                check.warning                  ? "text-amber"  : "text-red"
+              }`}>
+                {check.passed && !check.warning ? "✓" : check.warning ? "⚠" : "✗"}
+              </span>
+              <div className="flex-1">
+                <div className="font-mono text-[11px] text-soft font-medium">{check.name}</div>
+                <div className="font-body text-[11px] text-dim mt-0.5">{check.detail}</div>
+              </div>
+            </div>
+          ))}
+      </div>
+
+      {checklist.scorePenalty > 0 && (
+        <div className="mt-3 pt-3 border-t border-current/10">
+          <div className="font-mono text-[10px] text-amber">
+            ⚠ Score reduced by {checklist.scorePenalty} points due to checklist{" "}
+            {checklist.result === "FAIL" ? "failure" : "warnings"}.
+            {originalScore != null && <> Original score: {originalScore}/100</>}
+          </div>
+        </div>
+      )}
+
+      <div className={`mt-2 font-mono text-[11px] font-medium ${resultTextColors[checklist.result]}`}>
+        {checklist.summary}
+      </div>
+    </div>
+  )
+}
+
 // ── Grade Pill (replaces raw "40/100" score) ──────────────────────
 function GradePill({ grade, score }) {
   const colorClass =
@@ -419,6 +487,18 @@ export default function EarlyEntryPage() {
                           <div className="font-mono text-[9px] text-dim">Grade</div>
                           <GradePill grade={grade} score={score} />
                         </div>
+                        {s.checklist?.result === "FAIL" && (
+                          <span className="font-mono text-[9px] text-red px-1.5 py-0.5
+                            rounded bg-red/10 border border-red/20 self-center">
+                            ⚠ checklist fail
+                          </span>
+                        )}
+                        {s.checklist?.result === "CAUTION" && (
+                          <span className="font-mono text-[9px] text-amber px-1.5 py-0.5
+                            rounded bg-amber/10 border border-amber/20 self-center">
+                            ⚠ caution
+                          </span>
+                        )}
                       </div>
 
                       <span className="font-mono text-[11px] text-dim">
@@ -430,7 +510,15 @@ export default function EarlyEntryPage() {
                     {expanded === s.symbol && (
                       <div className="px-5 pb-5 border-t border-border pt-4 space-y-4">
 
-                        {/* Change 6: How this works */}
+                        {/* Pre-trade checklist */}
+                        {s.checklist && (
+                          <ChecklistDisplay
+                            checklist={s.checklist}
+                            originalScore={s.signal?.originalScore}
+                          />
+                        )}
+
+                        {/* How this works */}
                         <div className="bg-accent/5 border border-accent/20 rounded-lg p-3">
                           <div className="font-mono text-[10px] text-accent uppercase tracking-widest mb-1">
                             How this works
