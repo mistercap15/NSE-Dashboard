@@ -58,7 +58,7 @@ const LOT_SIZES = {
   "HFCL":7500,"HINDCOPPER":5850,"HINDALCO":1400,"HINDPETRO":2100,"HINDUNILVR":300,
   "HONAUT":15,"HUDCO":5500,"IBREALEST":5000,"ICICIBANK":700,"ICICIGI":250,
   "ICICIPRULI":1500,"IDEA":70000,"IDFCFIRSTB":10000,"IEX":3750,"IGL":1375,
-  "INDHOTEL":2000,"INDIAMART":75,"INDIGO":300,"INDUSTOWER":2800,"INFY":400,
+  "INDHOTEL":2000,"INDIAMART":75,"INDIGO":300,"INDUSTOWER":1700,"INFY":400,
   "IOC":6000,"IPCALAB":450,"IRB":5000,"IRCTC":875,"IRFC":6400,"ITC":1600,
   "JKCEMENT":125,"JSWENERGY":1500,"JSWSTEEL":900,"JUBLFOOD":500,"KAJARIACER":500,
   "KANSAINER":300,"KOTAKBANK":400,"L&TFH":6000,"LAURUSLABS":1500,"LICI":700,
@@ -518,7 +518,11 @@ export default function PositionsPage() {
                       ))}
                     </div>
                     <div className="font-mono text-[10px] text-dim">
-                      {upstoxError ? "Upstox unavailable — connect to see live P&L" : "Fetching live prices..."}
+                      {upstoxError
+                        ? "Upstox unavailable — connect to see live P&L"
+                        : p.error
+                        ? `No live data — ${p.error === "No live data" ? "Upstox not connected or market closed" : p.error}`
+                        : "Fetching live prices..."}
                     </div>
                   </div>
                 )}
