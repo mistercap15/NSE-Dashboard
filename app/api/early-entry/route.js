@@ -87,14 +87,24 @@ export async function GET(request) {
         try {
           const instrumentKey = toInstrumentKey(stock.symbol)
           candles = await getDailyCandles(instrumentKey, 65)
-          // Use live LTP from quote — historical candles only have yesterday's close
-          try {
-            const quote  = await getQuote(instrumentKey)
-            currentPrice = quote.ltp
-          } catch (quoteErr) {
-            console.error(`[early-entry] getQuote failed for ${stock.symbol}:`, quoteErr.message)
-            priceError = quoteErr.message
-            currentPrice = candles[candles.length - 1]?.close
+
+          const lastCandle = candles[candles.length - 1]
+          const todayIST   = new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10)
+          const lastCandleIsToday = lastCandle?.date === todayIST
+
+          if (lastCandleIsToday) {
+            // Today's completed candle has the official NSE closing price (call auction)
+            currentPrice = lastCandle.close
+          } else {
+            // Today's candle not yet finalised — market likely still open, use live LTP
+            try {
+              const quote  = await getQuote(instrumentKey)
+              currentPrice = quote.ltp
+            } catch (quoteErr) {
+              console.error(`[early-entry] getQuote failed for ${stock.symbol}:`, quoteErr.message)
+              priceError = quoteErr.message
+              currentPrice = lastCandle?.close
+            }
           }
         } catch (e) {
           priceError = e.message
