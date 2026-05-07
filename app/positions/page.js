@@ -6,6 +6,80 @@ import { MONTHS, MONTH_FULL } from "../lib/api"
 const currentMonth = new Date().getMonth() + 1
 const STORAGE_KEY  = "nse_positions_v1"
 
+const FO_SYMBOLS = [
+  "360ONE","ABB","ABBOTINDIA","ABCAPITAL","ABFRL","ACC","ADANIENT","ADANIPORTS",
+  "ADANIPOWER","ALKEM","AMBUJACEM","ANGELONE","APLAPOLLO","APOLLOHOSP","APOLLOTYRE",
+  "ASHOKLEY","ASIANPAINT","ASTRAL","ATGL","ATUL","AUBANK","AUROPHARMA","AXISBANK",
+  "BAJAJ-AUTO","BAJAJFINSV","BAJFINANCE","BALKRISIND","BALRAMCHIN","BANDHANBNK",
+  "BANKBARODA","BATAINDIA","BEL","BERGEPAINT","BHARATFORG","BHARTIARTL","BHEL",
+  "BIOCON","BOSCHLTD","BPCL","BRITANNIA","BSE","BSOFT","CANBK","CANFINHOME",
+  "CDSL","CESC","CGPOWER","CHAMBLFERT","CHOLAFIN","CIPLA","COALINDIA","COFORGE",
+  "COLPAL","CONCOR","COROMANDEL","CROMPTON","CUB","CUMMINSIND","DABUR","DALBHARAT",
+  "DEEPAKNTR","DELTACORP","DEVYANI","DIVISLAB","DIXON","DLF","DMART","DRREDDY",
+  "EIDPARRY","EICHERMOT","ESCORTS","ETERNAL","EXIDEIND","FEDERALBNK","FORTIS",
+  "GAIL","GLENMARK","GNFC","GODREJCP","GODREJPROP","GRANULES","GRASIM","GUJGASLTD",
+  "HAL","HAVELLS","HCLTECH","HDFCAMC","HDFCBANK","HDFCLIFE","HEROMOTOCO","HFCL",
+  "HINDCOPPER","HINDALCO","HINDPETRO","HINDUNILVR","HONAUT","HUDCO","IBREALEST",
+  "ICICIBANK","ICICIGI","ICICIPRULI","IDEA","IDFCFIRSTB","IEX","IGL","INDHOTEL",
+  "INDIAMART","INDIGO","INDUSTOWER","INFY","IOC","IPCALAB","IRB","IRCTC","IRFC",
+  "ITC","JKCEMENT","JSWENERGY","JSWSTEEL","JUBLFOOD","KAJARIACER","KANSAINER",
+  "KOTAKBANK","LAURUSLABS","LICI","LODHA","LT","LTIM","LTM","L&TFH","LUPIN",
+  "M&M","M&MFIN","MARICO","MARUTI","MAXHEALTH","MCX","METROPOLIS","MFSL","MGL",
+  "MOTHERSON","MPHASIS","MRF","MUTHOOTFIN","NAUKRI","NAVINFLUOR","NESTLEIND",
+  "NMDC","NTPC","OBEROIRLTY","OFSS","OIL","ONGC","PAGEIND","PEL","PERSISTENT",
+  "PETRONET","PFC","PIDILITIND","PIIND","PNB","PNBHOUSING","POLYCAB","POWERGRID",
+  "PVRINOX","RAMCOCEM","RBLBANK","RECLTD","RELIANCE","SAIL","SBICARD","SBILIFE",
+  "SBIN","SHREECEM","SHRIRAMFIN","SIEMENS","SJVN","SKFINDIA","SRF","STARHEALTH",
+  "SUNTV","SUPREMEIND","SYNGENE","TATACHEM","TATACOMM","TATACONSUM","TATAELXSI",
+  "TATAMOTORS","TATAPOWER","TATASTEEL","TCS","TECHM","TIINDIA","TITAN","TORNTPHARM",
+  "TORNTPOWER","TRENT","TVSMOTOR","UBL","ULTRACEMCO","UPL","VEDL","VOLTAS",
+  "WIPRO","ZOMATO","ZYDUSLIFE",
+]
+
+const LOT_SIZES = {
+  "360ONE":500,"ABB":125,"ABBOTINDIA":25,"ABCAPITAL":3500,"ABFRL":2500,
+  "ACC":250,"ADANIENT":375,"ADANIPORTS":1250,"ADANIPOWER":2000,"ALKEM":150,
+  "AMBUJACEM":1000,"ANGELONE":250,"APLAPOLLO":500,"APOLLOHOSP":125,"APOLLOTYRE":1750,
+  "ASHOKLEY":5500,"ASIANPAINT":200,"ASTRAL":500,"ATGL":850,"ATUL":100,
+  "AUBANK":1000,"AUROPHARMA":650,"AXISBANK":1200,"BAJAJ-AUTO":125,"BAJAJFINSV":500,
+  "BAJFINANCE":125,"BALKRISIND":400,"BALRAMCHIN":2250,"BANDHANBNK":2500,"BANKBARODA":5850,
+  "BATAINDIA":250,"BEL":4500,"BERGEPAINT":500,"BHARATFORG":750,"BHARTIARTL":475,
+  "BHEL":5250,"BIOCON":2000,"BOSCHLTD":50,"BPCL":1800,"BRITANNIA":125,
+  "BSE":250,"BSOFT":1200,"CANBK":4725,"CANFINHOME":600,"CDSL":500,
+  "CESC":1500,"CGPOWER":1500,"CHAMBLFERT":2000,"CHOLAFIN":700,"CIPLA":650,
+  "COALINDIA":2100,"COFORGE":150,"COLPAL":700,"CONCOR":1000,"COROMANDEL":500,
+  "CROMPTON":2000,"CUB":5000,"CUMMINSIND":300,"DABUR":2750,"DALBHARAT":200,
+  "DEEPAKNTR":350,"DELTACORP":5000,"DEVYANI":2500,"DIVISLAB":200,"DIXON":75,
+  "DLF":1650,"DMART":150,"DRREDDY":125,"EIDPARRY":1250,"EICHERMOT":175,
+  "ESCORTS":275,"ETERNAL":2800,"EXIDEIND":1800,"FEDERALBNK":10000,"FORTIS":2000,
+  "GAIL":4500,"GLENMARK":650,"GNFC":1250,"GODREJCP":500,"GODREJPROP":500,
+  "GRANULES":2500,"GRASIM":250,"GUJGASLTD":1250,"HAL":150,"HAVELLS":500,
+  "HCLTECH":700,"HDFCAMC":200,"HDFCBANK":550,"HDFCLIFE":1100,"HEROMOTOCO":300,
+  "HFCL":7500,"HINDCOPPER":5850,"HINDALCO":1400,"HINDPETRO":2100,"HINDUNILVR":300,
+  "HONAUT":15,"HUDCO":5500,"IBREALEST":5000,"ICICIBANK":700,"ICICIGI":250,
+  "ICICIPRULI":1500,"IDEA":70000,"IDFCFIRSTB":10000,"IEX":3750,"IGL":1375,
+  "INDHOTEL":2000,"INDIAMART":75,"INDIGO":300,"INDUSTOWER":2800,"INFY":400,
+  "IOC":6000,"IPCALAB":450,"IRB":5000,"IRCTC":875,"IRFC":6400,"ITC":1600,
+  "JKCEMENT":125,"JSWENERGY":1500,"JSWSTEEL":900,"JUBLFOOD":500,"KAJARIACER":500,
+  "KANSAINER":300,"KOTAKBANK":400,"L&TFH":6000,"LAURUSLABS":1500,"LICI":700,
+  "LODHA":900,"LT":175,"LTIM":150,"LTM":150,"LUPIN":500,"M&M":700,
+  "M&MFIN":2000,"MARICO":2000,"MARUTI":100,"MAXHEALTH":800,"MCX":250,
+  "METROPOLIS":250,"MFSL":750,"MGL":550,"MOTHERSON":5000,"MPHASIS":300,
+  "MRF":10,"MUTHOOTFIN":625,"NAUKRI":125,"NAVINFLUOR":100,"NESTLEIND":40,
+  "NMDC":4500,"NTPC":2700,"OBEROIRLTY":750,"OFSS":50,"OIL":2350,"ONGC":2700,
+  "PAGEIND":15,"PEL":375,"PERSISTENT":125,"PETRONET":3000,"PFC":2400,
+  "PIDILITIND":250,"PIIND":250,"PNB":8000,"PNBHOUSING":1000,"POLYCAB":175,
+  "POWERGRID":2700,"PVRINOX":1000,"RAMCOCEM":750,"RBLBANK":5000,"RECLTD":2400,
+  "RELIANCE":250,"SAIL":7500,"SBICARD":500,"SBILIFE":750,"SBIN":1500,
+  "SHREECEM":25,"SHRIRAMFIN":300,"SIEMENS":175,"SJVN":7500,"SKFINDIA":200,
+  "SRF":125,"STARHEALTH":1750,"SUNTV":750,"SUPREMEIND":175,"SYNGENE":1000,
+  "TATACHEM":500,"TATACOMM":500,"TATACONSUM":1100,"TATAELXSI":100,"TATAMOTORS":1350,
+  "TATAPOWER":3375,"TATASTEEL":5500,"TCS":175,"TECHM":600,"TIINDIA":125,
+  "TITAN":375,"TORNTPHARM":500,"TORNTPOWER":750,"TRENT":375,"TVSMOTOR":350,
+  "UBL":500,"ULTRACEMCO":100,"UPL":1300,"VEDL":2750,"VOLTAS":500,
+  "WIPRO":1500,"ZOMATO":2800,"ZYDUSLIFE":500,
+}
+
 function loadPositions() {
   if (typeof window === "undefined") return []
   try {
@@ -61,8 +135,9 @@ export default function PositionsPage() {
   const [totalPnL,    setTotalPnL]    = useState(0)
   const [loading,     setLoading]     = useState(false)
   const [lastFetch,   setLastFetch]   = useState(null)
-  const [showForm,    setShowForm]    = useState(false)
-  const [upstoxError, setUpstoxError] = useState(null)
+  const [showForm,       setShowForm]       = useState(false)
+  const [upstoxError,    setUpstoxError]    = useState(null)
+  const [symbolDropdown, setSymbolDropdown] = useState([])
 
   const [form, setForm] = useState({
     symbol:      "",
@@ -109,32 +184,59 @@ export default function PositionsPage() {
     }
   }, [positions, fetchLiveData])
 
+  const handleSymbolChange = (val) => {
+    const upper = val.toUpperCase()
+    setForm(f => ({
+      ...f,
+      symbol:  upper,
+      lotSize: LOT_SIZES[upper] ? String(LOT_SIZES[upper]) : f.lotSize,
+    }))
+    setSymbolDropdown(
+      val.length >= 1
+        ? FO_SYMBOLS.filter(s => s.startsWith(upper)).slice(0, 8)
+        : []
+    )
+  }
+
+  const selectSymbol = (sym) => {
+    setForm(f => ({
+      ...f,
+      symbol:  sym,
+      lotSize: LOT_SIZES[sym] ? String(LOT_SIZES[sym]) : f.lotSize,
+    }))
+    setSymbolDropdown([])
+  }
+
   const addPosition = async () => {
-    if (!form.symbol || !form.entryPrice || !form.lotSize) return
+    const sym = form.symbol.toUpperCase()
+    if (!sym || !form.entryPrice) return
+
+    const resolvedLotSize = parseInt(form.lotSize) || LOT_SIZES[sym] || 1
+    if (!resolvedLotSize) return
 
     let medianReturn = parseFloat(form.medianReturn) || 0
     let avgReturn    = parseFloat(form.avgReturn)    || 0
 
-    if (!medianReturn || !avgReturn) {
-      try {
-        const res  = await fetch(`/api/stock/${form.symbol.toUpperCase()}`)
+    try {
+      const res = await fetch(`/api/stock/${sym}`)
+      if (res.ok) {
         const data = await res.json()
         const monthData = data?.seasonality?.[form.targetMonth - 1]
         if (monthData) {
-          medianReturn = monthData.median_return || 0
-          avgReturn    = monthData.avg_return    || 0
+          medianReturn = monthData.median_return || medianReturn
+          avgReturn    = monthData.avg_return    || avgReturn
         }
-      } catch (e) {
-        console.error("Could not fetch stock data", e)
       }
+    } catch (e) {
+      console.error("Could not fetch stock data", e)
     }
 
     const newPos = {
       id:          Date.now().toString(),
-      symbol:      form.symbol.toUpperCase(),
+      symbol:      sym,
       direction:   form.direction,
       entryPrice:  parseFloat(form.entryPrice),
-      lotSize:     parseInt(form.lotSize),
+      lotSize:     resolvedLotSize,
       entryDate:   form.entryDate,
       targetMonth: parseInt(form.targetMonth),
       medianReturn,
@@ -145,6 +247,7 @@ export default function PositionsPage() {
     setPositions(updated)
     savePositions(updated)
     setShowForm(false)
+    setSymbolDropdown([])
     setForm({
       symbol: "", direction: "LONG", entryPrice: "",
       lotSize: "", entryDate: new Date().toISOString().slice(0, 10),
@@ -362,7 +465,7 @@ export default function PositionsPage() {
                 </div>
 
                 {/* Capture bar + recommendation detail */}
-                {pnl && (
+                {pnl ? (
                   <div className="px-5 pb-4 grid grid-cols-1 lg:grid-cols-2 gap-4">
 
                     {/* Left: capture bar + stats */}
@@ -399,6 +502,25 @@ export default function PositionsPage() {
                       </div>
                     )}
                   </div>
+                ) : (
+                  <div className="px-5 pb-4">
+                    <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-3">
+                      {[
+                        { label: "Entry Price",    value: `₹${p.entryPrice.toLocaleString("en-IN")}`,      color: "text-soft"   },
+                        { label: "Lot Size",       value: `${p.lotSize} shares`,                            color: "text-dim"    },
+                        { label: "Median Target",  value: p.medianReturn ? `+${p.medianReturn}%` : "—",     color: "text-accent" },
+                        { label: "Avg Target",     value: p.avgReturn    ? `+${p.avgReturn}%`    : "—",     color: "text-accent" },
+                      ].map(item => (
+                        <div key={item.label} className="bg-bg rounded-lg p-3">
+                          <div className="font-mono text-[9px] text-dim uppercase tracking-widest mb-1">{item.label}</div>
+                          <div className={`font-mono text-sm font-bold ${item.color}`}>{item.value}</div>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="font-mono text-[10px] text-dim">
+                      {upstoxError ? "Upstox unavailable — connect to see live P&L" : "Fetching live prices..."}
+                    </div>
+                  </div>
                 )}
               </div>
             )
@@ -430,12 +552,49 @@ export default function PositionsPage() {
                   ))}
                 </div>
 
-                {/* Input fields */}
+                {/* Symbol with autocomplete */}
+                <div>
+                  <label className="font-mono text-[10px] text-dim uppercase tracking-wider block mb-1.5">
+                    Symbol
+                  </label>
+                  <div className="relative">
+                    <input
+                      type="text"
+                      value={form.symbol}
+                      onChange={e => handleSymbolChange(e.target.value)}
+                      placeholder="HEROMOTOCO"
+                      autoComplete="off"
+                      className="w-full bg-bg border border-border rounded-lg px-4 py-2.5
+                        font-mono text-sm text-text placeholder-muted focus:border-accent
+                        focus:outline-none transition-colors"
+                    />
+                    {symbolDropdown.length > 0 && (
+                      <div className="absolute z-10 left-0 right-0 mt-1 bg-card border border-border
+                        rounded-lg overflow-hidden shadow-lg">
+                        {symbolDropdown.map(sym => (
+                          <button
+                            key={sym}
+                            type="button"
+                            onMouseDown={() => selectSymbol(sym)}
+                            className="w-full text-left px-4 py-2 font-mono text-sm text-text
+                              hover:bg-accent/10 hover:text-accent transition-colors"
+                          >
+                            {sym}
+                            {LOT_SIZES[sym] && (
+                              <span className="ml-2 text-[10px] text-dim">lot {LOT_SIZES[sym]}</span>
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Other input fields */}
                 {[
-                  { key: "symbol",     label: "Symbol",        placeholder: "HEROMOTOCO", type: "text"   },
-                  { key: "entryPrice", label: "Entry Price ₹", placeholder: "5075",       type: "number" },
-                  { key: "lotSize",    label: "Lot Size",      placeholder: "150",        type: "number" },
-                  { key: "entryDate",  label: "Entry Date",    placeholder: "",           type: "date"   },
+                  { key: "entryPrice", label: "Entry Price ₹", placeholder: "5075", type: "number" },
+                  { key: "lotSize",    label: "Lot Size",      placeholder: "150",  type: "number" },
+                  { key: "entryDate",  label: "Entry Date",    placeholder: "",     type: "date"   },
                 ].map(f => (
                   <div key={f.key}>
                     <label className="font-mono text-[10px] text-dim uppercase tracking-wider block mb-1.5">
@@ -444,15 +603,15 @@ export default function PositionsPage() {
                     <input
                       type={f.type}
                       value={form[f.key]}
-                      onChange={e => setForm(prev => ({
-                        ...prev,
-                        [f.key]: f.key === "symbol" ? e.target.value.toUpperCase() : e.target.value,
-                      }))}
+                      onChange={e => setForm(prev => ({ ...prev, [f.key]: e.target.value }))}
                       placeholder={f.placeholder}
                       className="w-full bg-bg border border-border rounded-lg px-4 py-2.5
                         font-mono text-sm text-text placeholder-muted focus:border-accent
                         focus:outline-none transition-colors"
                     />
+                    {f.key === "lotSize" && LOT_SIZES[form.symbol] && (
+                      <p className="font-mono text-[9px] text-dim mt-1">Auto-filled from symbol — edit if needed</p>
+                    )}
                   </div>
                 ))}
 

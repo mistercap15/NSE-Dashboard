@@ -18,7 +18,6 @@ const navItems = [
   { href: "/calendar",        label: "Calendar",       Icon: CalendarDays },
   { href: "/sector-rotation", label: "Sector Rotation", Icon: RotateCcw },
   { href: "/early-entry",     label: "Early Entry",    Icon: Zap },
-  { href: "/portfolio",       label: "Portfolio",      Icon: Wallet },
   { href: "/positions",       label: "Monitor",        Icon: Activity },
   { href: "/screener",  label: "Screener",       Icon: SlidersHorizontal },
 ];
