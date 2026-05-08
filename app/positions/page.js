@@ -90,12 +90,6 @@ function loadPositions() {
 function savePositions(positions) {
   if (typeof window === "undefined") return
   localStorage.setItem(STORAGE_KEY, JSON.stringify(positions))
-  // Sync to server so the cron/test-email endpoint can read positions
-  fetch("/api/positions", {
-    method:  "PUT",
-    headers: { "Content-Type": "application/json" },
-    body:    JSON.stringify({ positions }),
-  }).catch(() => {})
 }
 
 function getActionStyle(action) {
@@ -159,16 +153,7 @@ export default function PositionsPage() {
   })
 
   useEffect(() => {
-    const loaded = loadPositions()
-    setPositions(loaded)
-    // Sync any pre-existing localStorage positions to server on first load
-    if (loaded.length > 0) {
-      fetch("/api/positions", {
-        method:  "PUT",
-        headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify({ positions: loaded }),
-      }).catch(() => {})
-    }
+    setPositions(loadPositions())
   }, [])
 
   const fetchLiveData = useCallback(async (positionsToFetch) => {
@@ -342,18 +327,16 @@ export default function PositionsPage() {
               <button
                 onClick={async () => {
                   try {
-                    // Sync current positions to server first, then trigger email
-                    await fetch("/api/positions", {
-                      method:  "PUT",
+                    const res  = await fetch("/api/positions", {
+                      method:  "POST",
                       headers: { "Content-Type": "application/json" },
-                      body:    JSON.stringify({ positions }),
+                      body:    JSON.stringify({ positions, sendEmail: true }),
                     })
-                    const res  = await fetch("/api/positions?secret=nse-cron-2026")
                     const data = await res.json()
-                    if (data.sent) {
+                    if (data.emailSent) {
                       alert("✅ Email sent! Check your inbox.")
                     } else {
-                      alert("Email not sent: " + (data.reason || data.error || "Unknown error"))
+                      alert("Email not sent: " + (data.emailError || "Check RESEND_API_KEY in .env.local"))
                     }
                   } catch (e) {
                     alert("Error: " + e.message)
