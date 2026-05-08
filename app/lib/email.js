@@ -3,58 +3,606 @@ import { Resend } from "resend"
 const resend     = new Resend(process.env.RESEND_API_KEY)
 const FROM_EMAIL = "onboarding@resend.dev"
 const TO_EMAIL   = process.env.ALERT_EMAIL
+  ? process.env.ALERT_EMAIL.split(",").map(e => e.trim())
+  : []
 
 const MONTHS = [
   "Jan","Feb","Mar","Apr","May","Jun",
   "Jul","Aug","Sep","Oct","Nov","Dec"
 ]
 
-// ── Shared styles ─────────────────────────────────────────────────
-const S = {
-  body:   "margin:0;padding:0;background:#090E1A;font-family:-apple-system,BlinkMacSystemFont,sans-serif;",
-  wrap:   "max-width:660px;margin:0 auto;padding:24px;",
-  card:   "background:#0E1525;border:1px solid #1E2D45;border-radius:10px;padding:20px;margin-bottom:16px;",
-  label:  "font-size:10px;color:#64748B;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;",
-  mono:   "font-family:monospace;",
-  green:  "color:#22C55E;",
-  red:    "color:#EF4444;",
-  amber:  "color:#F59E0B;",
-  accent: "color:#4D9FFF;",
-  dim:    "color:#64748B;",
-  soft:   "color:#94A3B8;",
-  text:   "color:#E2E8F0;",
+// ── Shared CSS (light mode only) ─────────────────────────────────
+const css = `
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #f5f5f0;
+    font-family: -apple-system, BlinkMacSystemFont,
+      'Segoe UI', sans-serif;
+    color: #111827;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap {
+    max-width: 620px;
+    margin: 0 auto;
+    padding: 24px 16px;
+  }
+  .email-body {
+    background: #ffffff;
+    border-radius: 12px;
+    overflow: hidden;
+    border: 1px solid #e0ddd6;
+  }
+  .header {
+    background: #0f172a;
+    padding: 28px 28px 24px;
+  }
+  .header-label {
+    font-size: 10px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: #60a5fa;
+    margin-bottom: 6px;
+  }
+  .header-title {
+    font-size: 22px;
+    font-weight: 600;
+    color: #f8fafc;
+    margin-bottom: 4px;
+  }
+  .header-sub { font-size: 12px; color: #94a3b8; }
+  .header-badge {
+    display: inline-block;
+    border-radius: 6px;
+    padding: 6px 14px;
+    font-size: 12px;
+    font-weight: 600;
+    margin-top: 16px;
+  }
+  .badge-action {
+    background: #16a34a20;
+    border: 1px solid #16a34a40;
+    color: #22c55e;
+  }
+  .badge-watch {
+    background: #d9770620;
+    border: 1px solid #d9770640;
+    color: #fbbf24;
+  }
+  .badge-clear {
+    background: #1d4ed820;
+    border: 1px solid #1d4ed840;
+    color: #60a5fa;
+  }
+  .content { padding: 24px 28px; background: #ffffff; }
+  .section-label {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    margin-bottom: 12px;
+  }
+  .label-green  { color: #16a34a; }
+  .label-amber  { color: #d97706; }
+  .label-blue   { color: #1d4ed8; }
+  .label-gray   { color: #6b7280; }
+  .signal-card {
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    padding: 18px;
+    margin-bottom: 16px;
+    background: #ffffff;
+  }
+  .border-green { border-left: 3px solid #16a34a; }
+  .border-amber { border-left: 3px solid #f59e0b; }
+  .sig-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 14px;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .symbol {
+    font-family: 'Courier New', monospace;
+    font-size: 20px;
+    font-weight: 700;
+    color: #1e40af;
+  }
+  .sector-text { font-size: 11px; color: #6b7280; margin-top: 2px; }
+  .status-badge {
+    border-radius: 6px;
+    padding: 5px 12px;
+    font-size: 11px;
+    font-weight: 700;
+  }
+  .badge-enter {
+    background: #dcfce7;
+    border: 1px solid #86efac;
+    color: #15803d;
+  }
+  .badge-near {
+    background: #fef3c7;
+    border: 1px solid #fcd34d;
+    color: #92400e;
+  }
+  .stats-row {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+    margin-bottom: 14px;
+  }
+  .stat-box {
+    background: #f8fafc;
+    border: 1px solid #e5e7eb;
+    border-radius: 7px;
+    padding: 10px;
+  }
+  .stat-label {
+    font-size: 9px;
+    color: #9ca3af;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 3px;
+  }
+  .stat-val {
+    font-family: 'Courier New', monospace;
+    font-size: 15px;
+    font-weight: 600;
+    color: #111827;
+  }
+  .val-green { color: #16a34a; }
+  .val-blue  { color: #1d4ed8; }
+  .val-amber { color: #d97706; }
+  .support-box {
+    background: #fffbeb;
+    border: 1px solid #fde68a;
+    border-radius: 7px;
+    padding: 10px 12px;
+    margin-bottom: 12px;
+  }
+  .support-title {
+    font-size: 11px;
+    font-weight: 600;
+    color: #92400e;
+    margin-bottom: 3px;
+  }
+  .support-sub { font-size: 11px; color: #78716c; }
+  .action-box {
+    background: #f8fafc;
+    border: 1px solid #e5e7eb;
+    border-radius: 7px;
+    padding: 12px 14px;
+  }
+  .action-box-label {
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: #6b7280;
+    margin-bottom: 10px;
+  }
+  .action-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding: 4px 0;
+    border-bottom: 1px solid #f3f4f6;
+    font-size: 12px;
+    gap: 12px;
+  }
+  .action-row:last-child { border-bottom: none; }
+  .action-key { color: #6b7280; white-space: nowrap; }
+  .action-val { font-weight: 500; color: #111827; text-align: right; }
+  .val-r { color: #dc2626; }
+  .val-g { color: #16a34a; }
+  .val-a { color: #d97706; }
+  .caution-box {
+    margin-top: 10px;
+    background: #fffbeb;
+    border: 1px solid #fde68a;
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 11px;
+    color: #92400e;
+  }
+  .divider {
+    height: 1px;
+    background: #f3f4f6;
+    margin: 24px 0;
+  }
+  .pos-card {
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    overflow: hidden;
+    margin-bottom: 12px;
+  }
+  .pos-header {
+    background: #f8fafc;
+    padding: 12px 16px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid #e5e7eb;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .pos-symbol {
+    font-family: 'Courier New', monospace;
+    font-size: 15px;
+    font-weight: 700;
+    color: #1e40af;
+  }
+  .pos-meta { font-size: 11px; color: #6b7280; margin-top: 2px; }
+  .pos-pnl {
+    font-family: 'Courier New', monospace;
+    font-size: 16px;
+    font-weight: 700;
+    text-align: right;
+  }
+  .pos-pct { font-size: 11px; text-align: right; }
+  .pnl-profit { color: #16a34a; }
+  .pnl-loss   { color: #dc2626; }
+  .pos-body { padding: 12px 16px; }
+  .progress-label {
+    display: flex;
+    justify-content: space-between;
+    font-size: 11px;
+    color: #6b7280;
+    margin-bottom: 5px;
+  }
+  .progress-pct { font-weight: 600; color: #16a34a; }
+  .progress-bar {
+    height: 5px;
+    background: #e5e7eb;
+    border-radius: 3px;
+    overflow: hidden;
+    margin-bottom: 12px;
+  }
+  .progress-fill {
+    height: 100%;
+    border-radius: 3px;
+  }
+  .fill-green  { background: #16a34a; }
+  .fill-blue   { background: #1d4ed8; }
+  .fill-amber  { background: #f59e0b; }
+  .fill-red    { background: #dc2626; }
+  .rec-box {
+    border-radius: 7px;
+    padding: 10px 12px;
+  }
+  .rec-exit   { background:#f0fdf4; border:1px solid #bbf7d0; }
+  .rec-trail  { background:#eff6ff; border:1px solid #bfdbfe; }
+  .rec-time   { background:#fffbeb; border:1px solid #fde68a; }
+  .rec-hold   { background:#f9fafb; border:1px solid #e5e7eb; }
+  .rec-title  { font-size:12px; font-weight:600; margin-bottom:3px; }
+  .rec-reason { font-size:11px; color:#374151; line-height:1.5; }
+  .rt-exit  { color:#15803d; }
+  .rt-trail { color:#1d4ed8; }
+  .rt-time  { color:#92400e; }
+  .rt-hold  { color:#374151; }
+  .pos-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+  .pos-stat {
+    background: #f8fafc;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    padding: 8px 10px;
+  }
+  .ps-label { font-size: 9px; color: #9ca3af; text-transform: uppercase;
+    letter-spacing: 0.5px; margin-bottom: 2px; }
+  .ps-value { font-family: 'Courier New', monospace;
+    font-size: 12px; font-weight: 600; color: #111827; }
+  .footer {
+    background: #f8fafc;
+    border-top: 1px solid #e5e7eb;
+    padding: 16px 28px;
+    text-align: center;
+  }
+  .footer-text { font-size: 11px; color: #9ca3af; }
+  .footer-credit {
+    font-size: 11px; color: #1d4ed8;
+    font-weight: 600; margin-top: 3px;
+  }
+`
+
+// ── Helpers ───────────────────────────────────────────────────────
+function fmt(n) {
+  return (n || 0).toLocaleString("en-IN")
+}
+function fmtPct(n) {
+  const v = n || 0
+  return (v >= 0 ? "+" : "") + v.toFixed(2) + "%"
+}
+function now() {
+  return new Date().toLocaleString("en-IN", {
+    timeZone: "Asia/Kolkata",
+    dateStyle: "medium",
+    timeStyle: "short",
+  })
 }
 
-function footer() {
+// ── Signal card HTML ──────────────────────────────────────────────
+function signalCard(s) {
+  const isStrong    = s.status === "BUY"
+  const borderClass = isStrong ? "border-green" : "border-amber"
+  const badgeClass  = isStrong ? "badge-enter" : "badge-near"
+  const badgeLabel  = isStrong ? "ENTER NOW" : "NEAR ENTRY"
+  const targetMonth = MONTHS[(s.nextMonth?.month || 1) - 1]
+  const support     = s.support?.nearest
+  const price       = s.price?.current
+  const lotSize     = s.lot_size || 0
+  const notional    = price && lotSize
+    ? (price * lotSize / 100000).toFixed(2) + "L" : "—"
+  const targetPrice = price && s.nextMonth?.median_return
+    ? "&#8377;" + fmt(Math.round(
+        price * (1 + s.nextMonth.median_return / 100)
+      )) : "—"
+  const entryLabel  = isStrong
+    ? "&#8377;" + fmt(price) + " (now)"
+    : "&#8377;" + fmt(support?.price) + " (wait for dip)"
+  const entryClass  = isStrong ? "val-g" : "val-a"
+  const slPrice     = s.context?.ma50
+    ? "&#8377;" + fmt(Math.round(s.context.ma50 * 0.97))
+      + " (3% below 10wk avg)"
+    : price ? "&#8377;" + fmt(Math.round(price * 0.93)) + " (7% below entry)"
+    : "—"
+  const supportType =
+    support?.type === "MA20"        ? "4-week average"   :
+    support?.type === "MA50"        ? "10-week average"  :
+    support?.type === "SWING_LOW"   ? "recent price floor" :
+    support?.type === "PREV_MONTH_LOW" ? "last month low" :
+    support?.type || "support zone"
+  const supportText = isStrong
+    ? "Price is at this zone right now — good entry"
+    : "Set a price alert here — enter when price reaches it"
+
   return `
-    <div style="text-align:center;padding:20px 0 8px;">
-      <div style="font-size:11px;${S.dim}">
-        NSE F&amp;O Dashboard · Real NSE data · Not SEBI advice
+    <div class="signal-card ${borderClass}">
+      <div class="sig-header">
+        <div>
+          <div class="symbol">${s.symbol}</div>
+          <div class="sector-text">
+            ${s.sector || ""} &middot;
+            Score: ${s.signal?.score || 0}/100 &middot;
+            ${targetMonth} contract
+          </div>
+        </div>
+        <div class="status-badge ${badgeClass}">${badgeLabel}</div>
       </div>
-      <div style="font-size:11px;${S.accent}font-weight:600;margin-top:4px;">
-        Crafted by Khilan Patel
+
+      <div class="stats-row">
+        <div class="stat-box">
+          <div class="stat-label">${targetMonth} win rate</div>
+          <div class="stat-val val-green">
+            ${(s.nextMonth?.win_rate || 0).toFixed(1)}%
+          </div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-label">Median return</div>
+          <div class="stat-val val-green">
+            +${(s.nextMonth?.median_return || 0).toFixed(1)}%
+          </div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-label">Current price</div>
+          <div class="stat-val val-blue">
+            &#8377;${fmt(price)}
+          </div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-label">Notional/lot</div>
+          <div class="stat-val">${notional}</div>
+        </div>
+      </div>
+
+      ${support ? `
+        <div class="support-box">
+          <div class="support-title">
+            Support zone: &#8377;${fmt(support.price)}
+            (${supportType}) &mdash;
+            ${s.support?.distancePct}% below current
+          </div>
+          <div class="support-sub">${supportText}</div>
+        </div>
+      ` : ""}
+
+      <div class="action-box">
+        <div class="action-box-label">Your action plan</div>
+        <div class="action-row">
+          <span class="action-key">Enter at</span>
+          <span class="action-val ${entryClass}">${entryLabel}</span>
+        </div>
+        <div class="action-row">
+          <span class="action-key">Stop loss</span>
+          <span class="action-val val-r">${slPrice}</span>
+        </div>
+        <div class="action-row">
+          <span class="action-key">Target</span>
+          <span class="action-val val-g">
+            ${targetPrice}
+            (+${(s.nextMonth?.median_return || 0).toFixed(1)}% median)
+          </span>
+        </div>
+        <div class="action-row">
+          <span class="action-key">Contract</span>
+          <span class="action-val">
+            ${s.symbol} ${targetMonth} Futures &middot;
+            Lot: ${fmt(lotSize)} shares
+          </span>
+        </div>
+        <div class="action-row">
+          <span class="action-key">Fallback</span>
+          <span class="action-val val-a">
+            Enter at market on 22nd if no dip
+          </span>
+        </div>
+      </div>
+
+      ${s.checklist?.result === "CAUTION" ? `
+        <div class="caution-box">
+          &#9888; ${s.checklist.summary}
+        </div>
+      ` : ""}
+      ${s.checklist?.result === "FAIL" ? `
+        <div class="caution-box" style="background:#fef2f2;
+          border-color:#fecaca; color:#991b1b;">
+          &#10007; Checklist failed &mdash; trade with extra caution
+        </div>
+      ` : ""}
+    </div>
+  `
+}
+
+// ── Position card HTML ────────────────────────────────────────────
+function positionCard(p) {
+  const pnl       = p.pnl
+  const rec       = p.recommendation
+  const isProfit  = (pnl?.total || 0) >= 0
+  const pnlClass  = isProfit ? "pnl-profit" : "pnl-loss"
+  const capture   = pnl?.medianCapture || 0
+  const fillClass =
+    capture >= 90 ? "fill-green" :
+    capture >= 60 ? "fill-blue"  :
+    capture >= 30 ? "fill-amber" : "fill-red"
+  const recClass  =
+    rec?.action === "EXIT_NOW"   ? "rec-exit"  :
+    rec?.action === "TRAIL_STOP" ? "rec-trail" :
+    rec?.action === "TIME_STOP"  ? "rec-time"  : "rec-hold"
+  const recTClass =
+    rec?.action === "EXIT_NOW"   ? "rt-exit"  :
+    rec?.action === "TRAIL_STOP" ? "rt-trail" :
+    rec?.action === "TIME_STOP"  ? "rt-time"  : "rt-hold"
+
+  return `
+    <div class="pos-card">
+      <div class="pos-header">
+        <div>
+          <div class="pos-symbol">${p.symbol}</div>
+          <div class="pos-meta">
+            ${p.direction} &middot;
+            Entry &#8377;${fmt(p.entryPrice)} &middot;
+            ${p.timing?.daysInTrade || 0} days ago &middot;
+            ${p.timing?.daysRemaining || 0} days left
+          </div>
+        </div>
+        ${pnl ? `
+          <div>
+            <div class="pos-pnl ${pnlClass}">
+              ${isProfit ? "+" : "-"}&#8377;${fmt(Math.abs(pnl.total))}
+            </div>
+            <div class="pos-pct ${pnlClass}">
+              ${fmtPct(pnl.returnPct)}
+            </div>
+          </div>
+        ` : ""}
+      </div>
+
+      <div class="pos-body">
+        ${pnl ? `
+          <div class="pos-grid">
+            <div class="pos-stat">
+              <div class="ps-label">Live price</div>
+              <div class="ps-value">&#8377;${fmt(p.livePrice)}</div>
+            </div>
+            <div class="pos-stat">
+              <div class="ps-label">Median target</div>
+              <div class="ps-value">
+                &#8377;${fmt(Math.round(
+                  p.entryPrice * (1 + (p.medianReturn || 0) / 100)
+                ))}
+                (+${p.medianReturn || 0}%)
+              </div>
+            </div>
+          </div>
+          <div class="progress-label">
+            <span>
+              Median captured (target: ${fmtPct(p.medianReturn || 0)})
+            </span>
+            <span class="progress-pct">${capture}%</span>
+          </div>
+          <div class="progress-bar">
+            <div class="progress-fill ${fillClass}"
+              style="width:${Math.min(capture, 100)}%;">
+            </div>
+          </div>
+        ` : `
+          <div class="pos-grid">
+            <div class="pos-stat">
+              <div class="ps-label">Entry price</div>
+              <div class="ps-value">&#8377;${fmt(p.entryPrice)}</div>
+            </div>
+            <div class="pos-stat">
+              <div class="ps-label">Target (+${p.medianReturn || 0}%)</div>
+              <div class="ps-value">
+                &#8377;${fmt(Math.round(
+                  p.entryPrice * (1 + (p.medianReturn || 0) / 100)
+                ))}
+              </div>
+            </div>
+          </div>
+        `}
+        ${rec ? `
+          <div class="rec-box ${recClass}">
+            <div class="rec-title ${recTClass}">${rec.title}</div>
+            <div class="rec-reason">${rec.reason}</div>
+          </div>
+        ` : ""}
       </div>
     </div>
   `
 }
 
-function statBox(label, value, color) {
+// ── Email wrapper ─────────────────────────────────────────────────
+function wrapEmail(headerTitle, headerSub, badgeClass,
+                   badgeText, bodyContent) {
   return `
-    <div style="background:#131D30;border-radius:6px;padding:10px 14px;flex:1;">
-      <div style="${S.label}">${label}</div>
-      <div style="${S.mono}font-size:16px;font-weight:700;${color}">${value}</div>
-    </div>
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width,
+        initial-scale=1.0">
+      <meta name="color-scheme" content="light">
+      <meta name="supported-color-schemes" content="light">
+      <style>${css}</style>
+    </head>
+    <body>
+      <div class="wrap">
+        <div class="email-body">
+          <div class="header">
+            <div class="header-label">
+              NSE F&amp;O Dashboard
+            </div>
+            <div class="header-title">${headerTitle}</div>
+            <div class="header-sub">${headerSub}</div>
+            <div class="header-badge ${badgeClass}">
+              ${badgeText}
+            </div>
+          </div>
+          <div class="content">${bodyContent}</div>
+          <div class="footer">
+            <div class="footer-text">
+              NSE F&amp;O Dashboard &middot; Real NSE data &middot;
+              Not SEBI-registered advice &middot; Trade at your own risk
+            </div>
+            <div class="footer-credit">Crafted by Khilan Patel</div>
+          </div>
+        </div>
+      </div>
+    </body>
+    </html>
   `
 }
 
 // ── ALERT 1: Early Entry Signal ───────────────────────────────────
 export async function sendEarlyEntryAlert(signals) {
-  if (!TO_EMAIL) {
-    console.warn("ALERT_EMAIL not set — skipping email")
-    return { sent: false, reason: "ALERT_EMAIL not configured" }
-  }
+  if (!TO_EMAIL) return { sent: false, reason: "ALERT_EMAIL not set" }
 
-  const actionable = signals.filter(s =>
+  const actionable = (signals || []).filter(s =>
     s.status === "BUY" || s.status === "BUY_HALF"
   )
   if (actionable.length === 0) {
@@ -65,311 +613,119 @@ export async function sendEarlyEntryAlert(signals) {
   const buyHalf = actionable.filter(s => s.status === "BUY_HALF")
 
   const subject = buyNow.length > 0
-    ? `⚡ ENTER NOW — ${buyNow.map(s => s.symbol).join(", ")}`
-    : `🟡 ENTRY ZONE — ${buyHalf.map(s => s.symbol).join(", ")}`
+    ? `Entry Signal — ${buyNow.map(s => s.symbol).join(", ")}`
+    : `Entry Zone — ${buyHalf.map(s => s.symbol).join(", ")}`
 
-  const now = new Date().toLocaleString("en-IN", {
-    timeZone:  "Asia/Kolkata",
-    dateStyle: "medium",
-    timeStyle: "short",
-  })
+  const badgeClass = buyNow.length > 0 ? "badge-action" : "badge-watch"
+  const badgeText  = buyNow.length > 0 ? "ACTION NEEDED" : "SET PRICE ALERT"
+  const title      = buyNow.length > 0
+    ? "Entry Signal Detected"
+    : "Entry Zone Approaching"
+  const sub = `${now()} IST &middot; ${actionable.length} signal${
+    actionable.length !== 1 ? "s" : ""} found`
 
-  const signalBlock = (s) => {
-    const isStrong     = s.status === "BUY"
-    const borderColor  = isStrong ? "#22C55E" : "#F59E0B"
-    const statusLabel  = isStrong ? "⚡ ENTER NOW" : "🟡 NEAR ENTRY"
-    const statusBg     = isStrong ? "#22C55E" : "#F59E0B"
-    const targetMonth  = MONTHS[(s.nextMonth?.month || 1) - 1]
-    const support      = s.support?.nearest
-    const currentPrice = s.price?.current
-    const lotSize      = s.lot_size || 0
-    const notional     = currentPrice && lotSize
-      ? ((currentPrice * lotSize) / 100000).toFixed(2) + "L"
-      : "—"
-    const targetPrice  = currentPrice && s.nextMonth?.median_return
-      ? "₹" + Math.round(
-          currentPrice * (1 + s.nextMonth.median_return / 100)
-        ).toLocaleString("en-IN")
-      : "—"
-    const slPrice = s.context?.ma50
-      ? "₹" + Math.round(s.context.ma50 * 0.97).toLocaleString("en-IN") + " (3% below 10wk avg)"
-      : currentPrice
-      ? "₹" + Math.round(currentPrice * 0.93).toLocaleString("en-IN") + " (7% below entry)"
-      : "—"
+  let body = ""
 
-    return `
-      <div style="${S.card}border-left:3px solid ${borderColor};">
-        <!-- Symbol row -->
-        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:14px;">
-          <div>
-            <div style="${S.mono}font-size:22px;font-weight:800;${S.accent}">${s.symbol}</div>
-            <div style="font-size:11px;${S.dim}margin-top:2px;">
-              ${s.sector || ""} · Score: ${s.signal?.score || 0}/100 · ${targetMonth} contract
-            </div>
-          </div>
-          <div style="background:${statusBg}20;border:1px solid ${statusBg}50;border-radius:6px;padding:6px 12px;text-align:center;">
-            <div style="color:${statusBg};font-weight:700;font-size:12px;${S.mono}">${statusLabel}</div>
-          </div>
-        </div>
-        <!-- Stats row -->
-        <div style="display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap;">
-          ${statBox(targetMonth + " Win Rate", (s.nextMonth?.win_rate || 0).toFixed(1) + "%", S.green)}
-          ${statBox("Median Return", "+" + (s.nextMonth?.median_return || 0).toFixed(1) + "%", S.green)}
-          ${statBox("Current Price", currentPrice ? "₹" + currentPrice.toLocaleString("en-IN") : "—", S.text)}
-          ${statBox("Notional/lot", notional, S.soft)}
-        </div>
-        <!-- Support zone -->
-        ${support ? `
-          <div style="background:#F59E0B10;border:1px solid #F59E0B30;border-radius:6px;padding:10px;margin-bottom:12px;">
-            <div style="font-size:12px;${S.amber}font-weight:600;">
-              📍 Support Zone: ₹${support.price?.toLocaleString("en-IN")}
-              (${support.type === "MA20"       ? "4-week average"    :
-                 support.type === "MA50"       ? "10-week average"   :
-                 support.type === "SWING_LOW"  ? "recent price floor" :
-                 support.type})
-              — ${s.support?.distancePct}% below current
-            </div>
-            <div style="font-size:11px;${S.soft}margin-top:4px;">
-              ${isStrong ? "Price is AT this zone right now — good entry" : "Set a price alert here — enter when reached"}
-            </div>
-          </div>
-        ` : ""}
-        <!-- Action plan -->
-        <div style="background:#131D30;border-radius:6px;padding:12px;">
-          <div style="${S.label}margin-bottom:8px;">Your Action Plan</div>
-          <table style="width:100%;border-collapse:collapse;">
-            ${[
-              ["Enter at",  isStrong
-                ? "₹" + (currentPrice || 0).toLocaleString("en-IN") + " (now)"
-                : "₹" + (support?.price || 0).toLocaleString("en-IN") + " (wait for dip)",
-                isStrong ? S.green : S.amber],
-              ["Stop Loss", slPrice, S.red],
-              ["Target",    targetPrice + " (+" + (s.nextMonth?.median_return || 0).toFixed(1) + "%)", S.green],
-              ["Contract",  s.symbol + " " + targetMonth + " Futures · Lot: " + (lotSize || 0).toLocaleString("en-IN") + " shares", S.soft],
-              ["Fallback",  "Enter at market on 22nd if no dip", S.dim],
-            ].map(([label, value, color]) => `
-              <tr>
-                <td style="padding:4px 8px 4px 0;font-size:11px;${S.dim}white-space:nowrap;width:80px;">${label}</td>
-                <td style="padding:4px 0;font-size:12px;${color}font-weight:500;">${value}</td>
-              </tr>
-            `).join("")}
-          </table>
-        </div>
-        <!-- Checklist warning -->
-        ${s.checklist?.result === "CAUTION" ? `
-          <div style="margin-top:10px;background:#F59E0B08;border:1px solid #F59E0B25;border-radius:6px;padding:8px 10px;font-size:11px;${S.amber}">
-            ⚠ ${s.checklist.summary}
-          </div>
-        ` : ""}
-        ${s.checklist?.result === "FAIL" ? `
-          <div style="margin-top:10px;background:#EF444408;border:1px solid #EF444425;border-radius:6px;padding:8px 10px;font-size:11px;${S.red}">
-            ✗ Checklist failed — trade with extra caution
-          </div>
-        ` : ""}
+  if (buyNow.length > 0) {
+    body += `
+      <div class="section-label label-green">
+        Enter now &mdash; price at support
       </div>
+      ${buyNow.map(signalCard).join("")}
     `
   }
 
-  const html = `
-    <!DOCTYPE html><html>
-    <body style="${S.body}">
-    <div style="${S.wrap}">
-      <!-- Header -->
-      <div style="${S.card}">
-        <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px;">
-          <div>
-            <div style="font-size:10px;${S.accent}letter-spacing:2px;text-transform:uppercase;margin-bottom:6px;">
-              NSE F&amp;O · Early Entry Scanner
-            </div>
-            <div style="font-size:22px;font-weight:800;${S.text}">
-              ${buyNow.length > 0 ? "Entry Signal Detected" : "Entry Zone Approaching"}
-            </div>
-            <div style="font-size:12px;${S.dim}margin-top:4px;">
-              ${now} IST · ${actionable.length} signal${actionable.length !== 1 ? "s" : ""} found
-            </div>
-          </div>
-          <div style="background:${buyNow.length > 0 ? "#22C55E" : "#F59E0B"}20;border:1px solid ${buyNow.length > 0 ? "#22C55E" : "#F59E0B"}40;border-radius:8px;padding:10px 16px;text-align:center;">
-            <div style="color:${buyNow.length > 0 ? "#22C55E" : "#F59E0B"};font-weight:700;font-size:13px;">
-              ${buyNow.length > 0 ? "ACTION NEEDED" : "SET PRICE ALERT"}
-            </div>
-            <div style="font-size:10px;${S.dim}margin-top:2px;">${actionable.length} stock${actionable.length !== 1 ? "s" : ""}</div>
-          </div>
-        </div>
+  if (buyHalf.length > 0) {
+    body += `
+      <div class="section-label label-amber"
+        style="margin-top:${buyNow.length > 0 ? "8px" : "0"}">
+        Approaching entry zone &mdash; set price alert
       </div>
-      <!-- BUY NOW section -->
-      ${buyNow.length > 0 ? `
-        <div style="font-size:11px;${S.green}font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-bottom:10px;">
-          ⚡ Enter Now — Price At Support
-        </div>
-        ${buyNow.map(signalBlock).join("")}
-      ` : ""}
-      <!-- BUY HALF section -->
-      ${buyHalf.length > 0 ? `
-        <div style="font-size:11px;${S.amber}font-weight:700;text-transform:uppercase;letter-spacing:1px;margin:${buyNow.length > 0 ? "20px" : "0"} 0 10px;">
-          🟡 Approaching Entry Zone — Set Price Alert
-        </div>
-        ${buyHalf.map(signalBlock).join("")}
-      ` : ""}
-      ${footer()}
-    </div>
-    </body></html>
-  `
-
-  const { data, error } = await resend.emails.send({
-    from:    FROM_EMAIL,
-    to:      TO_EMAIL,
-    subject,
-    html,
-  })
-  if (error) {
-    console.error("Early entry email failed:", JSON.stringify(error))
-    return { sent: false, error: error.message || JSON.stringify(error) }
+      ${buyHalf.map(signalCard).join("")}
+    `
   }
-  console.log("Early entry alert sent:", data?.id)
-  return { sent: true, id: data?.id, count: actionable.length }
+
+  const html = wrapEmail(title, sub, badgeClass, badgeText, body)
+
+  try {
+    const result = await resend.emails.send({
+      from: FROM_EMAIL, to: TO_EMAIL, subject, html,
+    })
+    return { sent: true, id: result.id, count: actionable.length }
+  } catch (e) {
+    console.error("Early entry email failed:", e.message)
+    return { sent: false, error: e.message }
+  }
 }
 
 // ── ALERT 2: Daily Position Update ───────────────────────────────
 export async function sendPositionAlert(positions) {
-  if (!TO_EMAIL) {
-    return { sent: false, reason: "ALERT_EMAIL not configured" }
-  }
-  if (positions.length === 0) {
+  if (!TO_EMAIL) return { sent: false, reason: "ALERT_EMAIL not set" }
+  if (!positions || positions.length === 0) {
     return { sent: false, reason: "No positions" }
   }
 
-  const exitNow   = positions.filter(p => p.recommendation?.action === "EXIT_NOW")
-  const trailStop = positions.filter(p => p.recommendation?.action === "TRAIL_STOP")
-  const timeStop  = positions.filter(p => p.recommendation?.action === "TIME_STOP")
+  const exitNow   = positions.filter(p =>
+    p.recommendation?.action === "EXIT_NOW")
+  const trailStop = positions.filter(p =>
+    p.recommendation?.action === "TRAIL_STOP")
+  const timeStop  = positions.filter(p =>
+    p.recommendation?.action === "TIME_STOP")
   const holding   = positions.filter(p =>
-    p.recommendation?.action === "HOLD" || p.recommendation?.action === "WATCH"
-  )
+    p.recommendation?.action === "HOLD" ||
+    p.recommendation?.action === "WATCH")
 
-  const hasAction = exitNow.length > 0 || trailStop.length > 0 || timeStop.length > 0
+  const hasAction = exitNow.length > 0 ||
+                    trailStop.length > 0 ||
+                    timeStop.length > 0
 
   const subject = exitNow.length > 0
-    ? `🟢 EXIT NOW — ${exitNow.map(p => p.symbol).join(", ")}`
+    ? `Exit Now — ${exitNow.map(p => p.symbol).join(", ")}`
     : trailStop.length > 0
-    ? `📊 MOVE STOP LOSS — ${trailStop.map(p => p.symbol).join(", ")}`
+    ? `Move Stop Loss — ${trailStop.map(p => p.symbol).join(", ")}`
     : timeStop.length > 0
-    ? `⏱ TIME STOP — ${timeStop.map(p => p.symbol).join(", ")}`
-    : `📋 All Clear — ${positions.length} position${positions.length !== 1 ? "s" : ""} on track`
+    ? `Time Stop — ${timeStop.map(p => p.symbol).join(", ")}`
+    : `All Clear — ${positions.length} position${
+        positions.length !== 1 ? "s" : ""} on track`
 
-  const now = new Date().toLocaleString("en-IN", {
-    timeZone:  "Asia/Kolkata",
-    dateStyle: "medium",
-    timeStyle: "short",
-  })
+  const badgeClass = hasAction ? "badge-action" : "badge-clear"
+  const badgeText  = hasAction ? "ACTION NEEDED" : "ALL CLEAR"
+  const title      = "Market Close Report"
+  const sub        = `${now()} IST &middot; ${positions.length} open position${
+    positions.length !== 1 ? "s" : ""}`
 
-  const posRow = (p) => {
-    const pnl      = p.pnl
-    const isProfit = (pnl?.total || 0) >= 0
-    const rec      = p.recommendation
-    const recColor =
-      rec?.action === "EXIT_NOW"   ? S.green  :
-      rec?.action === "TRAIL_STOP" ? S.accent :
-      rec?.action === "TIME_STOP"  ? S.amber  : S.dim
-
-    return `
-      <tr style="border-bottom:1px solid #1E2D45;">
-        <td style="padding:12px 10px;">
-          <div style="${S.mono}font-size:14px;font-weight:700;${S.accent}">${p.symbol}</div>
-          <div style="font-size:10px;${S.dim}margin-top:2px;">
-            ${p.direction} · Entry ₹${(p.entryPrice || 0).toLocaleString("en-IN")} ·
-            ${p.timing?.daysInTrade || 0}d ago · ${p.timing?.daysRemaining || 0}d left
-          </div>
-        </td>
-        <td style="padding:12px 10px;text-align:right;">
-          ${pnl ? `
-            <div style="${S.mono}font-size:14px;font-weight:700;${isProfit ? S.green : S.red}">
-              ${isProfit ? "+" : "-"}₹${Math.abs(pnl.total).toLocaleString("en-IN")}
-            </div>
-            <div style="font-size:11px;${isProfit ? S.green : S.red}margin-top:2px;">
-              ${isProfit ? "+" : ""}${pnl.returnPct}%
-            </div>
-          ` : `<div style="font-size:11px;${S.dim}">No live data</div>`}
-        </td>
-        <td style="padding:12px 10px;text-align:right;">
-          ${pnl ? `
-            <div style="font-size:11px;${S.soft}">${pnl.medianCapture}% of median</div>
-            <div style="font-size:10px;${S.dim}margin-top:2px;">₹${(p.livePrice || 0).toLocaleString("en-IN")} live</div>
-          ` : "—"}
-        </td>
-        <td style="padding:12px 10px;text-align:right;min-width:140px;">
-          ${rec ? `
-            <div style="font-size:11px;font-weight:600;${recColor}">${rec.title}</div>
-            <div style="font-size:10px;${S.dim}margin-top:3px;max-width:160px;text-align:right;">${rec.reason}</div>
-          ` : "—"}
-        </td>
-      </tr>
-    `
-  }
-
-  const section = (title, color, icon, items) => {
+  const posSection = (labelClass, labelText, items) => {
     if (items.length === 0) return ""
     return `
-      <div style="margin-bottom:20px;">
-        <div style="background:${color}12;border-left:3px solid ${color};border-radius:0 6px 6px 0;padding:8px 14px;margin-bottom:10px;">
-          <span style="color:${color};font-weight:700;font-size:12px;">${icon} ${title}</span>
-        </div>
-        <div style="${S.card}padding:0;overflow:hidden;">
-          <table style="width:100%;border-collapse:collapse;">
-            <thead>
-              <tr style="background:#131D30;">
-                ${["Symbol", "P&amp;L", "Progress", "Action"].map(h => `
-                  <th style="padding:8px 10px;text-align:${h === "Symbol" ? "left" : "right"};font-size:10px;${S.dim}text-transform:uppercase;letter-spacing:0.5px;font-weight:600;">${h}</th>
-                `).join("")}
-              </tr>
-            </thead>
-            <tbody>${items.map(posRow).join("")}</tbody>
-          </table>
-        </div>
+      <div class="section-label ${labelClass}">
+        ${labelText}
       </div>
+      ${items.map(positionCard).join("")}
     `
   }
 
-  const html = `
-    <!DOCTYPE html><html>
-    <body style="${S.body}">
-    <div style="${S.wrap}">
-      <!-- Header -->
-      <div style="${S.card}">
-        <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px;">
-          <div>
-            <div style="font-size:10px;${S.accent}letter-spacing:2px;text-transform:uppercase;margin-bottom:6px;">
-              NSE F&amp;O · Daily Position Monitor
-            </div>
-            <div style="font-size:22px;font-weight:800;${S.text}">Market Close Report</div>
-            <div style="font-size:12px;${S.dim}margin-top:4px;">
-              ${now} IST · ${positions.length} open position${positions.length !== 1 ? "s" : ""}
-            </div>
-          </div>
-          <div style="background:${hasAction ? "#22C55E" : "#4D9FFF"}20;border:1px solid ${hasAction ? "#22C55E" : "#4D9FFF"}40;border-radius:8px;padding:10px 16px;text-align:center;">
-            <div style="color:${hasAction ? "#22C55E" : "#4D9FFF"};font-weight:700;font-size:13px;">
-              ${hasAction ? "ACTION NEEDED" : "ALL CLEAR"}
-            </div>
-          </div>
-        </div>
-      </div>
-      ${section("Exit Now",            "#22C55E", "🟢", exitNow)}
-      ${section("Move Stop Loss",      "#4D9FFF", "📊", trailStop)}
-      ${section("Time Stop Warning",   "#F59E0B", "⏱",  timeStop)}
-      ${section("Holding — On Track",  "#64748B", "📋", holding)}
-      ${footer()}
-    </div>
-    </body></html>
-  `
+  const body = [
+    posSection("label-green", "Exit now &mdash; target reached",    exitNow),
+    exitNow.length && (trailStop.length || timeStop.length || holding.length)
+      ? '<div class="divider"></div>' : "",
+    posSection("label-blue",  "Move stop loss",               trailStop),
+    trailStop.length && (timeStop.length || holding.length)
+      ? '<div class="divider"></div>' : "",
+    posSection("label-amber", "Time stop warning",            timeStop),
+    timeStop.length && holding.length
+      ? '<div class="divider"></div>' : "",
+    posSection("label-gray",  "Holding &mdash; on track",    holding),
+  ].join("")
 
-  const { data, error } = await resend.emails.send({
-    from:    FROM_EMAIL,
-    to:      TO_EMAIL,
-    subject,
-    html,
-  })
-  if (error) {
-    console.error("Position email failed:", JSON.stringify(error))
-    return { sent: false, error: error.message || JSON.stringify(error) }
+  const html = wrapEmail(title, sub, badgeClass, badgeText, body)
+
+  try {
+    const result = await resend.emails.send({
+      from: FROM_EMAIL, to: TO_EMAIL, subject, html,
+    })
+    return { sent: true, id: result.id }
+  } catch (e) {
+    console.error("Position email failed:", e.message)
+    return { sent: false, error: e.message }
   }
-  console.log("Position alert sent:", data?.id)
-  return { sent: true, id: data?.id }
 }

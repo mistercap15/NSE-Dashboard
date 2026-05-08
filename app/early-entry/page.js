@@ -267,20 +267,42 @@ export default function EarlyEntryPage() {
               ))}
             </div>
           </div>
-          <button onClick={runScan} disabled={loading}
-            className="font-mono text-sm px-6 py-2.5 rounded border border-accent/30
-              bg-accent/15 text-accent hover:bg-accent/25 transition-all
-              disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2 mt-6">
-            {loading ? (
-              <>
-                <div className="w-3.5 h-3.5 border border-accent border-t-transparent
-                  rounded-full animate-spin" />
-                Scanning...
-              </>
-            ) : (
-              `⚡ Scan ${MONTHS[selectedMonth - 1]} Entries`
-            )}
-          </button>
+          <div className="flex items-center gap-3 mt-6">
+            <button onClick={runScan} disabled={loading}
+              className="font-mono text-sm px-6 py-2.5 rounded border border-accent/30
+                bg-accent/15 text-accent hover:bg-accent/25 transition-all
+                disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2">
+              {loading ? (
+                <>
+                  <div className="w-3.5 h-3.5 border border-accent border-t-transparent
+                    rounded-full animate-spin" />
+                  Scanning...
+                </>
+              ) : (
+                `⚡ Scan ${MONTHS[selectedMonth - 1]} Entries`
+              )}
+            </button>
+            <button
+              onClick={async () => {
+                const res  = await fetch(
+                  `/api/cron/early-entry`,
+                  { headers: { Authorization: `Bearer nse-cron-2026` } }
+                )
+                const data = await res.json()
+                if (data.email?.sent) {
+                  alert(`Cron ran — email sent for ${data.buySignals} signal(s)`)
+                } else {
+                  alert(`Cron ran — no signals found (${
+                    data.email?.reason || "no buy signals this scan"
+                  })`)
+                }
+              }}
+              className="font-mono text-[10px] text-dim hover:text-text
+                transition-colors underline"
+            >
+              Test daily cron
+            </button>
+          </div>
         </div>
 
         {/* How it works (pre-scan) */}
@@ -947,17 +969,6 @@ export default function EarlyEntryPage() {
           </>
         )}
 
-        {/* Footer */}
-        <div className="border-t border-border pt-4 flex items-center justify-between mt-8">
-          <div className="font-mono text-[10px] text-muted">
-            Support zones from Upstox daily OHLC ·
-            Seasonality from NSE master sheet ·
-            Not SEBI advice
-          </div>
-          <div className="font-mono text-[10px] text-muted">
-            Crafted by <span className="text-accent">Khilan Patel</span>
-          </div>
-        </div>
       </main>
     </div>
   )

@@ -723,16 +723,6 @@ export default function PositionsPage() {
             </button>
           </div>
         )}
-
-        {/* Footer */}
-        <div className="border-t border-border pt-4 mt-8 flex items-center justify-between">
-          <div className="font-mono text-[10px] text-muted">
-            Live prices via Upstox · Recommendations based on seasonal median targets · Not SEBI advice
-          </div>
-          <div className="font-mono text-[10px] text-muted">
-            Crafted by <span className="text-accent">Khilan Patel</span>
-          </div>
-        </div>
       </main>
     </div>
   )
