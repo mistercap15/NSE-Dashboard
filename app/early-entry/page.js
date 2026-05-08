@@ -338,6 +338,17 @@ export default function EarlyEntryPage() {
                 <div className="font-mono text-[10px] text-dim">Watching</div>
                 <div className="font-mono text-sm text-amber font-bold">{data.watchlist}</div>
               </div>
+              {data?.emailSent && (
+                <div className="flex items-center gap-1.5 font-mono text-[11px] text-green">
+                  <span>📧</span>
+                  <span>Alert sent for {data.emailSignals} signal{data.emailSignals !== 1 ? "s" : ""}</span>
+                </div>
+              )}
+              {data && !data.emailSent && data.buySignals > 0 && (
+                <div className="font-mono text-[11px] text-amber">
+                  ⚠ Email not sent — check RESEND_API_KEY in .env.local
+                </div>
+              )}
               <div className="ml-auto font-mono text-[10px] text-muted">
                 Scanned {new Date(data.scannedAt).toLocaleString("en-IN")}
               </div>

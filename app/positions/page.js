@@ -90,6 +90,12 @@ function loadPositions() {
 function savePositions(positions) {
   if (typeof window === "undefined") return
   localStorage.setItem(STORAGE_KEY, JSON.stringify(positions))
+  // Sync to server so the cron/test-email endpoint can read positions
+  fetch("/api/positions", {
+    method:  "PUT",
+    headers: { "Content-Type": "application/json" },
+    body:    JSON.stringify({ positions }),
+  }).catch(() => {})
 }
 
 function getActionStyle(action) {
@@ -323,6 +329,26 @@ export default function PositionsPage() {
                   text-dim hover:text-text transition-colors disabled:opacity-40"
               >
                 {loading ? "Refreshing..." : "↻ Refresh"}
+              </button>
+              <button
+                onClick={async () => {
+                  try {
+                    const res  = await fetch("/api/positions?secret=nse-cron-2026")
+                    const data = await res.json()
+                    if (data.sent) {
+                      alert("✅ Email sent! Check your inbox.")
+                    } else {
+                      alert("Email not sent: " + (data.reason || data.error || "Unknown error"))
+                    }
+                  } catch (e) {
+                    alert("Error: " + e.message)
+                  }
+                }}
+                disabled={positions.length === 0}
+                className="font-mono text-[11px] px-3 py-1.5 rounded border border-border
+                  text-dim hover:text-text transition-colors disabled:opacity-40"
+              >
+                📧 Test Email
               </button>
               <button
                 onClick={() => setShowForm(true)}

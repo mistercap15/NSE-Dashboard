@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server"
 import { getQuote, setAccessToken } from "@/app/lib/upstox"
 import { toInstrumentKey } from "@/app/lib/instruments"
+import { sendPositionAlert } from "@/app/lib/email"
+import { readFile, writeFile, mkdir } from "fs/promises"
+import { join } from "path"
+
+const POSITIONS_FILE = join(process.cwd(), "data", "positions.json")
 
 export async function POST(request) {
   const cookie = request.cookies.get("upstox_token")?.value
@@ -228,5 +233,60 @@ function computeRecommendation({
     title:    "Hold",
     reason:   `Seasonal setup intact. ${daysRemaining} days remaining in window.`,
     detail:   `Target: +${medianReturn.toFixed(1)}% | Current: ${returnPct.toFixed(1)}%`,
+  }
+}
+
+// ── GET — daily cron: enrich saved positions and send email ───────
+export async function GET(request) {
+  const { searchParams } = new URL(request.url)
+  const secret = searchParams.get("secret")
+
+  if (secret !== (process.env.CRON_SECRET || "nse-cron-2026")) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+  }
+
+  try {
+    let positions = []
+    try {
+      const content = await readFile(POSITIONS_FILE, "utf-8")
+      positions     = JSON.parse(content)
+    } catch {
+      return NextResponse.json({ sent: false, reason: "No positions saved yet" })
+    }
+
+    if (positions.length === 0) {
+      return NextResponse.json({ sent: false, reason: "No open positions" })
+    }
+
+    // Enrich via internal POST
+    const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000"
+    const enrichRes = await fetch(new URL("/api/positions", baseUrl).toString(), {
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body:    JSON.stringify({ positions }),
+    })
+    const enriched = await enrichRes.json()
+
+    const emailResult = await sendPositionAlert(enriched.positions || [])
+
+    return NextResponse.json({
+      success:   true,
+      positions: positions.length,
+      ...emailResult,
+    })
+  } catch (e) {
+    return NextResponse.json({ error: e.message }, { status: 500 })
+  }
+}
+
+// ── PUT — persist positions to file (called from client on save) ──
+export async function PUT(request) {
+  try {
+    const { positions } = await request.json()
+    await mkdir(join(process.cwd(), "data"), { recursive: true })
+    await writeFile(POSITIONS_FILE, JSON.stringify(positions ?? []), "utf-8")
+    return NextResponse.json({ ok: true })
+  } catch (e) {
+    return NextResponse.json({ error: e.message }, { status: 500 })
   }
 }
