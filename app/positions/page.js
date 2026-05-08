@@ -159,7 +159,16 @@ export default function PositionsPage() {
   })
 
   useEffect(() => {
-    setPositions(loadPositions())
+    const loaded = loadPositions()
+    setPositions(loaded)
+    // Sync any pre-existing localStorage positions to server on first load
+    if (loaded.length > 0) {
+      fetch("/api/positions", {
+        method:  "PUT",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify({ positions: loaded }),
+      }).catch(() => {})
+    }
   }, [])
 
   const fetchLiveData = useCallback(async (positionsToFetch) => {
@@ -333,6 +342,12 @@ export default function PositionsPage() {
               <button
                 onClick={async () => {
                   try {
+                    // Sync current positions to server first, then trigger email
+                    await fetch("/api/positions", {
+                      method:  "PUT",
+                      headers: { "Content-Type": "application/json" },
+                      body:    JSON.stringify({ positions }),
+                    })
                     const res  = await fetch("/api/positions?secret=nse-cron-2026")
                     const data = await res.json()
                     if (data.sent) {
