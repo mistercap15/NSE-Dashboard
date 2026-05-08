@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { getBatchQuotes, setAccessToken } from "@/app/lib/upstox"
+import { getQuote, setAccessToken } from "@/app/lib/upstox"
 import { toInstrumentKey } from "@/app/lib/instruments"
 
 export async function POST(request) {
@@ -14,19 +14,21 @@ export async function POST(request) {
   }
 
   try {
-    const instrumentKeys = positions.map(p => toInstrumentKey(p.symbol))
-    // getBatchQuotes returns raw Upstox data keyed by instrument key
-    const rawQuotes = await getBatchQuotes(instrumentKeys)
+    // Fetch quotes in parallel using getQuote (same path as early-entry — handles key encoding)
+    const quotes = await Promise.all(
+      positions.map(p =>
+        getQuote(toInstrumentKey(p.symbol)).catch(() => null)
+      )
+    )
 
-    const enriched = positions.map(p => {
-      const key      = toInstrumentKey(p.symbol)
-      const rawQuote = rawQuotes[key] ?? null
+    const enriched = positions.map((p, i) => {
+      const quote = quotes[i]
 
-      if (!rawQuote) {
+      if (!quote) {
         return { ...p, livePrice: null, error: "No live data" }
       }
 
-      const livePrice    = rawQuote.last_price
+      const livePrice    = quote.ltp
       const entryPrice   = p.entryPrice
       const lotSize      = p.lotSize      || 1
       const direction    = p.direction    || "LONG"
@@ -63,11 +65,11 @@ export async function POST(request) {
         ...p,
         livePrice,
         quote: {
-          change:    rawQuote.net_change,
-          changePct: rawQuote.net_change_percentage,
-          high:      rawQuote.ohlc?.high,
-          low:       rawQuote.ohlc?.low,
-          open:      rawQuote.ohlc?.open,
+          change:    quote.change,
+          changePct: quote.changePct,
+          high:      quote.high,
+          low:       quote.low,
+          open:      quote.open,
         },
         pnl: {
           perShare:      Math.round(priceDiff * 100) / 100,

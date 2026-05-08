@@ -1,7 +1,7 @@
 "use client"
 import { useState, useEffect, useCallback } from "react"
 import Sidebar from "../components/Sidebar"
-import { MONTHS, MONTH_FULL } from "../lib/api"
+import { MONTHS } from "../lib/api"
 
 const currentMonth = new Date().getMonth() + 1
 const STORAGE_KEY  = "nse_positions_v1"
@@ -188,11 +188,7 @@ export default function PositionsPage() {
 
   const handleSymbolChange = (val) => {
     const upper = val.toUpperCase()
-    setForm(f => ({
-      ...f,
-      symbol:  upper,
-      lotSize: LOT_SIZES[upper] ? String(LOT_SIZES[upper]) : f.lotSize,
-    }))
+    setForm(f => ({ ...f, symbol: upper, lotSize: "" }))
     setSymbolDropdown(
       val.length >= 1
         ? FO_SYMBOLS.filter(s => s.startsWith(upper)).slice(0, 8)
@@ -219,11 +215,7 @@ export default function PositionsPage() {
   }, [])
 
   const selectSymbol = (sym) => {
-    setForm(f => ({
-      ...f,
-      symbol:  sym,
-      lotSize: LOT_SIZES[sym] ? String(LOT_SIZES[sym]) : f.lotSize,
-    }))
+    setForm(f => ({ ...f, symbol: sym, lotSize: "" }))
     setSymbolDropdown([])
     fetchLotSizeForSymbol(sym)
   }
@@ -616,9 +608,6 @@ export default function PositionsPage() {
                               hover:bg-accent/10 hover:text-accent transition-colors"
                           >
                             {sym}
-                            {LOT_SIZES[sym] && (
-                              <span className="ml-2 text-[10px] text-dim">lot {LOT_SIZES[sym]}</span>
-                            )}
                           </button>
                         ))}
                       </div>
@@ -647,7 +636,7 @@ export default function PositionsPage() {
                     />
                     {f.key === "lotSize" && (
                       <p className="font-mono text-[9px] text-dim mt-1">
-                        {lotSizeLoading ? "Fetching lot size..." : LOT_SIZES[form.symbol] ? "Auto-filled — edit if needed" : ""}
+                        {lotSizeLoading ? "Fetching lot size from MCP..." : form.lotSize ? "From MCP — edit if needed" : ""}
                       </p>
                     )}
                   </div>
