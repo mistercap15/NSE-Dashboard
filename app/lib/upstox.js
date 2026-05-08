@@ -144,7 +144,25 @@ export async function getBatchQuotes(instrumentKeys) {
   const data = await upstoxGet("/market-quote/quotes", {
     instrument_key: instrumentKeys.join(",")
   })
-  return data?.data || {}
+  const raw = data?.data || {}
+
+  // Upstox response keys may differ from requested keys (colon vs pipe, URL encoding).
+  // Build a normalized map so callers can always look up by the key they requested.
+  const normalizeKey = (k) => k.replace(/%7C/gi, "|").replace(":", "|").toLowerCase()
+  const rawEntries = Object.entries(raw)
+  const normalized = {}
+
+  for (const key of instrumentKeys) {
+    if (raw[key] !== undefined) {
+      normalized[key] = raw[key]
+    } else {
+      const keyNorm = normalizeKey(key)
+      const found = rawEntries.find(([rk]) => normalizeKey(rk) === keyNorm)
+      if (found) normalized[key] = found[1]
+    }
+  }
+
+  return normalized
 }
 
 export function hasValidToken() {

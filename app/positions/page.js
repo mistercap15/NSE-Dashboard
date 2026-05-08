@@ -135,9 +135,11 @@ export default function PositionsPage() {
   const [totalPnL,    setTotalPnL]    = useState(0)
   const [loading,     setLoading]     = useState(false)
   const [lastFetch,   setLastFetch]   = useState(null)
-  const [showForm,       setShowForm]       = useState(false)
-  const [upstoxError,    setUpstoxError]    = useState(null)
-  const [symbolDropdown, setSymbolDropdown] = useState([])
+  const [showForm,        setShowForm]        = useState(false)
+  const [upstoxError,     setUpstoxError]     = useState(null)
+  const [symbolDropdown,  setSymbolDropdown]  = useState([])
+  const [addingPosition,  setAddingPosition]  = useState(false)
+  const [lotSizeLoading,  setLotSizeLoading]  = useState(false)
 
   const [form, setForm] = useState({
     symbol:      "",
@@ -198,6 +200,24 @@ export default function PositionsPage() {
     )
   }
 
+  const fetchLotSizeForSymbol = useCallback(async (sym) => {
+    if (!sym) return
+    setLotSizeLoading(true)
+    try {
+      const res = await fetch(`/api/stock/${sym}`)
+      if (res.ok) {
+        const data = await res.json()
+        if (data?.lot_size) {
+          setForm(f => ({ ...f, lotSize: String(data.lot_size) }))
+        }
+      }
+    } catch (e) {
+      console.error("Could not fetch lot size", e)
+    } finally {
+      setLotSizeLoading(false)
+    }
+  }, [])
+
   const selectSymbol = (sym) => {
     setForm(f => ({
       ...f,
@@ -205,56 +225,64 @@ export default function PositionsPage() {
       lotSize: LOT_SIZES[sym] ? String(LOT_SIZES[sym]) : f.lotSize,
     }))
     setSymbolDropdown([])
+    fetchLotSizeForSymbol(sym)
   }
 
   const addPosition = async () => {
     const sym = form.symbol.toUpperCase()
     if (!sym || !form.entryPrice) return
 
-    const resolvedLotSize = parseInt(form.lotSize) || LOT_SIZES[sym] || 1
-    if (!resolvedLotSize) return
-
-    let medianReturn = parseFloat(form.medianReturn) || 0
-    let avgReturn    = parseFloat(form.avgReturn)    || 0
-
+    setAddingPosition(true)
     try {
-      const res = await fetch(`/api/stock/${sym}`)
-      if (res.ok) {
-        const data = await res.json()
-        const monthData = data?.seasonality?.[form.targetMonth - 1]
-        if (monthData) {
-          medianReturn = monthData.median_return || medianReturn
-          avgReturn    = monthData.avg_return    || avgReturn
+      let medianReturn  = parseFloat(form.medianReturn) || 0
+      let avgReturn     = parseFloat(form.avgReturn)    || 0
+      let resolvedLotSize = parseInt(form.lotSize) || LOT_SIZES[sym] || 1
+
+      try {
+        const res = await fetch(`/api/stock/${sym}`)
+        if (res.ok) {
+          const data = await res.json()
+          // Use MCP lot size — it's always up-to-date vs the hardcoded fallback
+          if (data?.lot_size) resolvedLotSize = data.lot_size
+          const monthData = data?.seasonality?.[form.targetMonth - 1]
+          if (monthData) {
+            medianReturn = monthData.median_return || medianReturn
+            avgReturn    = monthData.avg_return    || avgReturn
+          }
         }
+      } catch (e) {
+        console.error("Could not fetch stock data", e)
       }
-    } catch (e) {
-      console.error("Could not fetch stock data", e)
-    }
 
-    const newPos = {
-      id:          Date.now().toString(),
-      symbol:      sym,
-      direction:   form.direction,
-      entryPrice:  parseFloat(form.entryPrice),
-      lotSize:     resolvedLotSize,
-      entryDate:   form.entryDate,
-      targetMonth: parseInt(form.targetMonth),
-      medianReturn,
-      avgReturn,
-    }
+      if (!resolvedLotSize) return
 
-    const updated = [...positions, newPos]
-    setPositions(updated)
-    savePositions(updated)
-    setShowForm(false)
-    setSymbolDropdown([])
-    setForm({
-      symbol: "", direction: "LONG", entryPrice: "",
-      lotSize: "", entryDate: new Date().toISOString().slice(0, 10),
-      medianReturn: "", avgReturn: "",
-      targetMonth: currentMonth === 12 ? 1 : currentMonth + 1,
-    })
-    fetchLiveData(updated)
+      const newPos = {
+        id:          Date.now().toString(),
+        symbol:      sym,
+        direction:   form.direction,
+        entryPrice:  parseFloat(form.entryPrice),
+        lotSize:     resolvedLotSize,
+        entryDate:   form.entryDate,
+        targetMonth: parseInt(form.targetMonth),
+        medianReturn,
+        avgReturn,
+      }
+
+      const updated = [...positions, newPos]
+      setPositions(updated)
+      savePositions(updated)
+      setShowForm(false)
+      setSymbolDropdown([])
+      setForm({
+        symbol: "", direction: "LONG", entryPrice: "",
+        lotSize: "", entryDate: new Date().toISOString().slice(0, 10),
+        medianReturn: "", avgReturn: "",
+        targetMonth: currentMonth === 12 ? 1 : currentMonth + 1,
+      })
+      fetchLiveData(updated)
+    } finally {
+      setAddingPosition(false)
+    }
   }
 
   const removePosition = (id) => {
@@ -566,6 +594,10 @@ export default function PositionsPage() {
                       type="text"
                       value={form.symbol}
                       onChange={e => handleSymbolChange(e.target.value)}
+                      onBlur={e => {
+                        const sym = e.target.value.toUpperCase()
+                        if (sym && symbolDropdown.length === 0) fetchLotSizeForSymbol(sym)
+                      }}
                       placeholder="HEROMOTOCO"
                       autoComplete="off"
                       className="w-full bg-bg border border-border rounded-lg px-4 py-2.5
@@ -613,8 +645,10 @@ export default function PositionsPage() {
                         font-mono text-sm text-text placeholder-muted focus:border-accent
                         focus:outline-none transition-colors"
                     />
-                    {f.key === "lotSize" && LOT_SIZES[form.symbol] && (
-                      <p className="font-mono text-[9px] text-dim mt-1">Auto-filled from symbol — edit if needed</p>
+                    {f.key === "lotSize" && (
+                      <p className="font-mono text-[9px] text-dim mt-1">
+                        {lotSizeLoading ? "Fetching lot size..." : LOT_SIZES[form.symbol] ? "Auto-filled — edit if needed" : ""}
+                      </p>
                     )}
                   </div>
                 ))}
@@ -642,10 +676,18 @@ export default function PositionsPage() {
 
                 <button
                   onClick={addPosition}
+                  disabled={addingPosition}
                   className="w-full font-mono text-sm py-3 rounded-lg border border-accent/30
-                    bg-accent/15 text-accent hover:bg-accent/25 transition-colors font-bold"
+                    bg-accent/15 text-accent hover:bg-accent/25 transition-colors font-bold
+                    disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                 >
-                  Add Position
+                  {addingPosition ? (
+                    <>
+                      <span className="inline-block w-3.5 h-3.5 border-2 border-accent/40
+                        border-t-accent rounded-full animate-spin" />
+                      Adding...
+                    </>
+                  ) : "Add Position"}
                 </button>
               </div>
             </div>
