@@ -336,7 +336,7 @@ export default function PositionsPage() {
                     if (data.emailSent) {
                       alert("✅ Email sent! Check your inbox.")
                     } else {
-                      alert("Email not sent: " + (data.emailError || "Check RESEND_API_KEY in .env.local"))
+                      alert("Email failed: " + (data.emailError || "Unknown — check terminal logs for details"))
                     }
                   } catch (e) {
                     alert("Error: " + e.message)

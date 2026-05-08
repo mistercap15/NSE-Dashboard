@@ -215,19 +215,18 @@ export async function sendEarlyEntryAlert(signals) {
     </body></html>
   `
 
-  try {
-    const result = await resend.emails.send({
-      from:    FROM_EMAIL,
-      to:      TO_EMAIL,
-      subject,
-      html,
-    })
-    console.log("Early entry alert sent:", result.data?.id)
-    return { sent: true, id: result.data?.id, count: actionable.length }
-  } catch (e) {
-    console.error("Email send failed:", e.message)
-    return { sent: false, error: e.message }
+  const { data, error } = await resend.emails.send({
+    from:    FROM_EMAIL,
+    to:      TO_EMAIL,
+    subject,
+    html,
+  })
+  if (error) {
+    console.error("Early entry email failed:", JSON.stringify(error))
+    return { sent: false, error: error.message || JSON.stringify(error) }
   }
+  console.log("Early entry alert sent:", data?.id)
+  return { sent: true, id: data?.id, count: actionable.length }
 }
 
 // ── ALERT 2: Daily Position Update ───────────────────────────────
@@ -361,17 +360,16 @@ export async function sendPositionAlert(positions) {
     </body></html>
   `
 
-  try {
-    const result = await resend.emails.send({
-      from:    FROM_EMAIL,
-      to:      TO_EMAIL,
-      subject,
-      html,
-    })
-    console.log("Position alert sent:", result.data?.id)
-    return { sent: true, id: result.data?.id }
-  } catch (e) {
-    console.error("Position email failed:", e.message)
-    return { sent: false, error: e.message }
+  const { data, error } = await resend.emails.send({
+    from:    FROM_EMAIL,
+    to:      TO_EMAIL,
+    subject,
+    html,
+  })
+  if (error) {
+    console.error("Position email failed:", JSON.stringify(error))
+    return { sent: false, error: error.message || JSON.stringify(error) }
   }
+  console.log("Position alert sent:", data?.id)
+  return { sent: true, id: data?.id }
 }
