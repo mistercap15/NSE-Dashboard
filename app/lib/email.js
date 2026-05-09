@@ -307,6 +307,21 @@ const css = `
     font-size: 11px; color: #1d4ed8;
     font-weight: 600; margin-top: 3px;
   }
+  @media only screen and (max-width: 600px) {
+    .wrap { padding: 10px 6px; }
+    .header { padding: 20px 16px 18px; }
+    .header-title { font-size: 18px; }
+    .content { padding: 16px; }
+    .footer { padding: 12px 16px; }
+    .stats-row { grid-template-columns: 1fr 1fr; }
+    .pos-grid { grid-template-columns: 1fr; }
+    .symbol { font-size: 16px; }
+    .sig-header { flex-direction: column; align-items: flex-start; }
+    .action-row { flex-wrap: wrap; }
+    .action-val { text-align: left; }
+    .pos-header { flex-direction: column; align-items: flex-start; }
+    .pos-pnl, .pos-pct { text-align: left; }
+  }
 `
 
 // ── Helpers ───────────────────────────────────────────────────────
@@ -328,9 +343,15 @@ function now() {
 // ── Signal card HTML ──────────────────────────────────────────────
 function signalCard(s) {
   const isStrong    = s.status === "BUY"
-  const borderClass = isStrong ? "border-green" : "border-amber"
+  const isHalf      = s.status === "BUY_HALF"
+  const isWatch     = s.status === "WATCH"
+  const borderClass = isStrong ? "border-green" : isWatch ? "" : "border-amber"
+  const borderStyle = isWatch ? "border-left:3px solid #1d4ed8;" : ""
   const badgeClass  = isStrong ? "badge-enter" : "badge-near"
-  const badgeLabel  = isStrong ? "ENTER NOW" : "NEAR ENTRY"
+  const badgeStyle  = isWatch
+    ? "background:#eff6ff;border:1px solid #bfdbfe;color:#1d4ed8;"
+    : ""
+  const badgeLabel  = isStrong ? "ENTER NOW" : isHalf ? "NEAR ENTRY" : "WATCH"
   const targetMonth = MONTHS[(s.nextMonth?.month || 1) - 1]
   const support     = s.support?.nearest
   const price       = s.price?.current
@@ -343,8 +364,10 @@ function signalCard(s) {
       )) : "—"
   const entryLabel  = isStrong
     ? "&#8377;" + fmt(price) + " (now)"
+    : isWatch
+    ? "Wait for score to improve"
     : "&#8377;" + fmt(support?.price) + " (wait for dip)"
-  const entryClass  = isStrong ? "val-g" : "val-a"
+  const entryClass  = isStrong ? "val-g" : isWatch ? "val-blue" : "val-a"
   const slPrice     = s.context?.ma50
     ? "&#8377;" + fmt(Math.round(s.context.ma50 * 0.97))
       + " (3% below 10wk avg)"
@@ -361,7 +384,7 @@ function signalCard(s) {
     : "Set a price alert here — enter when price reaches it"
 
   return `
-    <div class="signal-card ${borderClass}">
+    <div class="signal-card ${borderClass}" style="${borderStyle}">
       <div class="sig-header">
         <div>
           <div class="symbol">${s.symbol}</div>
@@ -371,7 +394,7 @@ function signalCard(s) {
             ${targetMonth} contract
           </div>
         </div>
-        <div class="status-badge ${badgeClass}">${badgeLabel}</div>
+        <div class="status-badge ${badgeClass}" style="${badgeStyle}">${badgeLabel}</div>
       </div>
 
       <div class="stats-row">
@@ -603,7 +626,7 @@ export async function sendEarlyEntryAlert(signals) {
   if (!TO_EMAIL) return { sent: false, reason: "ALERT_EMAIL not set" }
 
   const actionable = (signals || []).filter(s =>
-    s.status === "BUY" || s.status === "BUY_HALF"
+    s.status === "BUY" || s.status === "BUY_HALF" || s.status === "WATCH"
   )
   if (actionable.length === 0) {
     return { sent: false, reason: "No actionable signals" }
@@ -611,17 +634,22 @@ export async function sendEarlyEntryAlert(signals) {
 
   const buyNow  = actionable.filter(s => s.status === "BUY")
   const buyHalf = actionable.filter(s => s.status === "BUY_HALF")
+  const watch   = actionable.filter(s => s.status === "WATCH")
 
   const subject = buyNow.length > 0
     ? `Entry Signal — ${buyNow.map(s => s.symbol).join(", ")}`
-    : `Entry Zone — ${buyHalf.map(s => s.symbol).join(", ")}`
+    : buyHalf.length > 0
+    ? `Entry Zone — ${buyHalf.map(s => s.symbol).join(", ")}`
+    : `Watch — ${watch.map(s => s.symbol).join(", ")}`
 
   const badgeClass = buyNow.length > 0 ? "badge-action" : "badge-watch"
-  const badgeText  = buyNow.length > 0 ? "ACTION NEEDED" : "SET PRICE ALERT"
+  const badgeText  = buyNow.length > 0 ? "ACTION NEEDED" : buyHalf.length > 0 ? "SET PRICE ALERT" : "MONITOR CLOSELY"
   const title      = buyNow.length > 0
     ? "Entry Signal Detected"
-    : "Entry Zone Approaching"
-  const sub = `${now()} IST &middot; ${actionable.length} signal${
+    : buyHalf.length > 0
+    ? "Entry Zone Approaching"
+    : "Stocks to Watch Today"
+  const sub = `${now()} IST &middot; ${actionable.length} stock${
     actionable.length !== 1 ? "s" : ""} found`
 
   let body = ""
@@ -642,6 +670,16 @@ export async function sendEarlyEntryAlert(signals) {
         Approaching entry zone &mdash; set price alert
       </div>
       ${buyHalf.map(signalCard).join("")}
+    `
+  }
+
+  if (watch.length > 0) {
+    body += `
+      <div class="section-label label-blue"
+        style="margin-top:${buyNow.length + buyHalf.length > 0 ? "8px" : "0"}">
+        Watch &mdash; not yet at entry zone
+      </div>
+      ${watch.map(signalCard).join("")}
     `
   }
 

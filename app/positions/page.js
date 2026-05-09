@@ -90,6 +90,12 @@ function loadPositions() {
 function savePositions(positions) {
   if (typeof window === "undefined") return
   localStorage.setItem(STORAGE_KEY, JSON.stringify(positions))
+  // Mirror to server so the daily positions cron can access them
+  fetch("/api/positions/save", {
+    method:  "POST",
+    headers: { "Content-Type": "application/json" },
+    body:    JSON.stringify({ positions }),
+  }).catch(() => {})
 }
 
 function getActionStyle(action) {

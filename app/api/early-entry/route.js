@@ -152,8 +152,10 @@ async function callMCP(toolName, args) {
 }
 
 export async function GET(request) {
-  const cookie = request.cookies.get("upstox_token")?.value
-  if (cookie) setAccessToken(cookie)
+  const cookie     = request.cookies.get("upstox_token")?.value
+  const cronToken  = request.headers.get("x-upstox-token")
+  if (cookie)     setAccessToken(cookie)
+  else if (cronToken) setAccessToken(cronToken)
 
   const { searchParams } = new URL(request.url)
   const targetMonth = parseInt(searchParams.get("month") || String(new Date().getMonth() + 2)) // next month default

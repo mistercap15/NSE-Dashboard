@@ -1,25 +1,18 @@
 import { NextResponse }        from "next/server"
 import { headers }             from "next/headers"
-import { sendWatchlistAlert }  from "@/app/lib/email"
+import { sendEarlyEntryAlert } from "@/app/lib/email"
+import fs   from "fs"
+import path from "path"
 
 const CRON_SECRET = process.env.CRON_SECRET || "nse-cron-2026"
-const MCP_URL     = process.env.MCP_URL     || "https://nse-data-mcp.vercel.app/mcp"
 
-async function callMCP(toolName, args) {
-  const res = await fetch(MCP_URL, {
-    method:  "POST",
-    headers: { "Content-Type": "application/json" },
-    body:    JSON.stringify({
-      jsonrpc: "2.0", id: Date.now(),
-      method:  "tools/call",
-      params:  { name: toolName, arguments: args },
-    }),
-  })
-  const data = await res.json()
-  return data.result?._raw
+function readStoredToken() {
+  try {
+    return fs.readFileSync(path.join(process.cwd(), ".upstox_token"), "utf8").trim() || null
+  } catch { return null }
 }
 
-export async function GET(request) {
+export async function GET() {
   const headersList = await headers()
   const cronHeader  = headersList.get("x-vercel-cron")
   const authHeader  = headersList.get("authorization")
@@ -32,38 +25,40 @@ export async function GET(request) {
 
   try {
     const now       = new Date()
-    // Target = next calendar month (the month we're scanning entry for)
     const nextMonth = now.getMonth() + 2 > 12 ? 1 : now.getMonth() + 2
 
-    // Get top stocks for next month directly from MCP — no Upstox needed
-    const rankings = await callMCP("get_monthly_ranking", {
-      month:  nextMonth,
-      top:    20,
-      sector: "ALL",
-    })
+    const appUrl    = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000"
+    const token     = process.env.UPSTOX_ACCESS_TOKEN || readStoredToken()
 
-    const candidates = (rankings?.top_stocks || []).filter(s => {
-      const totalYears = (s.positive_years || 0) + (s.negative_years || 0)
-      return totalYears >= 5 && (s.win_rate || 0) >= 75
-    }).slice(0, 15)
+    const fetchHeaders = { "x-internal": "cron" }
+    if (token) fetchHeaders["x-upstox-token"] = token
 
-    if (candidates.length === 0) {
-      return NextResponse.json({
-        success:     true,
-        scannedAt:   new Date().toISOString(),
-        targetMonth: nextMonth,
-        candidates:  0,
-        email:       { sent: false, reason: "No qualifying stocks for this month" },
-      })
+    const res  = await fetch(
+      `${appUrl}/api/early-entry?month=${nextMonth}`,
+      { headers: fetchHeaders }
+    )
+    const data = await res.json()
+
+    if (data.error) throw new Error(data.error)
+
+    // Include BUY, BUY_HALF, and WATCH — so user always gets stocks to look at
+    const signals = (data.results || []).filter(s =>
+      s.status === "BUY" || s.status === "BUY_HALF" || s.status === "WATCH"
+    )
+
+    let emailResult = { sent: false, reason: "No signals found" }
+    if (signals.length > 0) {
+      emailResult = await sendEarlyEntryAlert(signals)
     }
-
-    const emailResult = await sendWatchlistAlert(candidates, nextMonth)
 
     return NextResponse.json({
       success:     true,
       scannedAt:   new Date().toISOString(),
       targetMonth: nextMonth,
-      candidates:  candidates.length,
+      candidates:  data.totalCandidates || 0,
+      buySignals:  (data.results || []).filter(s => s.status === "BUY").length,
+      watchSignals:(data.results || []).filter(s => s.status === "WATCH").length,
+      emailedCount: signals.length,
       email:       emailResult,
     })
 
