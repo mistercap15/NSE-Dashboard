@@ -33,7 +33,8 @@ function clearTokenFile() {
 }
 
 // In-memory cache — populated from file on first use
-let _accessToken = process.env.UPSTOX_ACCESS_TOKEN || readTokenFromFile()
+let _accessToken  = process.env.UPSTOX_ACCESS_TOKEN || readTokenFromFile()
+let _tokenExpired = false
 
 // ── Auth functions ────────────────────────────────────────────────
 
@@ -85,9 +86,10 @@ async function upstoxGet(endpoint, params = {}) {
   })
 
   if (res.status === 401) {
-    _accessToken = null
+    _accessToken  = null
+    _tokenExpired = true
     clearTokenFile()
-    throw new Error("Access token expired. Visit /api/upstox/login to re-authenticate.")
+    throw new Error("TOKEN_EXPIRED")
   }
 
   if (!res.ok) {
@@ -170,7 +172,12 @@ export function hasValidToken() {
   return !!_accessToken
 }
 
+export function isTokenExpired() {
+  return _tokenExpired
+}
+
 export function setAccessToken(token) {
-  _accessToken = token
+  _accessToken  = token
+  _tokenExpired = false
   writeTokenToFile(token)
 }

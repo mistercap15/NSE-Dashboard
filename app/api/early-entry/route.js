@@ -2,7 +2,6 @@ import { NextResponse } from "next/server"
 import { getDailyCandles, getQuote, setAccessToken } from "@/app/lib/upstox"
 import { toInstrumentKey } from "@/app/lib/instruments"
 import { computeSupportZones, computePriceContext, computeSignalScore } from "@/app/lib/technicals"
-import { sendEarlyEntryAlert } from "@/app/lib/email"
 
 const MCP_URL   = process.env.MCP_URL || "https://nse-data-mcp.vercel.app/mcp"
 const MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
@@ -316,19 +315,6 @@ export async function GET(request) {
       .map(r => r.value)
       .sort((a, b) => (b.signal?.score || 0) - (a.signal?.score || 0))
 
-    // Fire email alert for BUY and BUY_HALF signals (non-fatal)
-    const buySignals = scanResults.filter(s =>
-      s.status === "BUY" || s.status === "BUY_HALF"
-    )
-    let emailResult = { sent: false }
-    if (buySignals.length > 0) {
-      try {
-        emailResult = await sendEarlyEntryAlert(buySignals)
-      } catch (e) {
-        console.warn("Alert email failed:", e.message)
-      }
-    }
-
     return NextResponse.json({
       targetMonth,
       currentMonth,
@@ -337,8 +323,6 @@ export async function GET(request) {
       results:         scanResults,
       buySignals:      scanResults.filter(s => s.status === "BUY" || s.status === "BUY_HALF").length,
       watchlist:       scanResults.filter(s => s.status === "WATCH").length,
-      emailSent:       emailResult.sent,
-      emailSignals:    buySignals.length,
     })
 
   } catch (e) {

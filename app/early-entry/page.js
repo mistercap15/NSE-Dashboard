@@ -171,17 +171,21 @@ function StatusBadge({ status }) {
 }
 
 export default function EarlyEntryPage() {
-  const [data,          setData]          = useState(null)
-  const [loading,       setLoading]       = useState(false)
-  const [error,         setError]         = useState(null)
-  const [upstoxReady,   setUpstoxReady]   = useState(false)
-  const [selectedMonth, setSelectedMonth] = useState(nextMonth)
-  const [expanded,      setExpanded]      = useState(null)
+  const [data,            setData]            = useState(null)
+  const [loading,         setLoading]         = useState(false)
+  const [error,           setError]           = useState(null)
+  const [upstoxReady,     setUpstoxReady]     = useState(false)
+  const [tokenExpired,    setTokenExpired]    = useState(false)
+  const [selectedMonth,   setSelectedMonth]   = useState(nextMonth)
+  const [expanded,        setExpanded]        = useState(null)
 
   useEffect(() => {
     fetch("/api/upstox/status")
       .then(r => r.json())
-      .then(d => setUpstoxReady(d.connected))
+      .then(d => {
+        setUpstoxReady(d.connected)
+        setTokenExpired(d.expired || false)
+      })
       .catch(() => setUpstoxReady(false))
   }, [])
 
@@ -221,29 +225,47 @@ export default function EarlyEntryPage() {
         </div>
 
         {/* Upstox connection status */}
-        <div className={`mb-6 p-4 rounded-lg border flex items-center justify-between ${
-          upstoxReady ? "border-green/20 bg-green/5" : "border-amber/20 bg-amber/5"
-        }`}>
-          <div>
-            <div className={`font-mono text-[11px] uppercase tracking-widest mb-1 ${
-              upstoxReady ? "text-green" : "text-amber"
-            }`}>
-              {upstoxReady ? "✓ Upstox Connected" : "⚠ Upstox Not Connected"}
+        {tokenExpired ? (
+          <div className="mb-6 p-4 rounded-lg border border-red/30 bg-red/5 flex items-center justify-between">
+            <div>
+              <div className="font-mono text-[11px] uppercase tracking-widest mb-1 text-red">
+                ✕ Upstox Session Expired
+              </div>
+              <div className="font-body text-sm text-dim">
+                Your Upstox token expired. Re-authenticate to restore live price data and signals.
+              </div>
             </div>
-            <div className="font-body text-sm text-dim">
-              {upstoxReady
-                ? "Live daily price data available — support zones computed from real OHLC"
-                : "Connect Upstox to enable live price data and support zone detection"}
-            </div>
-          </div>
-          {!upstoxReady && (
             <a href="/api/upstox/login"
-              className="font-mono text-sm px-4 py-2 rounded border border-accent/30
-                bg-accent/10 text-accent hover:bg-accent/20 transition-colors">
-              Connect Upstox →
+              className="font-mono text-sm px-4 py-2 rounded border border-red/30
+                bg-red/10 text-red hover:bg-red/20 transition-colors whitespace-nowrap">
+              Re-authenticate →
             </a>
-          )}
-        </div>
+          </div>
+        ) : (
+          <div className={`mb-6 p-4 rounded-lg border flex items-center justify-between ${
+            upstoxReady ? "border-green/20 bg-green/5" : "border-amber/20 bg-amber/5"
+          }`}>
+            <div>
+              <div className={`font-mono text-[11px] uppercase tracking-widest mb-1 ${
+                upstoxReady ? "text-green" : "text-amber"
+              }`}>
+                {upstoxReady ? "✓ Upstox Connected" : "⚠ Upstox Not Connected"}
+              </div>
+              <div className="font-body text-sm text-dim">
+                {upstoxReady
+                  ? "Live daily price data available — support zones computed from real OHLC"
+                  : "Connect Upstox to enable live price data and support zone detection"}
+              </div>
+            </div>
+            {!upstoxReady && (
+              <a href="/api/upstox/login"
+                className="font-mono text-sm px-4 py-2 rounded border border-accent/30
+                  bg-accent/10 text-accent hover:bg-accent/20 transition-colors">
+                Connect Upstox →
+              </a>
+            )}
+          </div>
+        )}
 
         {/* Month selector + scan button */}
         <div className="flex items-center gap-4 mb-6 flex-wrap">
