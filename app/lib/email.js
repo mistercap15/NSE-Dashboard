@@ -729,3 +729,90 @@ export async function sendPositionAlert(positions) {
     return { sent: false, error: e.message }
   }
 }
+
+// ── ALERT 3: Daily Watchlist (seasonality only, no live prices needed) ──
+export async function sendWatchlistAlert(stocks, targetMonth) {
+  if (!TO_EMAIL.length) return { sent: false, reason: "ALERT_EMAIL not set" }
+  if (!stocks || stocks.length === 0) return { sent: false, reason: "No stocks" }
+
+  const monthName = MONTHS[targetMonth - 1]
+  const subject   = `${monthName} Watchlist — ${stocks.length} F&O candidates`
+
+  function watchCard(s) {
+    const totalYears = (s.positive_years || 0) + (s.negative_years || 0)
+    const wr         = (s.win_rate      || 0).toFixed(1)
+    const med        = (s.median_return || 0).toFixed(1)
+    const avg        = (s.avg_return    || 0).toFixed(1)
+    const wrColor    = s.win_rate >= 85 ? "#16a34a" : s.win_rate >= 75 ? "#1d4ed8" : "#d97706"
+    return `
+      <div style="border:1px solid #e5e7eb;border-radius:10px;padding:14px 16px;
+                  margin-bottom:10px;background:#fff;border-left:3px solid ${wrColor};">
+        <div style="display:flex;justify-content:space-between;align-items:center;
+                    flex-wrap:wrap;gap:8px;margin-bottom:10px;">
+          <div>
+            <div style="font-family:'Courier New',monospace;font-size:18px;
+                        font-weight:700;color:#1e40af;">${s.symbol}</div>
+            <div style="font-size:11px;color:#6b7280;margin-top:2px;">
+              ${s.sector || ""} &middot; ${totalYears} years data
+            </div>
+          </div>
+          <div style="background:${wrColor}18;border:1px solid ${wrColor}40;
+                      border-radius:6px;padding:5px 12px;font-size:11px;
+                      font-weight:700;color:${wrColor};">
+            ${wr}% Win Rate
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;">
+          <div style="background:#f8fafc;border:1px solid #e5e7eb;border-radius:6px;padding:9px;">
+            <div style="font-size:9px;color:#9ca3af;text-transform:uppercase;
+                        letter-spacing:0.5px;margin-bottom:3px;">${monthName} Win Rate</div>
+            <div style="font-family:'Courier New',monospace;font-size:14px;
+                        font-weight:600;color:#16a34a;">${wr}%</div>
+          </div>
+          <div style="background:#f8fafc;border:1px solid #e5e7eb;border-radius:6px;padding:9px;">
+            <div style="font-size:9px;color:#9ca3af;text-transform:uppercase;
+                        letter-spacing:0.5px;margin-bottom:3px;">Median Return</div>
+            <div style="font-family:'Courier New',monospace;font-size:14px;
+                        font-weight:600;color:#16a34a;">+${med}%</div>
+          </div>
+          <div style="background:#f8fafc;border:1px solid #e5e7eb;border-radius:6px;padding:9px;">
+            <div style="font-size:9px;color:#9ca3af;text-transform:uppercase;
+                        letter-spacing:0.5px;margin-bottom:3px;">Avg Return</div>
+            <div style="font-family:'Courier New',monospace;font-size:14px;
+                        font-weight:600;color:#1d4ed8;">+${avg}%</div>
+          </div>
+        </div>
+      </div>
+    `
+  }
+
+  const body = `
+    <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;
+                padding:12px 14px;margin-bottom:20px;font-size:12px;color:#1e40af;">
+      <strong>How to use:</strong> Open the dashboard Early Entry scanner to check live prices
+      and get precise entry points for these stocks.
+    </div>
+    <div class="section-label label-blue" style="margin-bottom:12px;">
+      Top ${stocks.length} candidates for ${monthName} &mdash; ranked by win rate
+    </div>
+    ${stocks.map(watchCard).join("")}
+  `
+
+  const html = wrapEmail(
+    `${monthName} Watchlist`,
+    `${now()} IST &middot; ${stocks.length} F&O candidates`,
+    "badge-watch",
+    "CHECK DASHBOARD FOR ENTRIES",
+    body
+  )
+
+  try {
+    const result = await resend.emails.send({
+      from: FROM_EMAIL, to: TO_EMAIL, subject, html,
+    })
+    return { sent: true, id: result.id, count: stocks.length }
+  } catch (e) {
+    console.error("Watchlist email failed:", e.message)
+    return { sent: false, error: e.message }
+  }
+}

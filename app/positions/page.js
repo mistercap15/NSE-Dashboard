@@ -326,11 +326,15 @@ export default function PositionsPage() {
               </button>
               <button
                 onClick={async () => {
+                  if (enriched.length === 0) {
+                    alert("Please click Refresh first to load live data, then test email.")
+                    return
+                  }
                   try {
                     const res  = await fetch("/api/positions", {
                       method:  "POST",
                       headers: { "Content-Type": "application/json" },
-                      body:    JSON.stringify({ positions, sendEmail: true }),
+                      body:    JSON.stringify({ positions: enriched, sendEmail: true }),
                     })
                     const data = await res.json()
                     if (data.emailSent) {
@@ -342,7 +346,7 @@ export default function PositionsPage() {
                     alert("Error: " + e.message)
                   }
                 }}
-                disabled={positions.length === 0}
+                disabled={positions.length === 0 || enriched.length === 0}
                 className="font-mono text-[11px] px-3 py-1.5 rounded border border-border
                   text-dim hover:text-text transition-colors disabled:opacity-40"
               >

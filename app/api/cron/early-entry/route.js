@@ -1,8 +1,23 @@
 import { NextResponse }        from "next/server"
 import { headers }             from "next/headers"
-import { sendEarlyEntryAlert } from "@/app/lib/email"
+import { sendWatchlistAlert }  from "@/app/lib/email"
 
 const CRON_SECRET = process.env.CRON_SECRET || "nse-cron-2026"
+const MCP_URL     = process.env.MCP_URL     || "https://nse-data-mcp.vercel.app/mcp"
+
+async function callMCP(toolName, args) {
+  const res = await fetch(MCP_URL, {
+    method:  "POST",
+    headers: { "Content-Type": "application/json" },
+    body:    JSON.stringify({
+      jsonrpc: "2.0", id: Date.now(),
+      method:  "tools/call",
+      params:  { name: toolName, arguments: args },
+    }),
+  })
+  const data = await res.json()
+  return data.result?._raw
+}
 
 export async function GET(request) {
   const headersList = await headers()
@@ -16,34 +31,39 @@ export async function GET(request) {
   }
 
   try {
-    const appUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000"
-
     const now       = new Date()
+    // Target = next calendar month (the month we're scanning entry for)
     const nextMonth = now.getMonth() + 2 > 12 ? 1 : now.getMonth() + 2
 
-    const res  = await fetch(
-      `${appUrl}/api/early-entry?month=${nextMonth}`,
-      { headers: { "x-internal": "cron" } }
-    )
-    const data = await res.json()
+    // Get top stocks for next month directly from MCP — no Upstox needed
+    const rankings = await callMCP("get_monthly_ranking", {
+      month:  nextMonth,
+      top:    20,
+      sector: "ALL",
+    })
 
-    if (data.error) throw new Error(data.error)
+    const candidates = (rankings?.top_stocks || []).filter(s => {
+      const totalYears = (s.positive_years || 0) + (s.negative_years || 0)
+      return totalYears >= 5 && (s.win_rate || 0) >= 75
+    }).slice(0, 15)
 
-    const buySignals = (data.results || []).filter(s =>
-      s.status === "BUY" || s.status === "BUY_HALF"
-    )
-
-    let emailResult = { sent: false, reason: "No buy signals" }
-    if (buySignals.length > 0) {
-      emailResult = await sendEarlyEntryAlert(buySignals)
+    if (candidates.length === 0) {
+      return NextResponse.json({
+        success:     true,
+        scannedAt:   new Date().toISOString(),
+        targetMonth: nextMonth,
+        candidates:  0,
+        email:       { sent: false, reason: "No qualifying stocks for this month" },
+      })
     }
+
+    const emailResult = await sendWatchlistAlert(candidates, nextMonth)
 
     return NextResponse.json({
       success:     true,
       scannedAt:   new Date().toISOString(),
       targetMonth: nextMonth,
-      candidates:  data.totalCandidates || 0,
-      buySignals:  buySignals.length,
+      candidates:  candidates.length,
       email:       emailResult,
     })
 

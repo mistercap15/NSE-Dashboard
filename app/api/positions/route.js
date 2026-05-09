@@ -15,6 +15,25 @@ export async function POST(request) {
     return NextResponse.json({ positions: [] })
   }
 
+  // If positions already have pnl (sent from the page after live refresh), skip Upstox re-fetch
+  const alreadyEnriched = positions.every(p => p.pnl !== undefined)
+  if (alreadyEnriched && sendEmail) {
+    const totalPnL = positions.reduce((sum, p) => sum + (p.pnl?.total || 0), 0)
+    let emailResult = { sent: false }
+    try {
+      emailResult = await sendPositionAlert(positions)
+    } catch (e) {
+      console.warn("Position email failed:", e.message)
+    }
+    return NextResponse.json({
+      positions,
+      totalPnL,
+      fetchedAt:  new Date().toISOString(),
+      emailSent:  emailResult.sent,
+      emailError: emailResult.error,
+    })
+  }
+
   try {
     // Fetch quotes in parallel using getQuote (same path as early-entry — handles key encoding)
     const quotes = await Promise.all(
