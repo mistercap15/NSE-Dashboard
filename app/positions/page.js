@@ -331,34 +331,6 @@ export default function PositionsPage() {
                 {loading ? "Refreshing..." : "↻ Refresh"}
               </button>
               <button
-                onClick={async () => {
-                  if (enriched.length === 0) {
-                    alert("Please click Refresh first to load live data, then test email.")
-                    return
-                  }
-                  try {
-                    const res  = await fetch("/api/positions", {
-                      method:  "POST",
-                      headers: { "Content-Type": "application/json" },
-                      body:    JSON.stringify({ positions: enriched, sendEmail: true }),
-                    })
-                    const data = await res.json()
-                    if (data.emailSent) {
-                      alert("✅ Email sent! Check your inbox.")
-                    } else {
-                      alert("Email failed: " + (data.emailError || "Unknown — check terminal logs for details"))
-                    }
-                  } catch (e) {
-                    alert("Error: " + e.message)
-                  }
-                }}
-                disabled={positions.length === 0 || enriched.length === 0}
-                className="font-mono text-[11px] px-3 py-1.5 rounded border border-border
-                  text-dim hover:text-text transition-colors disabled:opacity-40"
-              >
-                📧 Test Email
-              </button>
-              <button
                 onClick={() => setShowForm(true)}
                 className="font-mono text-sm px-4 py-2 rounded border border-accent/30
                   bg-accent/10 text-accent hover:bg-accent/20 transition-colors"

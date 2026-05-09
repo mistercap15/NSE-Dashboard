@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server"
 import { getQuote, setAccessToken } from "@/app/lib/upstox"
 import { toInstrumentKey } from "@/app/lib/instruments"
-import { sendPositionAlert } from "@/app/lib/email"
 
 export async function POST(request) {
   const cookie = request.cookies.get("upstox_token")?.value
@@ -9,29 +8,9 @@ export async function POST(request) {
 
   const body      = await request.json()
   const positions = body.positions  || []
-  const sendEmail = body.sendEmail  || false
 
   if (positions.length === 0) {
     return NextResponse.json({ positions: [] })
-  }
-
-  // If positions already have pnl (sent from the page after live refresh), skip Upstox re-fetch
-  const alreadyEnriched = positions.every(p => p.pnl !== undefined)
-  if (alreadyEnriched && sendEmail) {
-    const totalPnL = positions.reduce((sum, p) => sum + (p.pnl?.total || 0), 0)
-    let emailResult = { sent: false }
-    try {
-      emailResult = await sendPositionAlert(positions)
-    } catch (e) {
-      console.warn("Position email failed:", e.message)
-    }
-    return NextResponse.json({
-      positions,
-      totalPnL,
-      fetchedAt:  new Date().toISOString(),
-      emailSent:  emailResult.sent,
-      emailError: emailResult.error,
-    })
   }
 
   try {
@@ -110,21 +89,10 @@ export async function POST(request) {
 
     const totalPnL = enriched.reduce((sum, p) => sum + (p.pnl?.total || 0), 0)
 
-    // Optional: send daily position email when called with sendEmail:true
-    let emailResult = { sent: false }
-    if (sendEmail) {
-      try {
-        emailResult = await sendPositionAlert(enriched)
-      } catch (e) {
-        console.warn("Position email failed:", e.message)
-      }
-    }
-
     return NextResponse.json({
       positions:  enriched,
       totalPnL,
       fetchedAt:  new Date().toISOString(),
-      ...(sendEmail && { emailSent: emailResult.sent, emailError: emailResult.error }),
     })
 
   } catch (e) {
