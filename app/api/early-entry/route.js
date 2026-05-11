@@ -2,6 +2,10 @@ import { NextResponse } from "next/server"
 import { getDailyCandles, getQuote, setAccessToken } from "@/app/lib/upstox"
 import { toInstrumentKey } from "@/app/lib/instruments"
 import { computeSupportZones, computePriceContext, computeSignalScore } from "@/app/lib/technicals"
+import {
+  loadJournal, saveJournal,
+  createSignalEntry, findExistingSignalEntry,
+} from "@/app/lib/journal"
 
 const MCP_URL   = process.env.MCP_URL || "https://nse-data-mcp.vercel.app/mcp"
 const MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
@@ -315,27 +319,35 @@ export async function GET(request) {
       .map(r => r.value)
       .sort((a, b) => (b.signal?.score || 0) - (a.signal?.score || 0))
 
-    // Auto-log BUY and BUY_HALF signals to journal
+    // Auto-log BUY and BUY_HALF signals to journal (direct library call — no HTTP)
     const buySignals = scanResults.filter(s =>
       s.status === "BUY" || s.status === "BUY_HALF"
     )
 
     if (buySignals.length > 0) {
       try {
-        const appUrl = process.env.NEXT_PUBLIC_APP_URL ||
-                       "http://localhost:3000"
-        // Log each signal — fire and forget (don't block response)
-        buySignals.forEach(signal => {
-          fetch(`${appUrl}/api/journal`, {
-            method:  "POST",
-            headers: { "Content-Type": "application/json" },
-            body:    JSON.stringify({
-              action: "signal",
-              signal,
-              targetMonth,
-            }),
-          }).catch(e => console.warn("Journal log failed:", e.message))
-        })
+        const entries = await loadJournal()
+        let dirty = false
+
+        for (const signal of buySignals) {
+          const existing = findExistingSignalEntry(entries, signal.symbol, targetMonth)
+
+          if (existing) {
+            const idx = entries.findIndex(e => e.id === existing.id)
+            if ((signal.signal?.score || 0) > (existing.signalScore || 0)) {
+              entries[idx].signalScore  = signal.signal?.score
+              entries[idx].signalGrade  = signal.signal?.grade?.label
+              entries[idx].signalStatus = signal.status
+              entries[idx].updatedAt    = new Date().toISOString()
+              dirty = true
+            }
+          } else {
+            entries.push(createSignalEntry(signal, targetMonth))
+            dirty = true
+          }
+        }
+
+        if (dirty) await saveJournal(entries)
       } catch(e) {
         console.warn("Journal signal logging error:", e.message)
       }
