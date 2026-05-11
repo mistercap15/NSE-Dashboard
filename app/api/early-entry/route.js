@@ -315,6 +315,32 @@ export async function GET(request) {
       .map(r => r.value)
       .sort((a, b) => (b.signal?.score || 0) - (a.signal?.score || 0))
 
+    // Auto-log BUY and BUY_HALF signals to journal
+    const buySignals = scanResults.filter(s =>
+      s.status === "BUY" || s.status === "BUY_HALF"
+    )
+
+    if (buySignals.length > 0) {
+      try {
+        const appUrl = process.env.NEXT_PUBLIC_APP_URL ||
+                       "http://localhost:3000"
+        // Log each signal — fire and forget (don't block response)
+        buySignals.forEach(signal => {
+          fetch(`${appUrl}/api/journal`, {
+            method:  "POST",
+            headers: { "Content-Type": "application/json" },
+            body:    JSON.stringify({
+              action: "signal",
+              signal,
+              targetMonth,
+            }),
+          }).catch(e => console.warn("Journal log failed:", e.message))
+        })
+      } catch(e) {
+        console.warn("Journal signal logging error:", e.message)
+      }
+    }
+
     return NextResponse.json({
       targetMonth,
       currentMonth,

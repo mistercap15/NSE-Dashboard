@@ -3,6 +3,82 @@ import { useState, useEffect, useCallback } from "react"
 import Sidebar from "../components/Sidebar"
 import { MONTHS } from "../lib/api"
 
+function ExitDialog({ dialog, onConfirm, onCancel }) {
+  const [exitPrice,  setExitPrice]  = useState("")
+  const [exitReason, setExitReason] = useState("MANUAL")
+
+  if (!dialog) return null
+
+  const reasons = [
+    { value: "MEDIAN_REACHED", label: "✓ Median target reached"         },
+    { value: "AVG_REACHED",    label: "✓ Average return reached"        },
+    { value: "TRAIL_STOP",     label: "▲ Trailing stop — locking gains" },
+    { value: "STOP_LOSS",      label: "✗ Stop loss hit"                 },
+    { value: "TIME_STOP",      label: "⏱ Time stop (expiry week)"       },
+    { value: "MANUAL",         label: "◎ Manual exit"                   },
+  ]
+
+  return (
+    <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
+      <div className="bg-card border border-border rounded-xl p-6 w-full max-w-sm">
+        <div className="flex items-center justify-between mb-5">
+          <h2 className="font-display text-lg font-bold text-text">
+            Exit {dialog.symbol}
+          </h2>
+          <button onClick={onCancel} className="text-dim hover:text-text">✕</button>
+        </div>
+        <div className="space-y-4">
+          <div>
+            <label className="font-mono text-[10px] text-dim uppercase tracking-wider block mb-1.5">
+              Exit Price ₹
+            </label>
+            <input
+              type="number"
+              value={exitPrice}
+              onChange={e => setExitPrice(e.target.value)}
+              placeholder="Enter exit price"
+              autoFocus
+              className="w-full bg-bg border border-border rounded-lg px-4 py-2.5
+                font-mono text-sm text-text placeholder-muted focus:border-accent
+                focus:outline-none transition-colors"
+            />
+          </div>
+          <div>
+            <label className="font-mono text-[10px] text-dim uppercase tracking-wider block mb-1.5">
+              Exit Reason
+            </label>
+            <div className="space-y-2">
+              {reasons.map(r => (
+                <button
+                  key={r.value}
+                  type="button"
+                  onClick={() => setExitReason(r.value)}
+                  className={`w-full text-left px-3 py-2 rounded border font-mono text-[11px]
+                    transition-colors ${exitReason === r.value
+                      ? "border-accent/40 bg-accent/10 text-accent"
+                      : "border-border text-dim hover:text-text"
+                    }`}
+                >
+                  {r.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <button
+            onClick={() => exitPrice && onConfirm(parseFloat(exitPrice), exitReason)}
+            disabled={!exitPrice}
+            className="w-full font-mono text-sm py-3 rounded-lg border border-red/30
+              bg-red/10 text-red hover:bg-red/20 transition-colors font-bold
+              disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            Confirm Exit
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 const currentMonth = new Date().getMonth() + 1
 const STORAGE_KEY  = "nse_positions_v1"
 
@@ -146,6 +222,8 @@ export default function PositionsPage() {
   const [symbolDropdown,  setSymbolDropdown]  = useState([])
   const [addingPosition,  setAddingPosition]  = useState(false)
   const [lotSizeLoading,  setLotSizeLoading]  = useState(false)
+  const [isTest,          setIsTest]          = useState(false)
+  const [exitDialog,      setExitDialog]      = useState(null)
 
   const [form, setForm] = useState({
     symbol:      "",
@@ -264,13 +342,27 @@ export default function PositionsPage() {
         targetMonth: parseInt(form.targetMonth),
         medianReturn,
         avgReturn,
+        isTest,
       }
 
       const updated = [...positions, newPos]
       setPositions(updated)
       savePositions(updated)
+
+      // Sync to journal
+      fetch("/api/journal", {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify({
+          action:   "position",
+          position: newPos,
+          isTest,
+        }),
+      }).catch(e => console.warn("Journal sync failed:", e))
+
       setShowForm(false)
       setSymbolDropdown([])
+      setIsTest(false)
       setForm({
         symbol: "", direction: "LONG", entryPrice: "",
         lotSize: "", entryDate: new Date().toISOString().slice(0, 10),
@@ -288,6 +380,24 @@ export default function PositionsPage() {
     setPositions(updated)
     savePositions(updated)
     setEnriched(prev => prev.filter(p => p.id !== id))
+  }
+
+  const handleExitConfirm = async (exitPrice, exitReason) => {
+    const { positionId } = exitDialog
+    setExitDialog(null)
+
+    await fetch("/api/journal", {
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body:    JSON.stringify({
+        action: "close",
+        positionId,
+        exitPrice,
+        exitReason,
+      }),
+    }).catch(e => console.warn("Journal close failed:", e))
+
+    removePosition(positionId)
   }
 
   const displayPositions = enriched.length > 0
@@ -330,7 +440,7 @@ export default function PositionsPage() {
               >
                 {loading ? "Refreshing..." : "↻ Refresh"}
               </button>
-              <button
+<button
                 onClick={() => setShowForm(true)}
                 className="font-mono text-sm px-4 py-2 rounded border border-accent/30
                   bg-accent/10 text-accent hover:bg-accent/20 transition-colors"
@@ -435,7 +545,15 @@ export default function PositionsPage() {
                       {p.direction === "LONG" ? "↑ LONG" : "↓ SHORT"}
                     </div>
                     <div>
-                      <div className="font-mono text-xl font-bold text-accent">{p.symbol}</div>
+                      <div className="flex items-center gap-2">
+                        <div className="font-mono text-xl font-bold text-accent">{p.symbol}</div>
+                        {p.isTest && (
+                          <span className="font-mono text-[9px] px-2 py-0.5 rounded border
+                            bg-amber/10 text-amber border-amber/30 font-bold">
+                            TEST
+                          </span>
+                        )}
+                      </div>
                       <div className="font-mono text-[10px] text-dim">
                         {MONTHS[(p.targetMonth - 1) % 12]} target ·{" "}
                         Entered {p.entryDate} ·{" "}
@@ -482,7 +600,7 @@ export default function PositionsPage() {
                     )}
 
                     <button
-                      onClick={() => removePosition(p.id)}
+                      onClick={() => setExitDialog({ positionId: p.id, symbol: p.symbol })}
                       className="font-mono text-[11px] text-muted hover:text-red transition-colors px-2"
                     >
                       ✕
@@ -580,6 +698,31 @@ export default function PositionsPage() {
                       {d === "LONG" ? "↑ Long" : "↓ Short"}
                     </button>
                   ))}
+                </div>
+
+                {/* Paper / test trade toggle */}
+                <div className="flex items-center justify-between p-3
+                  bg-amber/5 border border-amber/20 rounded-lg">
+                  <div>
+                    <div className="font-mono text-[11px] text-amber font-bold">
+                      Paper / Test Trade
+                    </div>
+                    <div className="font-body text-[11px] text-dim">
+                      Excluded from journal stats and accuracy tracking
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setIsTest(prev => !prev)}
+                    className={`relative w-10 h-5 rounded-full transition-colors ${
+                      isTest ? "bg-amber" : "bg-border"
+                    }`}
+                  >
+                    <div className={`absolute top-0.5 w-4 h-4 rounded-full
+                      bg-white transition-all ${
+                      isTest ? "left-5" : "left-0.5"
+                    }`} />
+                  </button>
                 </div>
 
                 {/* Symbol with autocomplete */}
@@ -705,6 +848,13 @@ export default function PositionsPage() {
             </button>
           </div>
         )}
+        {/* Exit dialog */}
+        <ExitDialog
+          dialog={exitDialog}
+          onConfirm={handleExitConfirm}
+          onCancel={() => setExitDialog(null)}
+        />
+
       </main>
     </div>
   )

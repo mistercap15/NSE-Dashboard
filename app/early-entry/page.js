@@ -362,7 +362,7 @@ export default function EarlyEntryPage() {
                 <div className="font-mono text-[10px] text-dim">Watching</div>
                 <div className="font-mono text-sm text-amber font-bold">{data.watchlist}</div>
               </div>
-              <div className="ml-auto font-mono text-[10px] text-muted">
+<div className="ml-auto font-mono text-[10px] text-muted">
                 Scanned {new Date(data.scannedAt).toLocaleString("en-IN")}
               </div>
             </div>
