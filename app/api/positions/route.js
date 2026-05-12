@@ -42,6 +42,7 @@ export async function POST(request) {
       const livePrice    = quote.ltp
       const entryPrice   = p.entryPrice
       const lotSize      = p.lotSize      || 1
+      const lots         = p.lots         || 1
       const direction    = p.direction    || "LONG"
       const medianReturn = p.medianReturn || 0
       const avgReturn    = p.avgReturn    || 0
@@ -49,7 +50,7 @@ export async function POST(request) {
       const priceDiff = direction === "LONG"
         ? livePrice - entryPrice
         : entryPrice - livePrice
-      const totalPnL  = priceDiff * lotSize
+      const totalPnL  = priceDiff * lotSize * lots
       const returnPct = (priceDiff / entryPrice) * 100
 
       const medianCapture = medianReturn > 0 ? (returnPct / medianReturn) * 100 : 0

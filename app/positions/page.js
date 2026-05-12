@@ -3,6 +3,109 @@ import { useState, useEffect, useCallback } from "react"
 import Sidebar from "../components/Sidebar"
 import { MONTHS } from "../lib/api"
 
+function EditDialog({ dialog, onConfirm, onCancel }) {
+  const [entryPrice, setEntryPrice] = useState(String(dialog?.entryPrice || ""))
+  const [lotSize,    setLotSize]    = useState(String(dialog?.lotSize    || ""))
+  const [lots,       setLots]       = useState(String(dialog?.lots       || 1))
+
+  if (!dialog) return null
+
+  const newPrice = parseFloat(entryPrice) || 0
+  const newLots  = parseInt(lots)         || 1
+  const newLot   = parseInt(lotSize)      || 0
+
+  return (
+    <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
+      <div className="bg-card border border-border rounded-xl p-6 w-full max-w-sm">
+        <div className="flex items-center justify-between mb-2">
+          <h2 className="font-display text-lg font-bold text-text">
+            Edit {dialog.symbol}
+          </h2>
+          <button onClick={onCancel} className="text-dim hover:text-text">✕</button>
+        </div>
+        <p className="font-body text-[12px] text-dim mb-5">
+          Use this to average down — enter the new blended price and updated lot size.
+        </p>
+        <div className="space-y-4">
+          <div>
+            <label className="font-mono text-[10px] text-dim uppercase tracking-wider block mb-1.5">
+              Average Entry Price ₹
+            </label>
+            <input
+              type="number"
+              value={entryPrice}
+              onChange={e => setEntryPrice(e.target.value)}
+              placeholder="Blended avg price"
+              autoFocus
+              className="w-full bg-bg border border-border rounded-lg px-4 py-2.5
+                font-mono text-sm text-text placeholder-muted focus:border-accent
+                focus:outline-none transition-colors"
+            />
+          </div>
+          <div>
+            <label className="font-mono text-[10px] text-dim uppercase tracking-wider block mb-1.5">
+              Lot Size (shares per lot)
+            </label>
+            <input
+              type="number"
+              value={lotSize}
+              onChange={e => setLotSize(e.target.value)}
+              placeholder="e.g. 150"
+              className="w-full bg-bg border border-border rounded-lg px-4 py-2.5
+                font-mono text-sm text-text placeholder-muted focus:border-accent
+                focus:outline-none transition-colors"
+            />
+          </div>
+          <div>
+            <label className="font-mono text-[10px] text-dim uppercase tracking-wider block mb-1.5">
+              Number of Lots
+            </label>
+            <div className="flex gap-2">
+              {[1, 2, 3, 4].map(n => (
+                <button
+                  key={n}
+                  type="button"
+                  onClick={() => setLots(String(n))}
+                  className={`flex-1 py-2 rounded border font-mono text-sm transition-colors ${
+                    lots === String(n)
+                      ? "border-accent/40 bg-accent/10 text-accent"
+                      : "border-border text-dim hover:text-text"
+                  }`}
+                >
+                  {n}
+                </button>
+              ))}
+            </div>
+          </div>
+          {newPrice > 0 && newLot > 0 && (
+            <div className="bg-bg rounded-lg p-3 space-y-1">
+              <div className="flex justify-between font-mono text-[11px]">
+                <span className="text-dim">Total exposure</span>
+                <span className="text-text font-bold">
+                  ₹{(newPrice * newLot * newLots / 100000).toFixed(2)}L
+                </span>
+              </div>
+              <div className="flex justify-between font-mono text-[11px]">
+                <span className="text-dim">Total shares</span>
+                <span className="text-text">{(newLot * newLots).toLocaleString("en-IN")}</span>
+              </div>
+            </div>
+          )}
+          <button
+            onClick={() => entryPrice && lotSize && onConfirm(newPrice, newLot, newLots)}
+            disabled={!entryPrice || !lotSize}
+            className="w-full font-mono text-sm py-3 rounded-lg border border-accent/30
+              bg-accent/10 text-accent hover:bg-accent/20 transition-colors font-bold
+              disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            Save Changes
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function ExitDialog({ dialog, onConfirm, onCancel }) {
   const [exitPrice,  setExitPrice]  = useState("")
   const [exitReason, setExitReason] = useState("MANUAL")
@@ -224,6 +327,7 @@ export default function PositionsPage() {
   const [lotSizeLoading,  setLotSizeLoading]  = useState(false)
   const [isTest,          setIsTest]          = useState(false)
   const [exitDialog,      setExitDialog]      = useState(null)
+  const [editDialog,      setEditDialog]      = useState(null)
 
   const [form, setForm] = useState({
     symbol:      "",
@@ -400,6 +504,19 @@ export default function PositionsPage() {
     removePosition(positionId)
   }
 
+  const handleEditConfirm = (entryPrice, lotSize, lots) => {
+    const { positionId } = editDialog
+    setEditDialog(null)
+
+    const updated = positions.map(p => {
+      if (p.id !== positionId) return p
+      return { ...p, entryPrice, lotSize, lots }
+    })
+    setPositions(updated)
+    savePositions(updated)
+    fetchLiveData(updated)
+  }
+
   const displayPositions = enriched.length > 0
     ? enriched
     : positions.map(p => ({ ...p, pnl: null, recommendation: null }))
@@ -559,6 +676,11 @@ export default function PositionsPage() {
                         Entered {p.entryDate} ·{" "}
                         {p.timing?.daysInTrade ?? 0} days ago ·{" "}
                         {p.timing?.daysRemaining ?? 0} days left
+                        {p.lots > 1 && (
+                          <span className="ml-1 text-accent font-bold">
+                            · {p.lots} lots
+                          </span>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -600,6 +722,19 @@ export default function PositionsPage() {
                     )}
 
                     <button
+                      onClick={() => setEditDialog({
+                        positionId: p.id,
+                        symbol:     p.symbol,
+                        entryPrice: p.entryPrice,
+                        lotSize:    p.lotSize,
+                        lots:       p.lots || 1,
+                      })}
+                      className="font-mono text-[11px] text-muted hover:text-accent transition-colors px-2"
+                      title="Edit / Average down"
+                    >
+                      ✎
+                    </button>
+                    <button
                       onClick={() => setExitDialog({ positionId: p.id, symbol: p.symbol })}
                       className="font-mono text-[11px] text-muted hover:text-red transition-colors px-2"
                     >
@@ -620,7 +755,7 @@ export default function PositionsPage() {
                           { label: "Entry price",    value: `₹${p.entryPrice.toLocaleString("en-IN")}`, color: "text-soft" },
                           { label: "Current price",  value: `₹${(p.livePrice || 0).toLocaleString("en-IN")}`, color: isProfit ? "text-green" : "text-red" },
                           { label: "Median target",  value: `₹${Math.round(p.entryPrice * (1 + p.medianReturn / 100)).toLocaleString("en-IN")} (+${p.medianReturn}%)`, color: "text-accent" },
-                          { label: "Lot size",       value: `${p.lotSize} shares`, color: "text-dim" },
+                          { label: "Lot size",       value: p.lots > 1 ? `${p.lotSize} × ${p.lots} lots (${p.lotSize * p.lots} shares)` : `${p.lotSize} shares`, color: "text-dim" },
                         ].map(item => (
                           <div key={item.label} className="flex justify-between">
                             <span className="font-mono text-[10px] text-dim">{item.label}</span>
@@ -848,6 +983,15 @@ export default function PositionsPage() {
             </button>
           </div>
         )}
+        {/* Edit dialog */}
+        {editDialog && (
+          <EditDialog
+            dialog={editDialog}
+            onConfirm={handleEditConfirm}
+            onCancel={() => setEditDialog(null)}
+          />
+        )}
+
         {/* Exit dialog */}
         <ExitDialog
           dialog={exitDialog}

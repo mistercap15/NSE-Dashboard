@@ -319,17 +319,22 @@ export async function GET(request) {
       .map(r => r.value)
       .sort((a, b) => (b.signal?.score || 0) - (a.signal?.score || 0))
 
-    // Auto-log BUY and BUY_HALF signals to journal (direct library call — no HTTP)
-    const buySignals = scanResults.filter(s =>
-      s.status === "BUY" || s.status === "BUY_HALF"
+    // Auto-log actionable signals to journal (direct library call — no HTTP)
+    // Log BUY, BUY_HALF, and WATCH signals
+    // If Upstox is not connected (no live prices), fall back to top MONITOR signals
+    const actionableSignals = scanResults.filter(s =>
+      s.status === "BUY" || s.status === "BUY_HALF" || s.status === "WATCH"
     )
+    const signalsToLog = actionableSignals.length > 0
+      ? actionableSignals
+      : scanResults.filter(s => s.status === "MONITOR").slice(0, 5)
 
-    if (buySignals.length > 0) {
+    if (signalsToLog.length > 0) {
       try {
         const entries = await loadJournal()
         let dirty = false
 
-        for (const signal of buySignals) {
+        for (const signal of signalsToLog) {
           const existing = findExistingSignalEntry(entries, signal.symbol, targetMonth)
 
           if (existing) {
@@ -348,8 +353,9 @@ export async function GET(request) {
         }
 
         if (dirty) await saveJournal(entries)
+        console.log(`[Journal] Logged ${signalsToLog.length} signals for month ${targetMonth}`)
       } catch(e) {
-        console.warn("Journal signal logging error:", e.message)
+        console.error("Journal signal logging error:", e.message, e.stack)
       }
     }
 
