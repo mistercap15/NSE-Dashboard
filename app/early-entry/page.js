@@ -178,6 +178,7 @@ export default function EarlyEntryPage() {
   const [tokenExpired,    setTokenExpired]    = useState(false)
   const [selectedMonth,   setSelectedMonth]   = useState(nextMonth)
   const [expanded,        setExpanded]        = useState(null)
+  const [journalAdded,    setJournalAdded]    = useState(new Set())
 
   useEffect(() => {
     fetch("/api/upstox/status")
@@ -189,9 +190,25 @@ export default function EarlyEntryPage() {
       .catch(() => setUpstoxReady(false))
   }, [])
 
+  const addToJournal = async (stock) => {
+    try {
+      const res = await fetch("/api/journal", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "signal", signal: stock, targetMonth: selectedMonth }),
+      })
+      if (res.ok) {
+        setJournalAdded(prev => new Set([...prev, stock.symbol]))
+      }
+    } catch (e) {
+      console.error("Failed to add to journal:", e)
+    }
+  }
+
   const runScan = async () => {
     setLoading(true)
     setError(null)
+    setJournalAdded(new Set())
     try {
       const res  = await fetch(`/api/early-entry?month=${selectedMonth}`)
       const json = await res.json()
@@ -524,6 +541,18 @@ export default function EarlyEntryPage() {
                           </span>
                         )}
                       </div>
+
+                      <button
+                        onClick={(e) => { e.stopPropagation(); addToJournal(s) }}
+                        disabled={journalAdded.has(s.symbol)}
+                        className={`font-mono text-[10px] px-2.5 py-1 rounded border transition-colors ${
+                          journalAdded.has(s.symbol)
+                            ? "border-green/30 text-green bg-green/10 cursor-default"
+                            : "border-border text-dim hover:text-accent hover:border-accent/30"
+                        }`}
+                      >
+                        {journalAdded.has(s.symbol) ? "✓ Added" : "+ Journal"}
+                      </button>
 
                       <span className="font-mono text-[11px] text-dim">
                         {expanded === s.symbol ? "▲" : "▼"}

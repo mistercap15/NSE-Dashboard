@@ -2,10 +2,6 @@ import { NextResponse } from "next/server"
 import { getDailyCandles, getQuote, setAccessToken } from "@/app/lib/upstox"
 import { toInstrumentKey } from "@/app/lib/instruments"
 import { computeSupportZones, computePriceContext, computeSignalScore } from "@/app/lib/technicals"
-import {
-  loadJournal, saveJournal,
-  createSignalEntry, findExistingSignalEntry,
-} from "@/app/lib/journal"
 
 const MCP_URL   = process.env.MCP_URL || "https://nse-data-mcp.vercel.app/mcp"
 const MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
@@ -318,46 +314,6 @@ export async function GET(request) {
       .filter(r => r.status === "fulfilled")
       .map(r => r.value)
       .sort((a, b) => (b.signal?.score || 0) - (a.signal?.score || 0))
-
-    // Auto-log actionable signals to journal (direct library call — no HTTP)
-    // Log BUY, BUY_HALF, and WATCH signals
-    // If Upstox is not connected (no live prices), fall back to top MONITOR signals
-    const actionableSignals = scanResults.filter(s =>
-      s.status === "BUY" || s.status === "BUY_HALF" || s.status === "WATCH"
-    )
-    const signalsToLog = actionableSignals.length > 0
-      ? actionableSignals
-      : scanResults.filter(s => s.status === "MONITOR").slice(0, 5)
-
-    if (signalsToLog.length > 0) {
-      try {
-        const entries = await loadJournal()
-        let dirty = false
-
-        for (const signal of signalsToLog) {
-          const existing = findExistingSignalEntry(entries, signal.symbol, targetMonth)
-
-          if (existing) {
-            const idx = entries.findIndex(e => e.id === existing.id)
-            if ((signal.signal?.score || 0) > (existing.signalScore || 0)) {
-              entries[idx].signalScore  = signal.signal?.score
-              entries[idx].signalGrade  = signal.signal?.grade?.label
-              entries[idx].signalStatus = signal.status
-              entries[idx].updatedAt    = new Date().toISOString()
-              dirty = true
-            }
-          } else {
-            entries.push(createSignalEntry(signal, targetMonth))
-            dirty = true
-          }
-        }
-
-        if (dirty) await saveJournal(entries)
-        console.log(`[Journal] Logged ${signalsToLog.length} signals for month ${targetMonth}`)
-      } catch(e) {
-        console.error("Journal signal logging error:", e.message, e.stack)
-      }
-    }
 
     return NextResponse.json({
       targetMonth,
