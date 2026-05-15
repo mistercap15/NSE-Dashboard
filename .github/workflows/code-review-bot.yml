@@ -1,0 +1,100 @@
+name: 🤖 NSE Dashboard Code Review Bot
+
+on:
+  push:
+    branches: ["*"]
+  pull_request:
+    branches: ["*"]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: npm audit
+        run: npm audit --json > audit-report.json || true
+
+      - name: Next.js build
+        id: build
+        run: |
+          npm run build > build-output.txt 2>&1
+          echo "exit_code=$?" >> $GITHUB_OUTPUT
+        continue-on-error: true
+
+      - name: ESLint
+        run: npx next lint --format json > eslint-report.json 2>/dev/null || true
+
+      - name: Post review comment
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            let body = "## 🤖 NSE Dashboard — Code Review Report\n\n";
+            const buildOutput = fs.existsSync('build-output.txt') ? fs.readFileSync('build-output.txt', 'utf8') : '';
+            const buildFailed = buildOutput.includes('Error') || buildOutput.includes('Failed');
+            body += `### 🏗️ Next.js Build\n`;
+            body += buildFailed ? `❌ **Build failed!**\n\`\`\`\n${buildOutput.slice(-800)}\n\`\`\`\n` : `✅ Build passed.\n`;
+            body += `\n### 📦 Package Vulnerabilities\n`;
+            try {
+              const audit = JSON.parse(fs.readFileSync('audit-report.json', 'utf8'));
+              const vulns = audit.vulnerabilities || {};
+              const total = Object.keys(vulns).length;
+              if (total === 0) {
+                body += `✅ No vulnerable packages.\n`;
+              } else {
+                body += `❌ **${total} vulnerable package(s)**\n\n| Package | Severity | Fix |\n|---------|----------|-----|\n`;
+                for (const [pkg, info] of Object.entries(vulns).slice(0, 15)) {
+                  const sev = info.severity || 'unknown';
+                  const icon = sev === 'critical' ? '🔴' : sev === 'high' ? '🟠' : '🟡';
+                  const fix = info.fixAvailable ? (typeof info.fixAvailable === 'object' ? `\`npm i ${pkg}@${info.fixAvailable.version}\`` : '\`npm audit fix\`') : 'Manual fix needed';
+                  body += `| \`${pkg}\` | ${icon} ${sev} | ${fix} |\n`;
+                }
+              }
+            } catch (e) { body += `⚠️ Could not parse audit results.\n`; }
+            body += `\n### 🔍 ESLint\n`;
+            try {
+              const results = JSON.parse(fs.readFileSync('eslint-report.json', 'utf8'));
+              const issues = results.filter(r => r.errorCount > 0 || r.warningCount > 0);
+              if (issues.length === 0) {
+                body += `✅ No lint issues.\n`;
+              } else {
+                body += `❌ **${issues.reduce((s,r)=>s+r.errorCount,0)} error(s)** in ${issues.length} file(s)\n\n`;
+                for (const file of issues.slice(0, 8)) {
+                  const shortPath = file.filePath.replace(process.env.GITHUB_WORKSPACE + '/', '');
+                  body += `\n**\`${shortPath}\`**\n`;
+                  for (const msg of file.messages.slice(0, 5)) {
+                    body += `- ${msg.severity===2?'🔴':'🟡'} Line ${msg.line}: \`${msg.ruleId||'error'}\` — ${msg.message}\n`;
+                  }
+                }
+              }
+            } catch (e) { body += `⚠️ ESLint report not available.\n`; }
+            body += `\n---\n*🤖 NSE Dashboard Bot · [View run](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})*`;
+            const { data: comments } = await github.rest.issues.listComments({ owner: context.repo.owner, repo: context.repo.repo, issue_number: context.issue.number });
+            const existing = comments.find(c => c.body.includes('NSE Dashboard — Code Review Report'));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner: context.repo.owner, repo: context.repo.repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: context.issue.number, body });
+            }
+
+      - name: Fail if build failed
+        if: steps.build.outputs.exit_code != '0'
+        run: exit 1
