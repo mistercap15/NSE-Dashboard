@@ -3,6 +3,7 @@ import { useState, useEffect } from "react"
 import Sidebar from "../components/Sidebar"
 import Link from "next/link"
 import { MONTHS, MONTH_FULL } from "../lib/api"
+import { loadJournal, saveJournal, upsertSignalEntry } from "../lib/journal"
 
 const currentMonth = new Date().getMonth() + 1
 const nextMonth    = currentMonth === 12 ? 1 : currentMonth + 1
@@ -190,19 +191,11 @@ export default function EarlyEntryPage() {
       .catch(() => setUpstoxReady(false))
   }, [])
 
-  const addToJournal = async (stock) => {
-    try {
-      const res = await fetch("/api/journal", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "signal", signal: stock, targetMonth: selectedMonth }),
-      })
-      if (res.ok) {
-        setJournalAdded(prev => new Set([...prev, stock.symbol]))
-      }
-    } catch (e) {
-      console.error("Failed to add to journal:", e)
-    }
+  const addToJournal = (stock) => {
+    const entries = loadJournal()
+    const { entries: updated } = upsertSignalEntry(entries, stock, selectedMonth)
+    saveJournal(updated)
+    setJournalAdded(prev => new Set([...prev, stock.symbol]))
   }
 
   const runScan = async () => {

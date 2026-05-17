@@ -1,6 +1,10 @@
 "use client"
 import { useState, useEffect } from "react"
 import Sidebar from "../components/Sidebar"
+import {
+  loadJournal, saveJournal,
+  markSignalMissed, computeStats,
+} from "../lib/journal"
 
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun",
                 "Jul","Aug","Sep","Oct","Nov","Dec"]
@@ -76,7 +80,10 @@ function StatCard({ label, value, sub, color = "text-text" }) {
 }
 
 function MissedCard({ entry, onMarkMissed }) {
-  const [price, setPrice] = useState("")
+  const [exitPrice, setExitPrice] = useState("")
+  const [scanPrice, setScanPrice] = useState("")
+  const needsScanPrice = !entry.currentPriceAtScan
+  const canSubmit = exitPrice && (!needsScanPrice || scanPrice)
   return (
     <div className="bg-amber/5 border border-amber/20 rounded-lg p-3">
       <div className="flex items-center justify-between mb-2">
@@ -93,27 +100,46 @@ function MissedCard({ entry, onMarkMissed }) {
           Signal: {entry.signalScore}/100 · {entry.winRate?.toFixed(1)}% WR
         </div>
       </div>
-      <div className="flex gap-2 items-center">
+      <div className="flex gap-2 items-center flex-wrap">
+        {needsScanPrice && (
+          <input
+            type="number"
+            value={scanPrice}
+            onChange={e => setScanPrice(e.target.value)}
+            placeholder="Price when signal fired"
+            className="flex-1 min-w-[160px] bg-bg border border-border rounded
+              px-3 py-1.5 font-mono text-[12px] text-text
+              placeholder-muted focus:border-accent focus:outline-none"
+          />
+        )}
         <input
           type="number"
-          value={price}
-          onChange={e => setPrice(e.target.value)}
+          value={exitPrice}
+          onChange={e => setExitPrice(e.target.value)}
           placeholder={`${entry.targetMonthName} end price`}
-          className="flex-1 bg-bg border border-border rounded
+          className="flex-1 min-w-[160px] bg-bg border border-border rounded
             px-3 py-1.5 font-mono text-[12px] text-text
             placeholder-muted focus:border-accent focus:outline-none"
         />
         <button
-          onClick={() => price && onMarkMissed(entry.id, parseFloat(price))}
-          className="font-mono text-[11px] px-3 py-1.5 rounded border
-            border-amber/30 bg-amber/10 text-amber hover:bg-amber/20"
+          onClick={() => canSubmit && onMarkMissed(
+            entry.id,
+            parseFloat(exitPrice),
+            needsScanPrice ? parseFloat(scanPrice) : null
+          )}
+          disabled={!canSubmit}
+          className={`font-mono text-[11px] px-3 py-1.5 rounded border
+            transition-colors ${canSubmit
+              ? "border-amber/30 bg-amber/10 text-amber hover:bg-amber/20 cursor-pointer"
+              : "border-border text-muted cursor-not-allowed"}`}
         >
           Mark missed →
         </button>
       </div>
       <div className="font-mono text-[10px] text-muted mt-1.5">
-        Enter the price at end of {entry.targetMonthName} to calculate
-        what you would have made/lost
+        {needsScanPrice
+          ? `Enter the price when the signal fired + ${entry.targetMonthName} end price to calculate what you would have made/lost`
+          : `Enter the price at end of ${entry.targetMonthName} to calculate what you would have made/lost`}
       </div>
     </div>
   )
@@ -129,11 +155,10 @@ export default function JournalPage() {
   const [editNotes, setEditNotes] = useState(null)
 
   const load = () => {
-    fetch("/api/journal")
-      .then(r => r.json())
-      .then(setData)
-      .catch(console.error)
-      .finally(() => setLoading(false))
+    const entries = loadJournal()
+    const stats   = computeStats(entries)
+    setData({ entries, stats })
+    setLoading(false)
   }
   useEffect(load, [])
 
@@ -150,17 +175,15 @@ export default function JournalPage() {
   // Open signals awaiting missed marking
   const openSignals = entries.filter(e => e.status === "SIGNAL_OPEN")
 
-  const saveNotes = async () => {
+  const saveNotes = () => {
     if (!editNotes) return
-    await fetch("/api/journal", {
-      method:  "POST",
-      headers: { "Content-Type": "application/json" },
-      body:    JSON.stringify({
-        action: "notes",
-        entryId: editNotes.id,
-        notes:   editNotes.notes,
-      }),
-    })
+    const entries = loadJournal()
+    const updated = entries.map(e =>
+      e.id === editNotes.id
+        ? { ...e, notes: editNotes.notes, updatedAt: new Date().toISOString() }
+        : e
+    )
+    saveJournal(updated)
     setData(prev => ({
       ...prev,
       entries: prev.entries.map(e =>
@@ -170,14 +193,12 @@ export default function JournalPage() {
     setEditNotes(null)
   }
 
-  const markMissed = async (entryId, price) => {
-    await fetch("/api/journal", {
-      method:  "POST",
-      headers: { "Content-Type": "application/json" },
-      body:    JSON.stringify({
-        action: "missed", entryId, priceAtMonthEnd: price
-      }),
-    })
+  const markMissed = (entryId, price, scanPrice) => {
+    const entries = loadJournal()
+    const idx = entries.findIndex(e => e.id === entryId)
+    if (idx === -1) return
+    entries[idx] = markSignalMissed(entries[idx], price, scanPrice || null)
+    saveJournal(entries)
     load()
   }
 

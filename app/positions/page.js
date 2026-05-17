@@ -2,6 +2,7 @@
 import { useState, useEffect, useCallback } from "react"
 import Sidebar from "../components/Sidebar"
 import { MONTHS } from "../lib/api"
+import { loadJournal, saveJournal, upsertPositionEntry, closeLiveEntry } from "../lib/journal"
 
 function EditDialog({ dialog, onConfirm, onCancel }) {
   const [entryPrice, setEntryPrice] = useState(String(dialog?.entryPrice || ""))
@@ -454,15 +455,9 @@ export default function PositionsPage() {
       savePositions(updated)
 
       // Sync to journal
-      fetch("/api/journal", {
-        method:  "POST",
-        headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify({
-          action:   "position",
-          position: newPos,
-          isTest,
-        }),
-      }).catch(e => console.warn("Journal sync failed:", e))
+      const journalEntries = loadJournal()
+      const { entries: updatedJournal } = upsertPositionEntry(journalEntries, newPos, isTest)
+      saveJournal(updatedJournal)
 
       setShowForm(false)
       setSymbolDropdown([])
@@ -490,16 +485,20 @@ export default function PositionsPage() {
     const { positionId } = exitDialog
     setExitDialog(null)
 
-    await fetch("/api/journal", {
-      method:  "POST",
-      headers: { "Content-Type": "application/json" },
-      body:    JSON.stringify({
-        action: "close",
-        positionId,
-        exitPrice,
-        exitReason,
-      }),
-    }).catch(e => console.warn("Journal close failed:", e))
+    const journalEntries = loadJournal()
+    const idx = journalEntries.findIndex(e =>
+      e.positionId === positionId &&
+      (e.status === "LIVE_OPEN" || e.status === "TEST_OPEN")
+    )
+    if (idx !== -1) {
+      const isTest = journalEntries[idx].status === "TEST_OPEN"
+      if (isTest) {
+        journalEntries[idx] = { ...journalEntries[idx], status: "TEST_CLOSED", exitDate: new Date().toISOString().slice(0,10), exitPrice, updatedAt: new Date().toISOString() }
+      } else {
+        journalEntries[idx] = closeLiveEntry(journalEntries[idx], exitPrice, exitReason)
+      }
+      saveJournal(journalEntries)
+    }
 
     removePosition(positionId)
   }
