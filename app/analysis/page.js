@@ -12,11 +12,10 @@ import { MONTHS, MONTH_FULL, getSignalLabel } from "../lib/api";
 import { StockPDFButton } from "../components/PDFDownloadButton";
 import StopLossCard from "../components/StopLossCard";
 import ShortStopLossCard from "../components/ShortStopLossCard";
+import { getCurrentMonth } from "../lib/date";
 import {
   AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer,
 } from "recharts";
-
-const currentMonth = new Date().getMonth() + 1;
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -92,6 +91,7 @@ function AnalysisContent() {
   const router        = useRouter();
   const heatmapRef    = useRef(null);
   const winRateRef    = useRef(null);
+  const currentMonth  = getCurrentMonth();
 
   const [symbol,        setSymbol]        = useState(searchParams.get("symbol") || "");
   const [data,          setData]          = useState(null);

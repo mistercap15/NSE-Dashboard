@@ -2,6 +2,7 @@
 import { useState, useEffect, useCallback } from "react"
 import Sidebar from "../components/Sidebar"
 import { MONTHS } from "../lib/api"
+import { getCurrentMonth, getNextMonth } from "../lib/date"
 import { loadJournal, saveJournal, upsertPositionEntry, closeLiveEntry } from "../lib/journal"
 
 function EditDialog({ dialog, onConfirm, onCancel }) {
@@ -183,7 +184,6 @@ function ExitDialog({ dialog, onConfirm, onCancel }) {
   )
 }
 
-const currentMonth = new Date().getMonth() + 1
 const STORAGE_KEY  = "nse_positions_v1"
 
 const FO_SYMBOLS = [
@@ -316,6 +316,8 @@ function CaptureBar({ pct }) {
 }
 
 export default function PositionsPage() {
+  const currentMonth = getCurrentMonth()
+  const nextMonth = getNextMonth(currentMonth)
   const [positions,   setPositions]   = useState([])
   const [enriched,    setEnriched]    = useState([])
   const [totalPnL,    setTotalPnL]    = useState(0)
@@ -338,7 +340,7 @@ export default function PositionsPage() {
     entryDate:   new Date().toISOString().slice(0, 10),
     medianReturn:"",
     avgReturn:   "",
-    targetMonth: currentMonth === 12 ? 1 : currentMonth + 1,
+    targetMonth: nextMonth,
   })
 
   useEffect(() => {
@@ -466,7 +468,7 @@ export default function PositionsPage() {
         symbol: "", direction: "LONG", entryPrice: "",
         lotSize: "", entryDate: new Date().toISOString().slice(0, 10),
         medianReturn: "", avgReturn: "",
-        targetMonth: currentMonth === 12 ? 1 : currentMonth + 1,
+        targetMonth: nextMonth,
       })
       fetchLiveData(updated)
     } finally {

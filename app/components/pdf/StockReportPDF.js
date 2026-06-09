@@ -1,5 +1,6 @@
 import React from "react"
 import { Document, Page, View, Text, StyleSheet } from "@react-pdf/renderer"
+import { getCurrentMonth } from "../../lib/date"
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -201,7 +202,7 @@ export default function StockReportPDF({ data }) {
   const worstMonth = [...seasonality].sort((a, b) => a.win_rate - b.win_rate)[0]
 
   const today          = new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })
-  const currentMonthIdx = new Date().getMonth()
+  const currentMonthIdx = getCurrentMonth() - 1
 
   // Recent 36 months for page 2
   const recent36 = [...prices].slice(-36).reverse()

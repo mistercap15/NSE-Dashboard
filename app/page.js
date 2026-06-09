@@ -3,10 +3,9 @@ import StatCard from "./components/StatCard";
 import SignalBadge from "./components/SignalBadge";
 import Link from "next/link";
 import { MONTHS, MONTH_FULL } from "./lib/api";
+import { getCurrentMonth, getCurrentYear, getNextMonth } from "./lib/date";
 
-const currentMonth  = new Date().getMonth() + 1;
-const currentYear   = new Date().getFullYear();
-const nextMonth     = currentMonth === 12 ? 1 : currentMonth + 1;
+export const dynamic = "force-dynamic";
 
 // Static overview stats (dynamic data comes from /rankings page)
 const OVERVIEW_STATS = [
@@ -17,13 +16,24 @@ const OVERVIEW_STATS = [
 ];
 
 const QUICK_ACTIONS = [
-  { label: "View June rankings",    href: "/rankings?month=6",  desc: "Top F&O stocks for June" },
   { label: "Full year calendar",    href: "/calendar",           desc: "12-month ranking grid" },
   { label: "Screen by sector",      href: "/screener",           desc: "Filter by Pharma, IT, FMCG…" },
   { label: "Portfolio P&L",         href: "/portfolio",          desc: "Calculate expected returns" },
 ];
 
 export default function HomePage() {
+  const currentMonth = getCurrentMonth();
+  const currentYear = getCurrentYear();
+  const nextMonth = getNextMonth(currentMonth);
+  const quickActions = [
+    {
+      label: `View ${MONTH_FULL[currentMonth - 1]} rankings`,
+      href: `/rankings?month=${currentMonth}`,
+      desc: `Top F&O stocks for ${MONTH_FULL[currentMonth - 1]}`,
+    },
+    ...QUICK_ACTIONS,
+  ];
+
   return (
     <div className="flex min-h-screen bg-bg">
       <Sidebar />
@@ -139,7 +149,7 @@ export default function HomePage() {
             <div className="bg-card border border-border rounded-lg p-5">
               <h2 className="font-display text-base font-semibold text-text mb-4">Quick Actions</h2>
               <div className="space-y-2">
-                {QUICK_ACTIONS.map(a => (
+                {quickActions.map(a => (
                   <Link
                     key={a.href}
                     href={a.href}

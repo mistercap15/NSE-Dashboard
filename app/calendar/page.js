@@ -4,10 +4,10 @@ import Sidebar from "../components/Sidebar";
 import SignalBadge from "../components/SignalBadge";
 import Link from "next/link";
 import { MONTHS, MONTH_FULL } from "../lib/api";
-
-const CURRENT_MONTH = new Date().getMonth() + 1;
+import { getCurrentMonth } from "../lib/date";
 
 export default function CalendarPage() {
+  const currentMonth = getCurrentMonth();
   const [data,      setData]      = useState(null);
   const [shortData, setShortData] = useState(null);
   const [loading,   setLoading]   = useState(true);
@@ -70,7 +70,7 @@ export default function CalendarPage() {
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
             {MONTHS.map((m, i) => {
               const stocks     = data?.[m] || [];
-              const isCurrent  = i + 1 === CURRENT_MONTH;
+              const isCurrent  = i + 1 === currentMonth;
               const avgWR      = stocks.length > 0
                 ? (stocks.reduce((a,s) => a + (s.win_rate||0), 0) / stocks.length).toFixed(0)
                 : null;

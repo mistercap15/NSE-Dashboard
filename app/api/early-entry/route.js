@@ -2,6 +2,7 @@ import { NextResponse } from "next/server"
 import { getDailyCandles, getQuote, setAccessToken } from "@/app/lib/upstox"
 import { toInstrumentKey } from "@/app/lib/instruments"
 import { computeSupportZones, computePriceContext, computeSignalScore } from "@/app/lib/technicals"
+import { getNextMonth } from "@/app/lib/date"
 
 const MCP_URL   = process.env.MCP_URL || "https://nse-data-mcp.vercel.app/mcp"
 const MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
@@ -157,7 +158,7 @@ export async function GET(request) {
   else if (cronToken) setAccessToken(cronToken)
 
   const { searchParams } = new URL(request.url)
-  const targetMonth = parseInt(searchParams.get("month") || String(new Date().getMonth() + 2)) // next month default
+  const targetMonth = parseInt(searchParams.get("month") || String(getNextMonth())) // next month default
   const currentMonth = targetMonth === 1 ? 12 : targetMonth - 1
 
   try {

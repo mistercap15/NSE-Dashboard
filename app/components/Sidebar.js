@@ -8,8 +8,7 @@ import {
   LayoutDashboard, TrendingUp, CalendarDays, Wallet, SlidersHorizontal, Search, RotateCcw, Zap, Activity, BookOpen,
 } from "lucide-react";
 import { MONTHS } from "../lib/api";
-
-const currentMonth = new Date().getMonth() + 1;
+import { getCurrentMonth, getCurrentYear } from "../lib/date";
 
 const navItems = [
   { href: "/",          label: "Overview",       Icon: LayoutDashboard },
@@ -26,6 +25,8 @@ const navItems = [
 export default function Sidebar() {
   const pathname = usePathname();
   const { theme, setTheme } = useTheme();
+  const currentMonth = getCurrentMonth();
+  const currentYear = getCurrentYear();
   const [mounted,     setMounted]     = useState(false);
   const [mobileOpen,  setMobileOpen]  = useState(false);
 
@@ -109,7 +110,7 @@ export default function Sidebar() {
           <div className="flex items-center gap-2">
             <div className="w-1.5 h-1.5 rounded-full bg-green animate-pulse" />
             <span className="font-mono text-xs text-green font-medium">
-              {MONTHS[currentMonth - 1]} {new Date().getFullYear()}
+              {MONTHS[currentMonth - 1]} {currentYear}
             </span>
           </div>
         </div>

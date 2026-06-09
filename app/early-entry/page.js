@@ -3,10 +3,8 @@ import { useState, useEffect } from "react"
 import Sidebar from "../components/Sidebar"
 import Link from "next/link"
 import { MONTHS, MONTH_FULL } from "../lib/api"
+import { getCurrentMonth, getNextMonth } from "../lib/date"
 import { loadJournal, saveJournal, upsertSignalEntry } from "../lib/journal"
-
-const currentMonth = new Date().getMonth() + 1
-const nextMonth    = currentMonth === 12 ? 1 : currentMonth + 1
 
 // ── Plain label for support zone types ────────────────────────────
 function supportTypeLabel(type) {
@@ -172,12 +170,14 @@ function StatusBadge({ status }) {
 }
 
 export default function EarlyEntryPage() {
+  const currentMonth = getCurrentMonth()
+  const nextMonth = getNextMonth(currentMonth)
   const [data,            setData]            = useState(null)
   const [loading,         setLoading]         = useState(false)
   const [error,           setError]           = useState(null)
   const [upstoxReady,     setUpstoxReady]     = useState(false)
   const [tokenExpired,    setTokenExpired]    = useState(false)
-  const [selectedMonth,   setSelectedMonth]   = useState(nextMonth)
+  const [selectedMonth,   setSelectedMonth]   = useState(() => getNextMonth())
   const [expanded,        setExpanded]        = useState(null)
   const [journalAdded,    setJournalAdded]    = useState(new Set())
 

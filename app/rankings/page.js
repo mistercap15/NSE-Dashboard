@@ -5,15 +5,15 @@ import Sidebar from "../components/Sidebar";
 import RankingsTable from "../components/RankingsTable";
 import StatCard from "../components/StatCard";
 import { MONTHS, MONTH_FULL, SECTORS, getSignalLabel } from "../lib/api";
+import { getCurrentMonth } from "../lib/date";
 import { RankingsPDFButton } from "../components/PDFDownloadButton";
 import ShortCandidatesTable from "../components/ShortCandidatesTable";
-
-const CURRENT_MONTH = new Date().getMonth() + 1;
 
 function RankingsContent() {
   const searchParams  = useSearchParams();
   const router        = useRouter();
-  const [month,     setMonth]     = useState(parseInt(searchParams.get("month") || CURRENT_MONTH));
+  const currentMonth = getCurrentMonth();
+  const [month,     setMonth]     = useState(() => parseInt(searchParams.get("month") || String(getCurrentMonth())));
   const [sector,    setSector]    = useState("ALL");
   const [data,      setData]      = useState(null);
   const [loading,   setLoading]   = useState(false);
@@ -100,7 +100,7 @@ function RankingsContent() {
             }`}
           >
             {m}
-            {i + 1 === CURRENT_MONTH && (
+            {i + 1 === currentMonth && (
               <span className="ml-1 inline-block w-1 h-1 rounded-full bg-green align-middle" />
             )}
           </button>

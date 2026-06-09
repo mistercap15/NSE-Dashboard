@@ -2,8 +2,7 @@
 import { useState, useEffect } from "react";
 import Sidebar from "../components/Sidebar";
 import { MONTHS } from "../lib/api";
-
-const CURRENT_MONTH = new Date().getMonth() + 1;
+import { getCurrentMonth } from "../lib/date";
 
 const ACTION_STYLES = {
   LONG:   { bg: "bg-green/10",  border: "border-green/20",  text: "text-green",  label: "LONG"   },
@@ -144,6 +143,7 @@ function MonthCard({ strategy, isActive }) {
 }
 
 export default function SectorRotationPage() {
+  const currentMonth = getCurrentMonth();
   const [data,    setData]    = useState(null);
   const [loading, setLoading] = useState(true);
   const [error,   setError]   = useState(null);
@@ -156,7 +156,7 @@ export default function SectorRotationPage() {
   }, []);
 
   const strategies = data?.strategies || [];
-  const currentStrategy = strategies.find(s => s.month === CURRENT_MONTH);
+  const currentStrategy = strategies.find(s => s.month === currentMonth);
 
   return (
     <div className="flex min-h-screen bg-bg">
@@ -218,7 +218,7 @@ export default function SectorRotationPage() {
               <MonthCard
                 key={strategy.month}
                 strategy={strategy}
-                isActive={strategy.month === CURRENT_MONTH}
+                isActive={strategy.month === currentMonth}
               />
             ))}
           </div>

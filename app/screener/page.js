@@ -3,11 +3,10 @@ import { useState } from "react";
 import Sidebar from "../components/Sidebar";
 import RankingsTable from "../components/RankingsTable";
 import { MONTHS } from "../lib/api";
-
-const CURRENT_MONTH = new Date().getMonth() + 1;
+import { getCurrentMonth } from "../lib/date";
 
 export default function ScreenerPage() {
-  const [month,   setMonth]   = useState(CURRENT_MONTH);
+  const [month,   setMonth]   = useState(() => getCurrentMonth());
   const [sector,  setSector]  = useState("ALL");
   const [minWR,   setMinWR]   = useState(70);
   const [data,    setData]    = useState(null);
