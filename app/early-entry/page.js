@@ -4,7 +4,6 @@ import Sidebar from "../components/Sidebar"
 import Link from "next/link"
 import { MONTHS, MONTH_FULL } from "../lib/api"
 import { getCurrentMonth, getNextMonth } from "../lib/date"
-import { loadJournal, saveJournal, upsertSignalEntry } from "../lib/journal"
 
 // ── Plain label for support zone types ────────────────────────────
 function supportTypeLabel(type) {
@@ -179,7 +178,6 @@ export default function EarlyEntryPage() {
   const [tokenExpired,    setTokenExpired]    = useState(false)
   const [selectedMonth,   setSelectedMonth]   = useState(() => getNextMonth())
   const [expanded,        setExpanded]        = useState(null)
-  const [journalAdded,    setJournalAdded]    = useState(new Set())
 
   useEffect(() => {
     fetch("/api/upstox/status")
@@ -191,17 +189,9 @@ export default function EarlyEntryPage() {
       .catch(() => setUpstoxReady(false))
   }, [])
 
-  const addToJournal = (stock) => {
-    const entries = loadJournal()
-    const { entries: updated } = upsertSignalEntry(entries, stock, selectedMonth)
-    saveJournal(updated)
-    setJournalAdded(prev => new Set([...prev, stock.symbol]))
-  }
-
   const runScan = async () => {
     setLoading(true)
     setError(null)
-    setJournalAdded(new Set())
     try {
       const res  = await fetch(`/api/early-entry?month=${selectedMonth}`)
       const json = await res.json()
@@ -534,18 +524,6 @@ export default function EarlyEntryPage() {
                           </span>
                         )}
                       </div>
-
-                      <button
-                        onClick={(e) => { e.stopPropagation(); addToJournal(s) }}
-                        disabled={journalAdded.has(s.symbol)}
-                        className={`font-mono text-[10px] px-2.5 py-1 rounded border transition-colors ${
-                          journalAdded.has(s.symbol)
-                            ? "border-green/30 text-green bg-green/10 cursor-default"
-                            : "border-border text-dim hover:text-accent hover:border-accent/30"
-                        }`}
-                      >
-                        {journalAdded.has(s.symbol) ? "✓ Added" : "+ Journal"}
-                      </button>
 
                       <span className="font-mono text-[11px] text-dim">
                         {expanded === s.symbol ? "▲" : "▼"}
