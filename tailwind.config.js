@@ -28,10 +28,27 @@ module.exports = {
         "fade-in":    "fadeIn 0.4s ease forwards",
         "slide-up":   "slideUp 0.35s ease forwards",
         "pulse-slow": "pulse 3s ease-in-out infinite",
+        "scan":       "scan 1.1s ease-in-out infinite",
+        "sparkle":    "sparkle 1.6s ease-in-out infinite",
+        "ring-spin":  "ringSpin 1s linear infinite",
+        "pop-in":     "popIn 0.3s cubic-bezier(0.34,1.56,0.64,1) both",
       },
       keyframes: {
         fadeIn:  { from: { opacity: 0 }, to: { opacity: 1 } },
         slideUp: { from: { opacity: 0, transform: "translateY(12px)" }, to: { opacity: 1, transform: "none" } },
+        scan: {
+          "0%":   { transform: "translateX(-100%)" },
+          "100%": { transform: "translateX(250%)" },
+        },
+        sparkle: {
+          "0%,100%": { transform: "scale(1) rotate(0deg)",   opacity: 1 },
+          "50%":     { transform: "scale(1.18) rotate(12deg)", opacity: 0.85 },
+        },
+        ringSpin: { to: { transform: "rotate(360deg)" } },
+        popIn: {
+          from: { opacity: 0, transform: "scale(0.94) translateY(8px)" },
+          to:   { opacity: 1, transform: "none" },
+        },
       },
     },
   },

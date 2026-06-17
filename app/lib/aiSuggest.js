@@ -136,6 +136,9 @@ export function getAISuggestions(data, { month, minYears = 0, count = 5 } = {}) 
 
   const yearsOk = (s) => minYears <= 0 || stockYears(s) >= minYears;
 
+  // How many stocks the scan considered (for the analyzing animation)
+  const scanned = (data.top_stocks || []).length + (data.avoid_stocks || []).length;
+
   // LONG: from top_stocks, require a real seasonal edge
   const longs = (data.top_stocks || [])
     .filter(yearsOk)
@@ -189,6 +192,7 @@ export function getAISuggestions(data, { month, minYears = 0, count = 5 } = {}) 
     best,
     longs,
     shorts,
+    scanned,
     generatedAt: new Date(),
   };
 }

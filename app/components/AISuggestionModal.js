@@ -1,7 +1,14 @@
 "use client";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
-import { X, Sparkles, TrendingUp, TrendingDown, ShieldCheck } from "lucide-react";
+import { X, Sparkles, TrendingUp, TrendingDown, ShieldCheck, Check } from "lucide-react";
+
+const ANALYZE_STEPS = [
+  "Scanning F&O universe",
+  "Scoring seasonal edge",
+  "Weighing risk vs reward",
+  "Ranking by conviction",
+];
 
 function ConvictionBar({ value, direction }) {
   const pct = Math.round(value);
@@ -29,12 +36,15 @@ function ConfidencePill({ level }) {
   );
 }
 
-function PickCard({ pick, rank }) {
+function PickCard({ pick, rank, delay = 0 }) {
   const isLong = pick.direction === "LONG";
   const Icon = isLong ? TrendingUp : TrendingDown;
   const dirColor = isLong ? "text-green" : "text-red";
   return (
-    <div className="bg-bg border border-border rounded-lg p-3.5 hover:border-muted transition-colors">
+    <div
+      className="bg-bg border border-border rounded-lg p-3.5 hover:border-muted transition-colors animate-pop-in"
+      style={{ animationDelay: `${delay}ms` }}
+    >
       <div className="flex items-center justify-between gap-2 mb-2">
         <div className="flex items-center gap-2 min-w-0">
           <span className="font-mono text-[10px] text-muted w-4">{rank}</span>
@@ -76,19 +86,92 @@ function PickCard({ pick, rank }) {
   );
 }
 
+function AnalyzingScreen({ total, monthName }) {
+  const [step, setStep]   = useState(0);
+  const [count, setCount] = useState(0);
+
+  useEffect(() => {
+    const stepTimer = setInterval(() => setStep(s => Math.min(s + 1, ANALYZE_STEPS.length)), 360);
+    return () => clearInterval(stepTimer);
+  }, []);
+
+  useEffect(() => {
+    if (!total) return;
+    const start = performance.now();
+    const dur = 1400;
+    let raf;
+    const tick = (t) => {
+      const p = Math.min((t - start) / dur, 1);
+      setCount(Math.round(p * total));
+      if (p < 1) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [total]);
+
+  return (
+    <div className="py-10 px-2 flex flex-col items-center text-center animate-fade-in">
+      {/* Sparkle in spinning ring */}
+      <div className="relative w-20 h-20 mb-6">
+        <div className="absolute inset-0 rounded-full border-2 border-accent/15" />
+        <div className="absolute inset-0 rounded-full border-2 border-transparent border-t-accent animate-ring-spin" />
+        <div className="absolute inset-0 flex items-center justify-center">
+          <Sparkles size={26} className="text-accent animate-sparkle" style={{ filter: "drop-shadow(0 0 8px rgba(77,159,255,0.6))" }} />
+        </div>
+      </div>
+
+      <div className="font-display text-lg font-semibold text-text mb-1">Analyzing {monthName}…</div>
+      <div className="font-mono text-[11px] text-dim mb-6">
+        Read <span className="text-accent tabular-nums">{count}</span> stocks · scoring seasonal conviction
+      </div>
+
+      {/* Indeterminate scan bar */}
+      <div className="w-56 h-1 rounded-full bg-muted/30 overflow-hidden mb-7 relative">
+        <div className="absolute top-0 left-0 h-full w-1/3 rounded-full bg-gradient-to-r from-transparent via-accent to-transparent animate-scan" />
+      </div>
+
+      {/* Stepped checklist */}
+      <div className="flex flex-col gap-2.5 items-start">
+        {ANALYZE_STEPS.map((label, i) => {
+          const done   = i < step;
+          const active = i === step;
+          return (
+            <div key={label} className={`flex items-center gap-2.5 transition-opacity duration-300 ${i <= step ? "opacity-100" : "opacity-30"}`}>
+              <span className={`w-4 h-4 rounded-full flex items-center justify-center shrink-0 border ${
+                done ? "bg-green/15 border-green/40" : active ? "border-accent/50" : "border-border"
+              }`}>
+                {done
+                  ? <Check size={10} className="text-green" />
+                  : active
+                    ? <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
+                    : <span className="w-1.5 h-1.5 rounded-full bg-muted" />}
+              </span>
+              <span className={`font-mono text-[12px] ${done ? "text-soft" : active ? "text-text" : "text-dim"}`}>{label}</span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export default function AISuggestionModal({ result, onClose }) {
+  const [phase, setPhase] = useState("analyzing"); // "analyzing" → "done"
+
   useEffect(() => {
     const onKey = (e) => e.key === "Escape" && onClose();
     window.addEventListener("keydown", onKey);
     document.body.style.overflow = "hidden";
+    const reveal = setTimeout(() => setPhase("done"), 1700);
     return () => {
       window.removeEventListener("keydown", onKey);
       document.body.style.overflow = "";
+      clearTimeout(reveal);
     };
   }, [onClose]);
 
   if (!result) return null;
-  const { best, longs, shorts, monthName, generatedAt } = result;
+  const { best, longs, shorts, monthName, generatedAt, scanned } = result;
   const hasPicks = longs.length > 0 || shorts.length > 0;
 
   return (
@@ -124,6 +207,10 @@ export default function AISuggestionModal({ result, onClose }) {
         </div>
 
         <div className="p-5">
+          {phase === "analyzing" ? (
+            <AnalyzingScreen total={scanned} monthName={monthName} />
+          ) : (
+          <div className="animate-fade-in">
           {!hasPicks && (
             <div className="text-center py-12">
               <div className="font-mono text-sm text-dim mb-1">No high-conviction trades this month</div>
@@ -135,7 +222,7 @@ export default function AISuggestionModal({ result, onClose }) {
 
           {/* Hero — single best trade */}
           {best && (
-            <div className="mb-6 rounded-xl border border-accent/30 bg-gradient-to-br from-accent/10 to-transparent p-4">
+            <div className="mb-6 rounded-xl border border-accent/30 bg-gradient-to-br from-accent/10 to-transparent p-4 animate-pop-in">
               <div className="flex items-center gap-2 mb-2">
                 <Sparkles size={13} className="text-accent" />
                 <span className="font-mono text-[10px] uppercase tracking-widest text-accent">
@@ -166,7 +253,7 @@ export default function AISuggestionModal({ result, onClose }) {
                   <span className="font-mono text-[10px] text-dim">{longs.length}</span>
                 </div>
                 <div className="flex flex-col gap-2.5">
-                  {longs.map((p, i) => <PickCard key={p.symbol} pick={p} rank={i + 1} />)}
+                  {longs.map((p, i) => <PickCard key={p.symbol} pick={p} rank={i + 1} delay={120 + i * 70} />)}
                 </div>
               </div>
             )}
@@ -180,7 +267,7 @@ export default function AISuggestionModal({ result, onClose }) {
                   <span className="font-mono text-[10px] text-dim">{shorts.length}</span>
                 </div>
                 <div className="flex flex-col gap-2.5">
-                  {shorts.map((p, i) => <PickCard key={p.symbol} pick={p} rank={i + 1} />)}
+                  {shorts.map((p, i) => <PickCard key={p.symbol} pick={p} rank={i + 1} delay={160 + i * 70} />)}
                 </div>
               </div>
             )}
@@ -190,6 +277,8 @@ export default function AISuggestionModal({ result, onClose }) {
             Conviction blends seasonal win-rate, years of history, median-vs-average consistency, and
             risk/reward from best/worst months. Rule-based seasonal analysis — not financial advice.
           </p>
+          </div>
+          )}
         </div>
       </div>
     </div>
