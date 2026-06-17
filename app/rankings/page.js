@@ -1,6 +1,7 @@
 "use client";
 import { useState, useEffect, useCallback, Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
+import { Sparkles } from "lucide-react";
 import Sidebar from "../components/Sidebar";
 import RankingsTable from "../components/RankingsTable";
 import StatCard from "../components/StatCard";
@@ -8,6 +9,8 @@ import { MONTHS, MONTH_FULL, SECTORS, getSignalLabel } from "../lib/api";
 import { getCurrentMonth } from "../lib/date";
 import { RankingsPDFButton } from "../components/PDFDownloadButton";
 import ShortCandidatesTable from "../components/ShortCandidatesTable";
+import AISuggestionModal from "../components/AISuggestionModal";
+import { getAISuggestions } from "../lib/aiSuggest";
 
 function RankingsContent() {
   const searchParams  = useSearchParams();
@@ -20,6 +23,7 @@ function RankingsContent() {
   const [error,     setError]     = useState(null);
   const [direction, setDirection] = useState("LONG"); // "LONG" or "SHORT"
   const [minYears,  setMinYears]  = useState(0);
+  const [aiResult,  setAiResult]  = useState(null);
 
   const fetchRankings = useCallback(async (m, s) => {
     setLoading(true);
@@ -40,6 +44,11 @@ function RankingsContent() {
     fetchRankings(month, sector);
     router.push(`/rankings?month=${month}`, { scroll: false });
   }, [month, sector]);
+
+  const handleAISuggest = () => {
+    if (!data) return;
+    setAiResult(getAISuggestions(data, { month, minYears }));
+  };
 
   const top    = data?.top_stocks       || [];
   const avoid  = data?.avoid_stocks     || [];
@@ -83,9 +92,23 @@ function RankingsContent() {
               Updated: {data.last_updated}
             </span>
           )}
-          {data && !loading && <div className="mb-0.5"><RankingsPDFButton month={month} data={data} /></div>}
+          {data && !loading && (
+            <div className="mb-0.5 flex items-center gap-2">
+              <button
+                onClick={handleAISuggest}
+                className="group flex items-center gap-1.5 font-mono text-[11px] px-3 py-1.5 rounded-lg border border-accent/40 bg-accent/10 text-accent hover:bg-accent/20 hover:border-accent/60 transition-all"
+                title="Get the top stocks actually worth trading this month"
+              >
+                <Sparkles size={13} className="group-hover:rotate-12 transition-transform" />
+                AI Suggestion
+              </button>
+              <RankingsPDFButton month={month} data={data} />
+            </div>
+          )}
         </div>
       </div>
+
+      {aiResult && <AISuggestionModal result={aiResult} onClose={() => setAiResult(null)} />}
 
       {/* Month selector */}
       <div className="flex gap-1.5 mb-6 flex-wrap">
