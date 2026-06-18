@@ -133,7 +133,18 @@ export async function GET(request) {
     // Compute market sentiment (async, non-blocking)
     try { payload.sentiment = await calculateSentiment(); } catch { /* ignore sentiment errors */ }
 
-    return NextResponse.json(payload);
+    // Don't cache if sentiment is incomplete (missing Upstox token)
+    // This ensures sentiment updates immediately after authentication
+    const hasSentimentData = payload.sentiment &&
+      Object.values(payload.sentiment.factors || {}).some(f => f !== 50);
+
+    return NextResponse.json(payload, {
+      headers: {
+        "Cache-Control": hasSentimentData
+          ? "public, s-maxage=300, stale-while-revalidate=600"  // Cache when sentiment is complete
+          : "no-cache, no-store, must-revalidate", // Don't cache when sentiment is incomplete
+      },
+    });
   } catch (e) {
     console.error("Rankings API error:", e.message);
     return NextResponse.json(

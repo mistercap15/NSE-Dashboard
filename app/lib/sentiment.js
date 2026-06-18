@@ -80,11 +80,18 @@ async function scoreBreadth() {
     const universe = loadUniverse();
     const symbols = universe.symbols || [];
 
-    if (symbols.length === 0) return 50;
+    if (symbols.length === 0) {
+      console.log("[sentiment] scoreBreadth: No symbols in universe");
+      return 50;
+    }
+
+    console.log(`[sentiment] scoreBreadth: Fetching ${symbols.length} quotes...`);
 
     // Fetch live quotes for all symbols
     const instrumentKeys = symbols.map((sym) => `NSE_EQ|${sym}`);
     const quotes = await getBatchQuotes(instrumentKeys);
+
+    console.log(`[sentiment] scoreBreadth: Got ${Object.keys(quotes).length} quotes`);
 
     let upsCount = 0;
     let downsCount = 0;
@@ -97,7 +104,10 @@ async function scoreBreadth() {
     }
 
     const total = upsCount + downsCount;
-    if (total < 10) return 50; // Not enough data
+    if (total < 10) {
+      console.log(`[sentiment] scoreBreadth: Not enough data (${total} valid quotes)`);
+      return 50;
+    }
 
     const breadthPct = (upsCount / total) * 100;
     // >70% ups = bullish (85-100), <30% ups = bearish (0-15)
@@ -106,7 +116,7 @@ async function scoreBreadth() {
     console.log(`[sentiment] breadth: ${upsCount}/${total} up = ${breadthPct.toFixed(1)}% → ${Math.round(score)}`);
     return Math.round(score);
   } catch (e) {
-    console.error("[sentiment] scoreBreadth:", e.message);
+    console.error("[sentiment] scoreBreadth ERROR:", e.message, e.stack);
     return 50;
   }
 }
