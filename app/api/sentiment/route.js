@@ -1,27 +1,27 @@
 import { NextResponse } from "next/server";
 import { calculateSentiment } from "../../lib/sentiment";
-import { setAccessToken, hasValidToken } from "../../lib/upstox";
+import { setAccessToken } from "../../lib/upstox";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(request) {
   try {
-    // Extract Upstox token from cookies (set during OAuth login)
+    // Extract Upstox token from cookies or headers (exact same pattern as early-entry)
     const cookie = request.cookies.get("upstox_token")?.value;
-    console.log("[sentiment-api] Cookie present:", !!cookie);
+    const headerToken = request.headers.get("x-upstox-token");
+    const token = cookie || headerToken;
 
-    if (cookie) {
-      setAccessToken(cookie);
-      console.log("[sentiment-api] Token set, valid:", hasValidToken());
-    } else {
-      console.log("[sentiment-api] No cookie found, checking env/file");
+    console.log("[sentiment-api] Token present:", !!token);
+
+    if (token) {
+      setAccessToken(token);
     }
 
     const sentiment = await calculateSentiment();
 
     // If we don't have a token, don't cache (so it picks up token when user authenticates)
     // If we do have a token, cache for 1 minute since Upstox data updates intraday
-    const hasToken = !!cookie;
+    const hasToken = !!token;
     const cacheHeader = hasToken
       ? "public, s-maxage=60, stale-while-revalidate=120"
       : "no-cache, no-store, must-revalidate"; // Don't cache when not authenticated

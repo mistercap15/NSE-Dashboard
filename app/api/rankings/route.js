@@ -58,10 +58,12 @@ export async function GET(request) {
   const top    = parseInt(searchParams.get("top")   || "25");
   const sector = searchParams.get("sector") || "ALL";
 
-  // Extract Upstox token from cookies for sentiment computation
+  // Extract Upstox token from cookies or headers (exact same pattern as early-entry)
   const cookie = request.cookies.get("upstox_token")?.value;
-  if (cookie) {
-    setAccessToken(cookie);
+  const headerToken = request.headers.get("x-upstox-token");
+  const token = cookie || headerToken;
+  if (token) {
+    setAccessToken(token);
   }
 
   try {
