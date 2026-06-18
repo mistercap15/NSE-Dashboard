@@ -3,6 +3,7 @@ import { loadUniverse, monthReturns } from "../../lib/dataset";
 import { significance } from "../../lib/stats";
 import { trendState, marketRegime } from "../../lib/regime";
 import { getCalendar } from "../../lib/events";
+import { calculateSentiment } from "../../lib/sentiment";
 
 const MCP_URL    = process.env.MCP_URL    || "https://nse-data-mcp.vercel.app/mcp";
 
@@ -121,6 +122,9 @@ export async function GET(request) {
     }
 
     try { payload.calendar = getCalendar(); } catch { /* ignore */ }
+
+    // Compute market sentiment (async, non-blocking)
+    try { payload.sentiment = await calculateSentiment(); } catch { /* ignore sentiment errors */ }
 
     return NextResponse.json(payload);
   } catch (e) {

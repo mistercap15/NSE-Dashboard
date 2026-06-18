@@ -127,6 +127,27 @@ function RankingsContent() {
         </div>
       )}
 
+      {/* Market sentiment banner */}
+      {data?.sentiment && data.sentiment.sentiment && (
+        <div className={`mb-5 rounded-lg border px-4 py-2.5 flex items-center gap-3 ${
+          data.sentiment.sentiment === "BULLISH" ? "border-green/25 bg-green/5" : data.sentiment.sentiment === "BEARISH" ? "border-red/25 bg-red/5" : "border-border bg-card"
+        }`}>
+          <span className={`font-mono text-[11px] font-semibold px-2 py-0.5 rounded shrink-0 ${
+            data.sentiment.sentiment === "BULLISH" ? "bg-green/15 text-green" : data.sentiment.sentiment === "BEARISH" ? "bg-red/15 text-red" : "bg-border text-soft"
+          }`}>
+            {data.sentiment.sentiment === "BULLISH" ? "📈 BULLISH" : data.sentiment.sentiment === "BEARISH" ? "📉 BEARISH" : "↔️ NEUTRAL"}
+          </span>
+          <span className="font-mono text-[10.5px] text-soft flex-1">
+            {data.sentiment.sentiment === "BULLISH" ? `Strong uptrend, ${data.sentiment.bullishScore}% conviction` : data.sentiment.sentiment === "BEARISH" ? `Strong downtrend, ${data.sentiment.bearishScore}% conviction` : "Mixed market signals"}
+          </span>
+          {data.sentiment.factors && (
+            <span className="font-mono text-[9px] text-dim shrink-0 hidden sm:inline">
+              Trend {data.sentiment.factors.priceAction} · Breadth {data.sentiment.factors.breadth} · Vol {data.sentiment.factors.volumeParticipation}
+            </span>
+          )}
+        </div>
+      )}
+
       {/* Month selector */}
       <div className="flex gap-1.5 mb-6 flex-wrap">
         {MONTHS.map((m, i) => (

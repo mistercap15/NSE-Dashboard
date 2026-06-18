@@ -188,7 +188,7 @@ export default function AISuggestionModal({ result, onClose }) {
   }, [onClose]);
 
   if (!result) return null;
-  const { best, longs, shorts, monthName, generatedAt, scanned, regime, calendar } = result;
+  const { best, longs, shorts, monthName, generatedAt, scanned, regime, calendar, sentiment } = result;
   const hasPicks = longs.length > 0 || shorts.length > 0;
   const basket = [...new Set([...longs, ...shorts].map(p => p.symbol))];
 
@@ -264,6 +264,25 @@ export default function AISuggestionModal({ result, onClose }) {
               {regime.breadth !== null && (
                 <span className="font-mono text-[10px] text-dim shrink-0 hidden sm:inline">breadth {regime.breadth}%</span>
               )}
+            </div>
+          )}
+          {sentiment && sentiment.sentiment && (
+            <div className={`mb-5 rounded-lg border px-4 py-2.5 flex items-center gap-3 ${
+              sentiment.sentiment === "BULLISH" ? "border-green/25 bg-green/5" : sentiment.sentiment === "BEARISH" ? "border-red/25 bg-red/5" : "border-border bg-card"
+            }`}>
+              <span className={`font-mono text-[11px] font-semibold px-2 py-0.5 rounded ${
+                sentiment.sentiment === "BULLISH" ? "bg-green/15 text-green" : sentiment.sentiment === "BEARISH" ? "bg-red/15 text-red" : "bg-border text-soft"
+              }`}>
+                {sentiment.sentiment === "BULLISH" ? "📈 BULLISH" : sentiment.sentiment === "BEARISH" ? "📉 BEARISH" : "↔️ NEUTRAL"}
+              </span>
+              <span className="font-mono text-[10.5px] text-soft flex-1">
+                {sentiment.sentiment === "BULLISH" ? `Strong uptrend, ${sentiment.bullishScore}% conviction` : sentiment.sentiment === "BEARISH" ? `Strong downtrend, ${sentiment.bearishScore}% conviction` : "Mixed signals"}
+              </span>
+              <span className={`font-mono text-[9px] px-1.5 py-0.5 rounded border ${
+                sentiment.confidence === "High" ? "text-green border-green/30 bg-green/10" : sentiment.confidence === "Medium" ? "text-amber border-amber/30 bg-amber/10" : "text-dim border-border bg-card"
+              }`}>
+                {sentiment.confidence} conf
+              </span>
             </div>
           )}
           {calendar && (

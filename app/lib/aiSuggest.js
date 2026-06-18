@@ -157,11 +157,35 @@ function trendReason(direction, trend) {
   return aligned ? "Confirmed by downtrend (below 10-mo MA)" : "⚠ In an uptrend — squeeze risk";
 }
 
+// Market sentiment multiplier: boost picks when market mood aligns, reduce when they fight it
+function sentimentFactor(direction, sentiment) {
+  if (!sentiment) return 1.0;
+  // BULLISH + LONG → 1.08 boost | BEARISH + LONG → 0.92 penalty
+  // BEARISH + SHORT → 1.08 boost | BULLISH + SHORT → 0.92 penalty
+  const aligned = direction === "LONG" ? sentiment.sentiment === "BULLISH" : sentiment.sentiment === "BEARISH";
+  return aligned ? 1.08 : 0.92;
+}
+function sentimentReason(direction, sentiment) {
+  if (!sentiment) return null;
+  const aligned = direction === "LONG" ? sentiment.sentiment === "BULLISH" : sentiment.sentiment === "BEARISH";
+  const sentimentStr = sentiment.sentiment;
+  if (direction === "LONG") {
+    if (sentimentStr === "BULLISH") return `📈 Strong bullish sentiment (${sentiment.bullishScore}/100)`;
+    if (sentimentStr === "BEARISH") return `⚠ Bearish sentiment contradicts entry — lower conviction`;
+    return "↔️ Neutral market sentiment";
+  } else {
+    if (sentimentStr === "BEARISH") return `📉 Strong bearish sentiment (${sentiment.bearishScore}/100)`;
+    if (sentimentStr === "BULLISH") return `⚠ Bullish sentiment contradicts short — squeeze risk`;
+    return "↔️ Neutral market sentiment";
+  }
+}
+
 // ── Public API ───────────────────────────────────────────────────────────────
 export function getAISuggestions(data, { month, minYears = 0, count = 5 } = {}) {
   if (!data) return null;
 
   const yearsOk = (s) => minYears <= 0 || stockYears(s) >= minYears;
+  const sentiment = data.sentiment || null;
 
   // How many stocks the scan considered (for the analyzing animation)
   const scanned = (data.top_stocks || []).length + (data.avoid_stocks || []).length;
@@ -172,12 +196,14 @@ export function getAISuggestions(data, { month, minYears = 0, count = 5 } = {}) 
     .filter(s => (s.win_rate || 0) >= 60 && (s.avg_return || 0) > 0)
     .map(s => {
       const { conviction: base, years, factors } = scoreLong(s);
-      const conviction = clamp(base * sigFactor(s.sig) * trendFactor("LONG", s.trend), 0, 100);
+      const conviction = clamp(base * sigFactor(s.sig) * trendFactor("LONG", s.trend) * sentimentFactor("LONG", sentiment), 0, 100);
       const reasons = longReasons(s, years);
       const sr = sigReason(s.sig);
       if (sr) reasons.push(sr);
       const tr = trendReason("LONG", s.trend);
       if (tr) reasons.push(tr);
+      const semtR = sentimentReason("LONG", sentiment);
+      if (semtR) reasons.push(semtR);
       return {
         ...s,
         direction: "LONG",
@@ -199,12 +225,14 @@ export function getAISuggestions(data, { month, minYears = 0, count = 5 } = {}) 
     .filter(s => (s.short_win_prob ?? (100 - (s.win_rate || 0))) >= 55)
     .map(s => {
       const { conviction: base, years, factors } = scoreShort(s);
-      const conviction = clamp(base * sigFactor(s.sig) * trendFactor("SHORT", s.trend), 0, 100);
+      const conviction = clamp(base * sigFactor(s.sig) * trendFactor("SHORT", s.trend) * sentimentFactor("SHORT", sentiment), 0, 100);
       const reasons = shortReasons(s, years);
       const sr = sigReason(s.sig);
       if (sr) reasons.push(sr);
       const tr = trendReason("SHORT", s.trend);
       if (tr) reasons.push(tr);
+      const semtR = sentimentReason("SHORT", sentiment);
+      if (semtR) reasons.push(semtR);
       return {
         ...s,
         direction: "SHORT",
@@ -234,6 +262,7 @@ export function getAISuggestions(data, { month, minYears = 0, count = 5 } = {}) 
     scanned,
     regime: data.regime || null,
     calendar: data.calendar || null,
+    sentiment: sentiment || null,
     generatedAt: new Date(),
   };
 }
