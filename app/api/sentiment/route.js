@@ -1,8 +1,17 @@
 import { NextResponse } from "next/server";
 import { calculateSentiment } from "../../lib/sentiment";
+import { setAccessToken } from "../../lib/upstox";
+
+export const dynamic = "force-dynamic";
 
 export async function GET(request) {
   try {
+    // Extract Upstox token from cookies (set during OAuth login)
+    const cookie = request.cookies.get("upstox_token")?.value;
+    if (cookie) {
+      setAccessToken(cookie);
+    }
+
     const sentiment = await calculateSentiment();
     return NextResponse.json(sentiment, {
       headers: {

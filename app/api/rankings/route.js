@@ -4,6 +4,7 @@ import { significance } from "../../lib/stats";
 import { trendState, marketRegime } from "../../lib/regime";
 import { getCalendar } from "../../lib/events";
 import { calculateSentiment } from "../../lib/sentiment";
+import { setAccessToken } from "../../lib/upstox";
 
 const MCP_URL    = process.env.MCP_URL    || "https://nse-data-mcp.vercel.app/mcp";
 
@@ -56,6 +57,12 @@ export async function GET(request) {
   const month  = parseInt(searchParams.get("month") || "1");
   const top    = parseInt(searchParams.get("top")   || "25");
   const sector = searchParams.get("sector") || "ALL";
+
+  // Extract Upstox token from cookies for sentiment computation
+  const cookie = request.cookies.get("upstox_token")?.value;
+  if (cookie) {
+    setAccessToken(cookie);
+  }
 
   try {
     const result = await callMCPTool("get_monthly_ranking", { month, top, sector });

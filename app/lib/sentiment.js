@@ -336,6 +336,10 @@ export async function calculateSentiment() {
       volatilityRegime,
     };
 
+    // Count how many factors actually worked (not just fallback 50)
+    const liveFactors = Object.values(factors).filter(f => f !== 50).length;
+    const totalFactors = Object.values(factors).length;
+
     // Weighted average
     const bullishScore = Math.round(
       0.3 * priceAction +
@@ -348,21 +352,40 @@ export async function calculateSentiment() {
     const bearishScore = 100 - bullishScore;
 
     // Determine mood and confidence
+    // Lower confidence if most factors are fallback (50)
     let sentiment = "NEUTRAL";
     let confidence = "Medium";
+    let confidenceMultiplier = liveFactors >= 3 ? 1.0 : liveFactors === 2 ? 0.7 : 0.5;
 
     if (bullishScore > 65) {
       sentiment = "BULLISH";
-      confidence = bullishScore > 80 ? "High" : "Medium";
+      if (bullishScore > 80) {
+        confidence = confidenceMultiplier >= 0.9 ? "High" : "Medium";
+      } else {
+        confidence = "Medium";
+      }
     } else if (bearishScore > 65) {
       sentiment = "BEARISH";
-      confidence = bearishScore > 80 ? "High" : "Medium";
+      if (bearishScore > 80) {
+        confidence = confidenceMultiplier >= 0.9 ? "High" : "Medium";
+      } else {
+        confidence = "Medium";
+      }
+    } else {
+      confidence = "Low";
     }
 
     const reasons = generateReasonChips(factors);
     const elapsedMs = Math.round(performance.now() - startTime);
 
-    console.log(`[sentiment] Result: ${sentiment} (${bullishScore}/${bearishScore}) ${confidence} confidence in ${elapsedMs}ms`);
+    // Add data source info to reasons
+    if (liveFactors < 3) {
+      reasons.push(`📊 Using ${liveFactors}/${totalFactors} live factors (authenticate for full sentiment)`);
+    } else {
+      reasons.push("✓ Full sentiment (all factors computed)");
+    }
+
+    console.log(`[sentiment] Result: ${sentiment} (${bullishScore}/${bearishScore}) ${confidence} confidence [${liveFactors}/${totalFactors} live] in ${elapsedMs}ms`);
 
     return {
       bullishScore,
@@ -373,6 +396,7 @@ export async function calculateSentiment() {
       reasons,
       lastUpdated: new Date(),
       computeTimeMs: elapsedMs,
+      dataQuality: `${liveFactors}/${totalFactors}`, // Shows how much real data vs fallback
     };
   } catch (e) {
     console.error("[sentiment] Fatal error:", e.message);
@@ -391,6 +415,7 @@ export async function calculateSentiment() {
       reasons: ["⚠ Error computing sentiment"],
       lastUpdated: new Date(),
       error: e.message,
+      dataQuality: "0/5",
     };
   }
 }
