@@ -1,6 +1,35 @@
 import { NextResponse } from "next/server";
+import { loadUniverse, monthReturns } from "../../lib/dataset";
+import { significance } from "../../lib/stats";
+import { trendState, marketRegime } from "../../lib/regime";
+import { getCalendar } from "../../lib/events";
 
 const MCP_URL    = process.env.MCP_URL    || "https://nse-data-mcp.vercel.app/mcp";
+
+// Attach a t-test (mean monthly return ≠ 0) to each stock for the given month,
+// using the precomputed full-history snapshot. Returns the array enriched with
+// a compact `sig` object; missing symbols pass through unchanged.
+function attachSignificance(stocks, universe, month) {
+  return stocks.map((s) => {
+    const rec = universe.series[s.symbol];
+    if (!rec) return s;
+    const r = significance(monthReturns(rec.points, month));
+    const trend = trendState(rec.points);
+    const out = { ...s };
+    if (r.n >= 3) {
+      out.sig = {
+        n: r.n,
+        t: Number(r.t.toFixed(2)),
+        p: r.p,
+        ciLow: Number(r.ciLow.toFixed(2)),
+        ciHigh: Number(r.ciHigh.toFixed(2)),
+        significant: r.significant,
+      };
+    }
+    if (trend) out.trend = trend;
+    return out;
+  });
+}
 
 async function callMCPTool(toolName, args) {
   const res = await fetch(MCP_URL, {
@@ -74,10 +103,26 @@ export async function GET(request) {
         short_win_prob: 100 - s.win_rate,
       }))
 
-    return NextResponse.json({
+    // Enrich with statistical significance from the full-history snapshot.
+    let universe = null;
+    try { universe = loadUniverse(); } catch { /* snapshot not built yet */ }
+
+    const payload = {
       ...raw,
       short_candidates: shortCandidates.slice(0, 20),
-    });
+    };
+
+    if (universe) {
+      payload.top_stocks       = attachSignificance(raw.top_stocks       || [], universe, month);
+      payload.avoid_stocks     = attachSignificance(raw.avoid_stocks     || [], universe, month);
+      payload.short_candidates = attachSignificance(payload.short_candidates, universe, month);
+      payload.stats_coverage   = true;
+      try { payload.regime = marketRegime(universe); } catch { /* ignore */ }
+    }
+
+    try { payload.calendar = getCalendar(); } catch { /* ignore */ }
+
+    return NextResponse.json(payload);
   } catch (e) {
     console.error("Rankings API error:", e.message);
     return NextResponse.json(

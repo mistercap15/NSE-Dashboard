@@ -130,6 +130,33 @@ function shortReasons(s, years) {
 function longStop(s)  { return clamp(Math.abs(s.worst || 0) * 0.5, 3, 12); }
 function shortStop(s) { return s.short_sl_pct ?? clamp(Math.abs(s.best || 0) * 1.0, 4, 15); }
 
+// Statistical significance multiplier on conviction. A proven edge (p<0.05) is
+// trusted in full; an unproven one is discounted; unknown gets a mild haircut.
+function sigFactor(sig) {
+  if (!sig) return 0.92;
+  return sig.significant ? 1.0 : 0.80;
+}
+function sigReason(sig) {
+  if (!sig) return null;
+  if (sig.significant) return `Statistically significant (p${sig.p < 0.01 ? "<0.01" : "<0.05"})`;
+  return "⚠ Not statistically significant";
+}
+
+// Trend confirmation: reward picks that agree with the 10-month trend, penalize
+// those fighting it (a seasonal long below trend, or a short in an uptrend).
+function trendFactor(direction, trend) {
+  if (!trend) return 1.0;
+  const aligned = direction === "LONG" ? trend.above : !trend.above;
+  return aligned ? 1.05 : 0.85;
+}
+function trendReason(direction, trend) {
+  if (!trend) return null;
+  const aligned = direction === "LONG" ? trend.above : !trend.above;
+  if (direction === "LONG")
+    return aligned ? "Confirmed by uptrend (above 10-mo MA)" : "⚠ Below 10-mo trend — fighting the tape";
+  return aligned ? "Confirmed by downtrend (below 10-mo MA)" : "⚠ In an uptrend — squeeze risk";
+}
+
 // ── Public API ───────────────────────────────────────────────────────────────
 export function getAISuggestions(data, { month, minYears = 0, count = 5 } = {}) {
   if (!data) return null;
@@ -144,7 +171,13 @@ export function getAISuggestions(data, { month, minYears = 0, count = 5 } = {}) 
     .filter(yearsOk)
     .filter(s => (s.win_rate || 0) >= 60 && (s.avg_return || 0) > 0)
     .map(s => {
-      const { conviction, years, factors } = scoreLong(s);
+      const { conviction: base, years, factors } = scoreLong(s);
+      const conviction = clamp(base * sigFactor(s.sig) * trendFactor("LONG", s.trend), 0, 100);
+      const reasons = longReasons(s, years);
+      const sr = sigReason(s.sig);
+      if (sr) reasons.push(sr);
+      const tr = trendReason("LONG", s.trend);
+      if (tr) reasons.push(tr);
       return {
         ...s,
         direction: "LONG",
@@ -152,7 +185,7 @@ export function getAISuggestions(data, { month, minYears = 0, count = 5 } = {}) 
         confidence: confidenceLabel(years),
         years,
         factors,
-        reasons: longReasons(s, years),
+        reasons,
         stopPct: longStop(s),
         summary: `Buy ${s.symbol} — ${(s.win_rate || 0).toFixed(0)}% win rate, avg +${(s.avg_return || 0).toFixed(1)}% in ${MONTH_FULL[month - 1]}.`,
       };
@@ -165,7 +198,13 @@ export function getAISuggestions(data, { month, minYears = 0, count = 5 } = {}) 
     .filter(yearsOk)
     .filter(s => (s.short_win_prob ?? (100 - (s.win_rate || 0))) >= 55)
     .map(s => {
-      const { conviction, years, factors } = scoreShort(s);
+      const { conviction: base, years, factors } = scoreShort(s);
+      const conviction = clamp(base * sigFactor(s.sig) * trendFactor("SHORT", s.trend), 0, 100);
+      const reasons = shortReasons(s, years);
+      const sr = sigReason(s.sig);
+      if (sr) reasons.push(sr);
+      const tr = trendReason("SHORT", s.trend);
+      if (tr) reasons.push(tr);
       return {
         ...s,
         direction: "SHORT",
@@ -173,7 +212,7 @@ export function getAISuggestions(data, { month, minYears = 0, count = 5 } = {}) 
         confidence: confidenceLabel(years),
         years,
         factors,
-        reasons: shortReasons(s, years),
+        reasons,
         stopPct: shortStop(s),
         summary: `Short ${s.symbol} — ${(s.short_win_prob ?? (100 - (s.win_rate || 0))).toFixed(0)}% short-win probability, avg ${(s.avg_return || 0).toFixed(1)}% in ${MONTH_FULL[month - 1]}.`,
       };
@@ -193,6 +232,8 @@ export function getAISuggestions(data, { month, minYears = 0, count = 5 } = {}) 
     longs,
     shorts,
     scanned,
+    regime: data.regime || null,
+    calendar: data.calendar || null,
     generatedAt: new Date(),
   };
 }

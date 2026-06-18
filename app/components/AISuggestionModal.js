@@ -1,7 +1,8 @@
 "use client";
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { X, Sparkles, TrendingUp, TrendingDown, ShieldCheck, Check } from "lucide-react";
+import { X, Sparkles, TrendingUp, TrendingDown, ShieldCheck, Check, Layers, ListChecks, CalendarClock } from "lucide-react";
+import PortfolioPanel from "./PortfolioPanel";
 
 const ANALYZE_STEPS = [
   "Scanning F&O universe",
@@ -81,7 +82,22 @@ function PickCard({ pick, rank, delay = 0 }) {
         <span>WR <span className="text-soft">{(pick.win_rate || 0).toFixed(0)}%</span></span>
         <span>Avg <span className={isLong ? "text-green" : "text-red"}>{(pick.avg_return || 0) >= 0 ? "+" : ""}{(pick.avg_return || 0).toFixed(1)}%</span></span>
         <span className="flex items-center gap-1"><ShieldCheck size={11} className="text-dim" />SL <span className="text-amber">{pick.stopPct.toFixed(1)}%</span></span>
+        {pick.trend && (
+          <span className={pick.trend.above ? "text-green" : "text-red"}>
+            {pick.trend.above ? "▲" : "▼"} {pick.trend.state === "UPTREND" ? "uptrend" : pick.trend.state === "DOWNTREND" ? "downtrend" : "transition"}
+          </span>
+        )}
       </div>
+
+      {pick.sig && (
+        <div className="mt-1.5 pt-1.5 border-t border-border/60 flex items-center gap-2 font-mono text-[9.5px] text-muted">
+          <span className={pick.sig.significant ? "text-green" : "text-amber"}>
+            {pick.sig.significant ? "✓ significant" : "≈ not significant"}
+          </span>
+          <span>p={pick.sig.p < 0.001 ? "<0.001" : pick.sig.p.toFixed(3)}</span>
+          <span>95% CI [{pick.sig.ciLow > 0 ? "+" : ""}{pick.sig.ciLow}%, {pick.sig.ciHigh > 0 ? "+" : ""}{pick.sig.ciHigh}%]</span>
+        </div>
+      )}
     </div>
   );
 }
@@ -157,6 +173,7 @@ function AnalyzingScreen({ total, monthName }) {
 
 export default function AISuggestionModal({ result, onClose }) {
   const [phase, setPhase] = useState("analyzing"); // "analyzing" → "done"
+  const [view, setView]   = useState("picks");     // "picks" | "portfolio"
 
   useEffect(() => {
     const onKey = (e) => e.key === "Escape" && onClose();
@@ -171,8 +188,9 @@ export default function AISuggestionModal({ result, onClose }) {
   }, [onClose]);
 
   if (!result) return null;
-  const { best, longs, shorts, monthName, generatedAt, scanned } = result;
+  const { best, longs, shorts, monthName, generatedAt, scanned, regime, calendar } = result;
   const hasPicks = longs.length > 0 || shorts.length > 0;
+  const basket = [...new Set([...longs, ...shorts].map(p => p.symbol))];
 
   return (
     <div
@@ -206,11 +224,63 @@ export default function AISuggestionModal({ result, onClose }) {
           </button>
         </div>
 
+        {/* Tabs */}
+        {phase === "done" && hasPicks && (
+          <div className="px-5 pt-3 flex items-center gap-1.5 border-b border-border">
+            {[
+              { key: "picks", label: "Picks", Icon: ListChecks },
+              { key: "portfolio", label: "Portfolio & Sizing", Icon: Layers },
+            ].map(({ key, label, Icon }) => (
+              <button
+                key={key}
+                onClick={() => setView(key)}
+                className={`flex items-center gap-1.5 font-mono text-[11px] px-3 py-2 rounded-t-lg border-b-2 -mb-px transition-colors ${
+                  view === key ? "border-accent text-accent" : "border-transparent text-dim hover:text-text"
+                }`}
+              >
+                <Icon size={13} /> {label}
+              </button>
+            ))}
+          </div>
+        )}
+
         <div className="p-5">
           {phase === "analyzing" ? (
             <AnalyzingScreen total={scanned} monthName={monthName} />
+          ) : view === "portfolio" ? (
+            <PortfolioPanel symbols={basket} />
           ) : (
           <div className="animate-fade-in">
+          {regime && regime.riskOn !== null && (
+            <div className={`mb-5 rounded-lg border px-4 py-2.5 flex items-center gap-3 ${
+              regime.riskOn ? "border-green/25 bg-green/5" : "border-red/25 bg-red/5"
+            }`}>
+              <span className={`font-mono text-[11px] font-semibold px-2 py-0.5 rounded ${
+                regime.riskOn ? "bg-green/15 text-green" : "bg-red/15 text-red"
+              }`}>
+                {regime.riskOn ? "● RISK-ON" : "● RISK-OFF"}
+              </span>
+              <span className="font-mono text-[10.5px] text-soft flex-1">{regime.note}</span>
+              {regime.breadth !== null && (
+                <span className="font-mono text-[10px] text-dim shrink-0 hidden sm:inline">breadth {regime.breadth}%</span>
+              )}
+            </div>
+          )}
+          {calendar && (
+            <div className="mb-5 flex items-center gap-2 flex-wrap font-mono text-[10.5px]">
+              <span className="flex items-center gap-1.5 text-dim"><CalendarClock size={12} /> Window:</span>
+              <span className={`px-2 py-0.5 rounded border ${
+                calendar.expiry.daysAway <= 5 ? "border-amber/30 bg-amber/5 text-amber" : "border-border bg-card text-soft"
+              }`}>
+                F&O expiry {calendar.expiry.date.slice(5)} · {calendar.expiry.daysAway}d
+              </span>
+              {calendar.events.map((e, i) => (
+                <span key={i} className="px-2 py-0.5 rounded border border-purple/25 bg-purple/5 text-purple">
+                  {e.label} · {e.daysAway}d
+                </span>
+              ))}
+            </div>
+          )}
           {!hasPicks && (
             <div className="text-center py-12">
               <div className="font-mono text-sm text-dim mb-1">No high-conviction trades this month</div>

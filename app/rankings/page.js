@@ -110,6 +110,23 @@ function RankingsContent() {
 
       {aiResult && <AISuggestionModal result={aiResult} onClose={() => setAiResult(null)} />}
 
+      {/* Market regime banner */}
+      {data?.regime && data.regime.riskOn !== null && (
+        <div className={`mb-5 rounded-lg border px-4 py-2.5 flex items-center gap-3 ${
+          data.regime.riskOn ? "border-green/25 bg-green/5" : "border-red/25 bg-red/5"
+        }`}>
+          <span className={`font-mono text-[11px] font-semibold px-2 py-0.5 rounded shrink-0 ${
+            data.regime.riskOn ? "bg-green/15 text-green" : "bg-red/15 text-red"
+          }`}>
+            {data.regime.riskOn ? "● RISK-ON" : "● RISK-OFF"}
+          </span>
+          <span className="font-mono text-[10.5px] text-soft flex-1">{data.regime.note}</span>
+          {data.regime.breadth !== null && (
+            <span className="font-mono text-[10px] text-dim shrink-0 hidden sm:inline">breadth {data.regime.breadth}%</span>
+          )}
+        </div>
+      )}
+
       {/* Month selector */}
       <div className="flex gap-1.5 mb-6 flex-wrap">
         {MONTHS.map((m, i) => (

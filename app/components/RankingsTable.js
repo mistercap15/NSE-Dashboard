@@ -50,6 +50,14 @@ export default function RankingsTable({ stocks, showRank = true }) {
                     ? Math.round(s.positive_years / (s.win_rate / 100))
                     : Math.round((s.data_points || 0) / 12)})
                 </span>
+                {s.sig && (
+                  <span
+                    className={`ml-1 text-[10px] ${s.sig.significant ? "text-green" : "text-muted"}`}
+                    title={`Seasonal edge ${s.sig.significant ? "is statistically significant" : "not yet significant"} — p=${s.sig.p < 0.001 ? "<0.001" : s.sig.p.toFixed(3)}, 95% CI [${s.sig.ciLow}%, ${s.sig.ciHigh}%], n=${s.sig.n} yrs`}
+                  >
+                    {s.sig.significant ? "✓" : "≈"}
+                  </span>
+                )}
               </td>
               <td className="py-2.5 px-3 text-right">
                 <div className={`font-mono text-[12px] font-medium ${

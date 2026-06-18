@@ -1,0 +1,7 @@
+{
+  "_note": "Editable market-event calendar. Flagged on the AI Suggestion modal when within ~45 days. type: rbi | fed | budget | earnings | other. date: YYYY-MM-DD. Monthly F&O expiry (last Thursday) is computed automatically — no need to list it.",
+  "events": [
+    { "date": "2026-08-05", "label": "RBI MPC decision", "type": "rbi" },
+    { "date": "2026-07-29", "label": "US FOMC decision", "type": "fed" }
+  ]
+}
