@@ -127,6 +127,24 @@ function RankingsContent() {
         </div>
       )}
 
+      {/* Upstox auth status (if sentiment incomplete) */}
+      {data?.sentiment && data.sentiment.sentiment === "NEUTRAL" && Object.values(data.sentiment.factors || {}).some(f => f === 50) && (
+        <div className="mb-5 rounded-lg border border-amber/25 bg-amber/5 px-4 py-2.5 flex items-center gap-3 justify-between">
+          <div className="flex items-center gap-3 flex-1">
+            <span className="font-mono text-[11px] font-semibold px-2 py-0.5 rounded bg-amber/15 text-amber">
+              ⚠ Limited Sentiment
+            </span>
+            <span className="font-mono text-[10.5px] text-soft">Connect to Upstox for full market sentiment (breadth, spreads, volume)</span>
+          </div>
+          <a
+            href="/api/upstox/login"
+            className="shrink-0 font-mono text-[11px] px-3 py-1.5 rounded-lg border border-amber/40 bg-amber/10 text-amber hover:bg-amber/20 transition-colors"
+          >
+            Connect
+          </a>
+        </div>
+      )}
+
       {/* Market sentiment banner */}
       {data?.sentiment && data.sentiment.sentiment && (
         <div className={`mb-5 rounded-lg border px-4 py-2.5 flex items-center gap-3 ${

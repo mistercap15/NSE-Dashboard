@@ -1,20 +1,39 @@
 // ── Market Sentiment Engine ─────────────────────────────────────
-// Real-time market mood detector: bullish/bearish/neutral scoring
-// Combines price action, breadth, spreads, volume, volatility
-// Used to gate seasonal trades: boost conviction when sentiment aligns,
-// reduce when it contradicts
+// Real-time market mood detector combining live Upstox data + regime context
+// Scores: price action, breadth, bid-ask spreads, volume, volatility
+// Falls back to regime snapshot if live data unavailable
 
 import { getDailyCandles, getBatchQuotes } from "./upstox.js";
 import { loadUniverse } from "./dataset.js";
+import { marketRegime } from "./regime.js";
 
 // ── Scoring functions ──────────────────────────────────────────
 
-// Score index momentum: 5D MA vs 20D MA slope
+// Score index momentum: 5D MA vs 20D MA slope on daily candles
 async function scoreIndexTrend() {
   try {
-    // Fetch 60 days of Nifty 50 candles
-    const candles = await getDailyCandles("NSE_EQ|NIFTYBEESDIRECT", 60);
-    if (candles.length < 20) return 50; // Insufficient data, neutral
+    // Try multiple Nifty symbols in order of likelihood
+    const symbols = [
+      "NSE_EQ|NIFTYBEES",      // Nifty BeES ETF (most reliable)
+      "NSE_EQ|NIFTYBEESDIRECT", // Alternative
+    ];
+
+    let candles = null;
+    for (const sym of symbols) {
+      try {
+        candles = await getDailyCandles(sym, 60);
+        if (candles?.length >= 20) break;
+      } catch {
+        continue;
+      }
+    }
+
+    if (!candles || candles.length < 20) {
+      // Fallback to regime data from snapshot
+      const universe = loadUniverse();
+      const regime = marketRegime(universe);
+      return regime.riskOn ? 70 : 30; // Use regime as fallback
+    }
 
     // Calculate 5-day and 20-day moving averages
     const last5 = candles.slice(-5).map(c => c.close);
@@ -23,23 +42,18 @@ async function scoreIndexTrend() {
     const ma5 = last5.reduce((a, b) => a + b) / 5;
     const ma20 = last20.reduce((a, b) => a + b) / 20;
 
-    // Position: is price above/below MA?
     const latest = candles[candles.length - 1].close;
     const aboveMA5 = latest > ma5;
-
-    // Slope: is MA5 above MA20? (uptrend indicator)
     const ma5AboveMA20 = ma5 > ma20;
 
-    // Score: max 100 if both conditions met, scale down otherwise
+    // Score based on dual confirmation
     let score = 50;
     if (aboveMA5 && ma5AboveMA20) {
-      // Strong uptrend
-      const strength = (ma5 - ma20) / ma20; // % difference
-      score = Math.min(85 + strength * 200, 100);
+      const strength = (ma5 - ma20) / ma20;
+      score = Math.min(80 + strength * 300, 100); // Strong uptrend
     } else if (!aboveMA5 && !ma5AboveMA20) {
-      // Strong downtrend
       const strength = (ma20 - ma5) / ma20;
-      score = Math.max(15 - strength * 200, 0);
+      score = Math.max(20 - strength * 300, 0); // Strong downtrend
     } else if (aboveMA5) {
       score = 65; // Above MA but weak
     } else {
@@ -48,12 +62,19 @@ async function scoreIndexTrend() {
 
     return Math.round(score);
   } catch (e) {
-    console.error("scoreIndexTrend error:", e.message);
-    return 50; // Default neutral on error
+    console.error("[sentiment] scoreIndexTrend:", e.message);
+    // Fallback to regime
+    try {
+      const universe = loadUniverse();
+      const regime = marketRegime(universe);
+      return regime.riskOn ? 70 : 30;
+    } catch {
+      return 50;
+    }
   }
 }
 
-// Score breadth: % of stocks up vs down
+// Score breadth: % of stocks up vs down (TODAY'S moves)
 async function scoreBreadth() {
   try {
     const universe = loadUniverse();
@@ -61,7 +82,7 @@ async function scoreBreadth() {
 
     if (symbols.length === 0) return 50;
 
-    // Batch fetch quotes for all symbols
+    // Fetch live quotes for all symbols
     const instrumentKeys = symbols.map((sym) => `NSE_EQ|${sym}`);
     const quotes = await getBatchQuotes(instrumentKeys);
 
@@ -71,34 +92,33 @@ async function scoreBreadth() {
     for (const [key, quote] of Object.entries(quotes)) {
       if (!quote) continue;
       const change = quote.net_change_percentage || 0;
-      if (change > 0) upsCount++;
-      else if (change < 0) downsCount++;
+      if (change > 0.1) upsCount++; // +0.1% threshold to ignore noise
+      else if (change < -0.1) downsCount++;
     }
 
     const total = upsCount + downsCount;
-    if (total === 0) return 50;
+    if (total < 10) return 50; // Not enough data
 
-    // Convert breadth to score (>60% ups = bullish)
     const breadthPct = (upsCount / total) * 100;
-    // Score: 60% ups → 70, 80% ups → 90, 40% ups → 30
-    const score = breadthPct > 50 ? 50 + (breadthPct - 50) : 50 - (50 - breadthPct);
+    // >70% ups = bullish (85-100), <30% ups = bearish (0-15)
+    const score = Math.max(0, Math.min(100, 50 + (breadthPct - 50)));
 
+    console.log(`[sentiment] breadth: ${upsCount}/${total} up = ${breadthPct.toFixed(1)}% → ${Math.round(score)}`);
     return Math.round(score);
   } catch (e) {
-    console.error("scoreBreadth error:", e.message);
+    console.error("[sentiment] scoreBreadth:", e.message);
     return 50;
   }
 }
 
-// Score bid-ask spreads: tightness indicates market conviction
+// Score bid-ask spreads: tightness indicates conviction
 async function scoreBidAskSpreads() {
   try {
     const universe = loadUniverse();
-    const symbols = universe.symbols || [];
+    const symbols = universe.symbols.slice(0, 50) || []; // Sample first 50
 
     if (symbols.length === 0) return 50;
 
-    // Batch fetch quotes (which include bid/ask if available)
     const instrumentKeys = symbols.map((sym) => `NSE_EQ|${sym}`);
     const quotes = await getBatchQuotes(instrumentKeys);
 
@@ -111,33 +131,38 @@ async function scoreBidAskSpreads() {
       const ask = quote.ask;
       const ltp = quote.last_price;
 
-      if (bid && ask && ltp) {
+      // Only count if all fields present
+      if (bid && ask && ltp && ask > bid) {
         const spreadPct = ((ask - bid) / ltp) * 100;
         totalSpread += spreadPct;
         countWithSpread++;
       }
     }
 
-    if (countWithSpread === 0) return 50; // No spread data, neutral
+    if (countWithSpread === 0) {
+      console.log("[sentiment] No bid-ask data available");
+      return 50;
+    }
 
     const avgSpread = totalSpread / countWithSpread;
 
-    // Tight spread (<0.3%) = high conviction = 80-100
-    // Wide spread (>0.7%) = low conviction = 0-30
-    // Map: <0.3% → 90, 0.5% → 50, >0.7% → 10
+    // Tight spread (<0.2%) = high conviction = 80-100
+    // Wide spread (>0.5%) = low conviction = 0-30
     let score = 50;
-    if (avgSpread < 0.3) {
-      score = 85 + (0.3 - avgSpread) * 500; // Up to 90+
-    } else if (avgSpread > 0.7) {
-      score = 30 - (avgSpread - 0.7) * 100; // Down to 10
+    if (avgSpread < 0.2) {
+      score = 90;
+    } else if (avgSpread < 0.5) {
+      score = 50 + ((0.5 - avgSpread) / 0.3) * 40;
     } else {
-      // Linear interpolation between 0.3 and 0.7
-      score = 85 - ((avgSpread - 0.3) / 0.4) * 70;
+      score = Math.max(10, 50 - ((avgSpread - 0.5) * 100));
     }
 
+    console.log(
+      `[sentiment] bid-ask spread: avg ${avgSpread.toFixed(3)}% (${countWithSpread} stocks) → ${Math.round(score)}`
+    );
     return Math.round(Math.max(0, Math.min(100, score)));
   } catch (e) {
-    console.error("scoreBidAskSpreads error:", e.message);
+    console.error("[sentiment] scoreBidAskSpreads:", e.message);
     return 50;
   }
 }
@@ -146,51 +171,59 @@ async function scoreBidAskSpreads() {
 async function scoreVolume() {
   try {
     const universe = loadUniverse();
-    const symbols = universe.symbols || [];
+    const symbols = universe.symbols.slice(0, 30) || []; // Sample first 30
 
     if (symbols.length === 0) return 50;
 
-    const instrumentKeys = symbols.map((sym) => `NSE_EQ|${sym}`);
-
-    // Fetch candles for volume comparison
     const volRatios = [];
-    for (const key of instrumentKeys) {
-      try {
-        const candles = await getDailyCandles(key, 25);
-        if (candles.length >= 20) {
-          const todayVol = candles[candles.length - 1].volume;
-          const last20Vols = candles.slice(-20).map((c) => c.volume);
-          const avgVol = last20Vols.reduce((a, b) => a + b) / 20;
 
-          if (avgVol > 0) {
-            volRatios.push(todayVol / avgVol);
+    // Fetch candles in parallel batches (avoid rate limit)
+    for (let i = 0; i < symbols.length; i += 10) {
+      const batch = symbols.slice(i, i + 10);
+      const results = await Promise.all(
+        batch.map(async (sym) => {
+          try {
+            const candles = await getDailyCandles(`NSE_EQ|${sym}`, 25);
+            if (candles.length >= 20) {
+              const todayVol = candles[candles.length - 1].volume;
+              const last20Vols = candles.slice(-20).map((c) => c.volume);
+              const avgVol = last20Vols.reduce((a, b) => a + b) / 20;
+              if (avgVol > 0) {
+                return todayVol / avgVol;
+              }
+            }
+          } catch {
+            // Skip on error
           }
-        }
-      } catch {
-        // Skip symbols with errors
-      }
+          return null;
+        })
+      );
+      volRatios.push(...results.filter((r) => r !== null));
     }
 
-    if (volRatios.length === 0) return 50;
+    if (volRatios.length === 0) {
+      console.log("[sentiment] No volume data available");
+      return 50;
+    }
 
     const avgVolRatio = volRatios.reduce((a, b) => a + b) / volRatios.length;
 
-    // vol_ratio 1.2+ = surging = 70-100
+    // vol_ratio 1.3+ = surging = 80-100
     // vol_ratio 1.0 = normal = 50
-    // vol_ratio 0.8 = declining = 20-40
+    // vol_ratio 0.7 = declining = 10-30
     let score = 50;
-    if (avgVolRatio >= 1.2) {
-      score = 70 + (avgVolRatio - 1.2) * 200; // Up to 90-100
-    } else if (avgVolRatio < 0.8) {
-      score = 30 - (0.8 - avgVolRatio) * 200; // Down to 10-20
+    if (avgVolRatio >= 1.3) {
+      score = Math.min(100, 75 + (avgVolRatio - 1.3) * 200);
+    } else if (avgVolRatio < 0.7) {
+      score = Math.max(0, 25 - (0.7 - avgVolRatio) * 200);
     } else {
-      // Linear interpolation
       score = 50 + (avgVolRatio - 1.0) * 100;
     }
 
+    console.log(`[sentiment] volume: avg ratio ${avgVolRatio.toFixed(2)}x (${volRatios.length} stocks) → ${Math.round(score)}`);
     return Math.round(Math.max(0, Math.min(100, score)));
   } catch (e) {
-    console.error("scoreVolume error:", e.message);
+    console.error("[sentiment] scoreVolume:", e.message);
     return 50;
   }
 }
@@ -198,11 +231,20 @@ async function scoreVolume() {
 // Score volatility regime: elevated vol = fear, low vol = greed
 async function scoreVolatility() {
   try {
-    // Use Nifty 50 for volatility baseline
-    const candles = await getDailyCandles("NSE_EQ|NIFTYBEESDIRECT", 65);
-    if (candles.length < 20) return 50;
+    // Use Nifty BeES or fallback to regime
+    let candles = null;
+    try {
+      candles = await getDailyCandles("NSE_EQ|NIFTYBEES", 65);
+    } catch {
+      candles = null;
+    }
 
-    // Calculate 20-day ATR (Average True Range) as volatility proxy
+    if (!candles || candles.length < 20) {
+      console.log("[sentiment] Using regime data for volatility");
+      return 50; // Neutral if no candles
+    }
+
+    // Calculate ATR (Average True Range) as volatility proxy
     const calculateATR = (candles) => {
       const trs = [];
       for (let i = 1; i < candles.length; i++) {
@@ -224,26 +266,21 @@ async function scoreVolatility() {
     const atr20 = calculateATR(last20);
     const atr60 = calculateATR(last60);
 
-    // vol_ratio: current 20-day ATR vs 60-day baseline
     const volRatio = atr20 / atr60;
 
-    // Elevated vol (>1.2x) = fear = lower bullish score
-    // Low vol (<0.9x) = greed = lower bearish score (inverted in main function)
+    // Elevated vol (>1.3x baseline) = fear
+    // Low vol (<0.8x) = complacency
     let score = 50;
-    if (volRatio > 1.2) {
-      // Elevated volatility (fear)
-      score = 50 - (volRatio - 1.2) * 200; // Down to 20-30
-    } else if (volRatio < 0.9) {
-      // Low volatility (complacency)
-      score = 50 + (0.9 - volRatio) * 200; // Up to 70-80
-    } else {
-      // Normal volatility
-      score = 50 - (volRatio - 1.0) * 100;
+    if (volRatio > 1.3) {
+      score = Math.max(0, 50 - (volRatio - 1.3) * 200);
+    } else if (volRatio < 0.8) {
+      score = Math.min(100, 50 + (0.8 - volRatio) * 200);
     }
 
+    console.log(`[sentiment] volatility: ratio ${volRatio.toFixed(2)}x → ${Math.round(score)}`);
     return Math.round(Math.max(0, Math.min(100, score)));
   } catch (e) {
-    console.error("scoreVolatility error:", e.message);
+    console.error("[sentiment] scoreVolatility:", e.message);
     return 50;
   }
 }
@@ -254,32 +291,21 @@ function generateReasonChips(factors) {
   const reasons = [];
 
   if (factors.priceAction > 75) reasons.push("📈 Strong uptrend momentum");
-  else if (factors.priceAction > 60)
-    reasons.push("📈 Uptrend confirmed");
-  else if (factors.priceAction < 25)
-    reasons.push("📉 Strong downtrend momentum");
-  else if (factors.priceAction < 40)
-    reasons.push("📉 Downtrend confirmed");
+  else if (factors.priceAction > 60) reasons.push("📈 Uptrend confirmed");
+  else if (factors.priceAction < 25) reasons.push("📉 Strong downtrend momentum");
+  else if (factors.priceAction < 40) reasons.push("📉 Downtrend confirmed");
 
-  if (factors.breadth > 70)
-    reasons.push("📊 Broad-based participation (>70% up)");
-  else if (factors.breadth < 30)
-    reasons.push("⚠ Weak breadth (<30% up)");
+  if (factors.breadth > 70) reasons.push("📊 Broad participation (>70% up)");
+  else if (factors.breadth < 30) reasons.push("⚠ Weak breadth (<30% up)");
 
-  if (factors.volumeParticipation > 75)
-    reasons.push("💪 Volume surging above avg");
-  else if (factors.volumeParticipation < 30)
-    reasons.push("⚠ Volume declining");
+  if (factors.volumeParticipation > 75) reasons.push("💪 Volume surge");
+  else if (factors.volumeParticipation < 30) reasons.push("📉 Declining volume");
 
-  if (factors.bidAskSpread > 75)
-    reasons.push("✓ Tight spreads (confidence)");
-  else if (factors.bidAskSpread < 35)
-    reasons.push("⚠ Wide spreads (uncertainty)");
+  if (factors.bidAskSpread > 75) reasons.push("✓ Tight spreads (confidence)");
+  else if (factors.bidAskSpread < 35) reasons.push("⚠ Wide spreads (uncertainty)");
 
-  if (factors.volatilityRegime > 70)
-    reasons.push("⚠ Elevated volatility (fear)");
-  else if (factors.volatilityRegime < 35)
-    reasons.push("😴 Very low volatility (complacency)");
+  if (factors.volatilityRegime > 65) reasons.push("⚠ Elevated volatility (fear)");
+  else if (factors.volatilityRegime < 35) reasons.push("😴 Low volatility (complacency)");
 
   return reasons;
 }
@@ -290,6 +316,8 @@ export async function calculateSentiment() {
   const startTime = performance.now();
 
   try {
+    console.log("[sentiment] Computing market sentiment...");
+
     // Score all factors in parallel
     const [priceAction, breadth, bidAskSpread, volumeParticipation, volatilityRegime] =
       await Promise.all([
@@ -308,13 +336,13 @@ export async function calculateSentiment() {
       volatilityRegime,
     };
 
-    // Weighted average (tuned weights)
+    // Weighted average
     const bullishScore = Math.round(
       0.3 * priceAction +
         0.25 * breadth +
         0.15 * bidAskSpread +
         0.2 * volumeParticipation +
-        0.1 * (100 - volatilityRegime) // Invert: low vol = more bullish
+        0.1 * (100 - volatilityRegime)
     );
 
     const bearishScore = 100 - bullishScore;
@@ -334,6 +362,8 @@ export async function calculateSentiment() {
     const reasons = generateReasonChips(factors);
     const elapsedMs = Math.round(performance.now() - startTime);
 
+    console.log(`[sentiment] Result: ${sentiment} (${bullishScore}/${bearishScore}) ${confidence} confidence in ${elapsedMs}ms`);
+
     return {
       bullishScore,
       bearishScore,
@@ -345,8 +375,7 @@ export async function calculateSentiment() {
       computeTimeMs: elapsedMs,
     };
   } catch (e) {
-    console.error("calculateSentiment error:", e.message);
-    // Return safe neutral on error
+    console.error("[sentiment] Fatal error:", e.message);
     return {
       bullishScore: 50,
       bearishScore: 50,
@@ -359,7 +388,7 @@ export async function calculateSentiment() {
         volumeParticipation: 50,
         volatilityRegime: 50,
       },
-      reasons: ["⚠ Error computing sentiment, defaulting to neutral"],
+      reasons: ["⚠ Error computing sentiment"],
       lastUpdated: new Date(),
       error: e.message,
     };
