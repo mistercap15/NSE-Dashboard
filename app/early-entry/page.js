@@ -188,18 +188,7 @@ export default function EarlyEntryPage() {
         setTokenExpired(d.expired || false)
       })
       .catch(() => setUpstoxReady(false))
-
-    // Fetch sentiment on page load (even before user clicks Scan)
-    fetch(`/api/early-entry?month=${selectedMonth}`)
-      .then(r => r.json())
-      .then(json => {
-        // Set sentiment in separate state to avoid interfering with scan results
-        if (json.sentiment) {
-          setSentiment(json.sentiment)
-        }
-      })
-      .catch(() => {})
-  }, [selectedMonth])
+  }, [])
 
   const runScan = async () => {
     setLoading(true)
@@ -209,6 +198,10 @@ export default function EarlyEntryPage() {
       const json = await res.json()
       if (json.error) throw new Error(json.error)
       setData(json)
+      // Also set sentiment when scan completes
+      if (json.sentiment) {
+        setSentiment(json.sentiment)
+      }
     } catch (e) {
       setError(e.message)
     } finally {
