@@ -129,16 +129,24 @@ export async function getQuote(instrumentKey) {
   const quoteMap = data?.data || {}
   const quote = quoteMap[instrumentKey] ?? Object.values(quoteMap)[0]
   if (!quote) throw new Error(`No quote data for ${instrumentKey} — response keys: ${Object.keys(quoteMap).join(", ")}`)
+  // Upstox doesn't reliably return a percentage field — derive it from LTP vs prev close.
+  const prevClose = quote.ohlc?.close
+  const ltp = quote.last_price
+  const changePct = (prevClose && ltp)
+    ? ((ltp - prevClose) / prevClose) * 100
+    : (quote.net_change_percentage ?? 0)
   return {
     symbol:    instrumentKey,
     ltp:       quote.last_price,
     change:    quote.net_change,
-    changePct: quote.net_change_percentage,
+    changePct,
     high:      quote.ohlc?.high,
     low:       quote.ohlc?.low,
     open:      quote.ohlc?.open,
     prevClose: quote.ohlc?.close,
     volume:    quote.volume,
+    bid:       quote.depth?.buy?.[0]?.price,
+    ask:       quote.depth?.sell?.[0]?.price,
   }
 }
 

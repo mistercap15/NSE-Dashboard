@@ -9,6 +9,17 @@ import { marketRegime } from "@/app/lib/regime"
 const MCP_URL   = process.env.MCP_URL || "https://nse-data-mcp.vercel.app/mcp"
 const MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
 
+// Fetch market-proxy daily candles. Tries the Nifty 50 index key; if that
+// returns nothing (key format issue), falls back to RELIANCE — whose ISIN
+// key is proven to work in the early-entry price fetch above.
+async function getMarketProxyCandles(days) {
+  let candles = await getDailyCandles("NSE_INDEX|Nifty 50", days)
+  if (!candles?.length) {
+    candles = await getDailyCandles(toInstrumentKey("RELIANCE"), days)
+  }
+  return candles
+}
+
 // ── Sentiment calculation (uses same Upstox token as early-entry) ────────
 async function calculateSentiment() {
   try {
@@ -17,7 +28,7 @@ async function calculateSentiment() {
     // Price action: Nifty trend
     let priceAction = 50
     try {
-      const candles = await getDailyCandles("NSE_EQ|NIFTYBEES", 60)
+      const candles = await getMarketProxyCandles(60)
       if (candles?.length >= 20) {
         const ma5 = candles.slice(-5).map(c => c.close).reduce((a,b) => a+b) / 5
         const ma20 = candles.slice(-20).map(c => c.close).reduce((a,b) => a+b) / 20
@@ -34,7 +45,7 @@ async function calculateSentiment() {
     try {
       const universe = loadUniverse()
       const symbols = universe.symbols.slice(0, 50)
-      const results = await Promise.allSettled(symbols.map(s => getQuote(`NSE_EQ|${s}`)))
+      const results = await Promise.allSettled(symbols.map(s => getQuote(toInstrumentKey(s))))
       let ups = 0, downs = 0
       results.forEach(r => {
         if (r.status === "fulfilled" && r.value) {
@@ -52,7 +63,7 @@ async function calculateSentiment() {
     try {
       const universe = loadUniverse()
       const symbols = universe.symbols.slice(0, 20)
-      const results = await Promise.allSettled(symbols.map(s => getQuote(`NSE_EQ|${s}`)))
+      const results = await Promise.allSettled(symbols.map(s => getQuote(toInstrumentKey(s))))
       let spreadSum = 0, count = 0
       results.forEach(r => {
         if (r.status === "fulfilled" && r.value?.bid && r.value?.ask && r.value?.ltp) {
@@ -75,7 +86,7 @@ async function calculateSentiment() {
       const universe = loadUniverse()
       const symbols = universe.symbols.slice(0, 15)
       const results = await Promise.allSettled(symbols.map(async s => {
-        const candles = await getDailyCandles(`NSE_EQ|${s}`, 25)
+        const candles = await getDailyCandles(toInstrumentKey(s), 25)
         if (candles?.length >= 20) {
           const today = candles[candles.length - 1].volume
           const avg20 = candles.slice(-20).map(c => c.volume).reduce((a,b) => a+b) / 20
@@ -94,7 +105,7 @@ async function calculateSentiment() {
     // Volatility
     let volatility = 50
     try {
-      const candles = await getDailyCandles("NSE_EQ|NIFTYBEES", 65)
+      const candles = await getMarketProxyCandles(65)
       if (candles?.length >= 20) {
         const atr20 = candles.slice(-20).map((c,i,arr) => {
           if (i === 0) return 0
