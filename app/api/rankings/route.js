@@ -124,7 +124,11 @@ export async function GET(request) {
 
     // Get sentiment from early-entry endpoint (uses same Upstox token, guaranteed to work)
     try {
-      const earlyEntryRes = await fetch("http://localhost:3000/api/early-entry", {
+      const baseUrl = process.env.VERCEL_URL
+        ? `https://${process.env.VERCEL_URL}`
+        : `http://localhost:${process.env.PORT || 3000}`;
+
+      const earlyEntryRes = await fetch(`${baseUrl}/api/early-entry`, {
         headers: request.headers,
       });
       if (earlyEntryRes.ok) {
