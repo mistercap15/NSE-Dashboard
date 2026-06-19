@@ -145,24 +145,164 @@ function RankingsContent() {
         </div>
       )}
 
-      {/* Market sentiment banner */}
+      {/* Market sentiment detailed panel */}
       {data?.sentiment && data.sentiment.sentiment && (
-        <div className={`mb-5 rounded-lg border px-4 py-2.5 flex items-center gap-3 ${
-          data.sentiment.sentiment === "BULLISH" ? "border-green/25 bg-green/5" : data.sentiment.sentiment === "BEARISH" ? "border-red/25 bg-red/5" : "border-border bg-card"
+        <div className={`mb-6 rounded-lg border px-5 py-4 ${
+          data.sentiment.sentiment === "BULLISH" ? "border-green/25 bg-green/5" : data.sentiment.sentiment === "BEARISH" ? "border-red/25 bg-red/5" : "border-border bg-card/50"
         }`}>
-          <span className={`font-mono text-[11px] font-semibold px-2 py-0.5 rounded shrink-0 ${
-            data.sentiment.sentiment === "BULLISH" ? "bg-green/15 text-green" : data.sentiment.sentiment === "BEARISH" ? "bg-red/15 text-red" : "bg-border text-soft"
-          }`}>
-            {data.sentiment.sentiment === "BULLISH" ? "📈 BULLISH" : data.sentiment.sentiment === "BEARISH" ? "📉 BEARISH" : "↔️ NEUTRAL"}
-          </span>
-          <span className="font-mono text-[10.5px] text-soft flex-1">
-            {data.sentiment.sentiment === "BULLISH" ? `Strong uptrend, ${data.sentiment.bullishScore}% conviction` : data.sentiment.sentiment === "BEARISH" ? `Strong downtrend, ${data.sentiment.bearishScore}% conviction` : "Mixed market signals"}
-          </span>
-          {data.sentiment.factors && (
-            <span className="font-mono text-[9px] text-dim shrink-0 hidden sm:inline">
-              Trend {data.sentiment.factors.priceAction} · Breadth {data.sentiment.factors.breadth} · Vol {data.sentiment.factors.volumeParticipation}
-            </span>
-          )}
+          {/* Header */}
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-3">
+              <span className={`font-mono text-[12px] font-semibold px-3 py-1 rounded ${
+                data.sentiment.sentiment === "BULLISH" ? "bg-green/15 text-green" : data.sentiment.sentiment === "BEARISH" ? "bg-red/15 text-red" : "bg-border text-soft"
+              }`}>
+                {data.sentiment.sentiment === "BULLISH" ? "📈 BULLISH" : data.sentiment.sentiment === "BEARISH" ? "📉 BEARISH" : "↔️ NEUTRAL"}
+              </span>
+              <div>
+                <div className="font-mono text-[13px] font-semibold text-text">
+                  Market Sentiment: {data.sentiment.bullishScore}% Bullish
+                </div>
+                <div className="font-mono text-[10px] text-dim">
+                  Confidence: <span className={data.sentiment.confidence === "High" ? "text-green" : data.sentiment.confidence === "Medium" ? "text-amber" : "text-red"}>{data.sentiment.confidence}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Explanation */}
+          <div className="mb-4 p-3 rounded bg-black/20 border border-border/50">
+            <div className="font-mono text-[10px] text-soft mb-2">
+              <span className="font-semibold text-text">What is Market Sentiment?</span>
+            </div>
+            <div className="font-mono text-[9.5px] text-dim leading-relaxed">
+              Real-time analysis of current market mood using 5 data points. Helps determine if it's a good time to enter trades—seasonal edges work better when market mood aligns with the signal direction.
+            </div>
+          </div>
+
+          {/* Factor Breakdown */}
+          <div className="space-y-3">
+            <div className="font-mono text-[10px] font-semibold text-text mb-2">Factor Breakdown:</div>
+
+            {/* Price Action */}
+            <div className="space-y-1">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="font-mono text-[10px] text-dim w-32">📈 Price Action (30%)</span>
+                  <span className="font-mono text-[10px] text-soft font-semibold">{data.sentiment.factors?.priceAction || 50}/100</span>
+                </div>
+              </div>
+              <div className="h-1.5 rounded-full bg-muted/30 overflow-hidden">
+                <div
+                  className="h-full bg-gradient-to-r from-red via-yellow to-green rounded-full transition-all"
+                  style={{ width: `${data.sentiment.factors?.priceAction || 50}%` }}
+                />
+              </div>
+              <div className="font-mono text-[9px] text-muted">
+                {data.sentiment.factors?.priceAction > 70 ? "Nifty in strong uptrend (5D MA above 20D MA)" : data.sentiment.factors?.priceAction < 30 ? "Nifty in strong downtrend" : "Nifty in transition zone"}
+              </div>
+            </div>
+
+            {/* Breadth */}
+            <div className="space-y-1">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="font-mono text-[10px] text-dim w-32">📊 Breadth (25%)</span>
+                  <span className="font-mono text-[10px] text-soft font-semibold">{data.sentiment.factors?.breadth || 50}/100</span>
+                </div>
+              </div>
+              <div className="h-1.5 rounded-full bg-muted/30 overflow-hidden">
+                <div
+                  className="h-full bg-gradient-to-r from-red via-yellow to-green rounded-full"
+                  style={{ width: `${data.sentiment.factors?.breadth || 50}%` }}
+                />
+              </div>
+              <div className="font-mono text-[9px] text-muted">
+                % of F&O stocks up today vs down (healthy: {'>'} 70% up = bullish)
+              </div>
+            </div>
+
+            {/* Bid-Ask Spreads */}
+            <div className="space-y-1">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="font-mono text-[10px] text-dim w-32">💱 Spreads (15%)</span>
+                  <span className="font-mono text-[10px] text-soft font-semibold">{data.sentiment.factors?.bidAskSpread || 50}/100</span>
+                </div>
+              </div>
+              <div className="h-1.5 rounded-full bg-muted/30 overflow-hidden">
+                <div
+                  className="h-full bg-gradient-to-r from-red via-yellow to-green rounded-full"
+                  style={{ width: `${data.sentiment.factors?.bidAskSpread || 50}%` }}
+                />
+              </div>
+              <div className="font-mono text-[9px] text-muted">
+                Bid-ask spread tightness = market conviction (tight = confidence, wide = uncertainty)
+              </div>
+            </div>
+
+            {/* Volume */}
+            <div className="space-y-1">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="font-mono text-[10px] text-dim w-32">📈 Volume (20%)</span>
+                  <span className="font-mono text-[10px] text-soft font-semibold">{data.sentiment.factors?.volume || 50}/100</span>
+                </div>
+              </div>
+              <div className="h-1.5 rounded-full bg-muted/30 overflow-hidden">
+                <div
+                  className="h-full bg-gradient-to-r from-red via-yellow to-green rounded-full"
+                  style={{ width: `${data.sentiment.factors?.volume || 50}%` }}
+                />
+              </div>
+              <div className="font-mono text-[9px] text-muted">
+                Today's volume vs 20-day average (1.3x+ = surge, 0.7x- = decline)
+              </div>
+            </div>
+
+            {/* Volatility */}
+            <div className="space-y-1">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="font-mono text-[10px] text-dim w-32">⚡ Volatility (10%)</span>
+                  <span className="font-mono text-[10px] text-soft font-semibold">{data.sentiment.factors?.volatility || 50}/100</span>
+                </div>
+              </div>
+              <div className="h-1.5 rounded-full bg-muted/30 overflow-hidden">
+                <div
+                  className="h-full bg-gradient-to-r from-red via-yellow to-green rounded-full"
+                  style={{ width: `${data.sentiment.factors?.volatility || 50}%` }}
+                />
+              </div>
+              <div className="font-mono text-[9px] text-muted">
+                20-day vs 60-day volatility ratio (elevated = fear, low = greed)
+              </div>
+            </div>
+          </div>
+
+          {/* Calculation Example */}
+          <div className="mt-4 p-3 rounded bg-black/20 border border-border/50">
+            <div className="font-mono text-[9px] text-dim space-y-1">
+              <div className="text-soft font-semibold">How the score is calculated:</div>
+              <div>Bullish Score = (30% × {data.sentiment.factors?.priceAction || 50}) + (25% × {data.sentiment.factors?.breadth || 50}) + (15% × {data.sentiment.factors?.bidAskSpread || 50}) + (20% × {data.sentiment.factors?.volume || 50}) + (10% × (100 - {data.sentiment.factors?.volatility || 50}))</div>
+              <div className="text-accent font-semibold">= {data.sentiment.bullishScore}% Bullish</div>
+            </div>
+          </div>
+
+          {/* How to Use */}
+          <div className="mt-4 p-3 rounded bg-blue/10 border border-blue/25">
+            <div className="font-mono text-[9.5px] text-blue space-y-1">
+              <div className="font-semibold">💡 How to Use:</div>
+              <div>
+                • <span className="text-green">BULLISH + Seasonal LONG</span> = 🟢 HIGH probability (both align)
+              </div>
+              <div>
+                • <span className="text-red">BEARISH + Seasonal LONG</span> = 🟡 LOWER probability (conflicting signals)
+              </div>
+              <div>
+                • <span className="text-green">BEARISH + Seasonal SHORT</span> = 🟢 HIGH probability (both align)
+              </div>
+            </div>
+          </div>
         </div>
       )}
 
