@@ -172,6 +172,7 @@ export default function EarlyEntryPage() {
   const currentMonth = getCurrentMonth()
   const nextMonth = getNextMonth(currentMonth)
   const [data,            setData]            = useState(null)
+  const [sentiment,       setSentiment]       = useState(null)
   const [loading,         setLoading]         = useState(false)
   const [error,           setError]           = useState(null)
   const [upstoxReady,     setUpstoxReady]     = useState(false)
@@ -192,9 +193,9 @@ export default function EarlyEntryPage() {
     fetch(`/api/early-entry?month=${selectedMonth}`)
       .then(r => r.json())
       .then(json => {
-        // Only set sentiment, don't set full data yet
+        // Set sentiment in separate state to avoid interfering with scan results
         if (json.sentiment) {
-          setData(prev => ({ ...prev || {}, sentiment: json.sentiment }))
+          setSentiment(json.sentiment)
         }
       })
       .catch(() => {})
@@ -236,37 +237,37 @@ export default function EarlyEntryPage() {
         </div>
 
         {/* MARKET SENTIMENT PANEL - ALWAYS VISIBLE */}
-        {data?.sentiment && (
+        {sentiment && (
           <div className={`mb-6 rounded-lg border px-6 py-5 ${
-            data.sentiment.sentiment === "BULLISH" ? "border-green/25 bg-green/5" :
-            data.sentiment.sentiment === "BEARISH" ? "border-red/25 bg-red/5" :
+            sentiment.sentiment === "BULLISH" ? "border-green/25 bg-green/5" :
+            sentiment.sentiment === "BEARISH" ? "border-red/25 bg-red/5" :
             "border-border bg-card/50"
           }`}>
             <div className="mb-4 flex items-center justify-between">
               <div>
                 <div className="flex items-center gap-2 mb-1">
                   <span className={`font-mono text-[12px] font-semibold px-3 py-1 rounded ${
-                    data.sentiment.sentiment === "BULLISH" ? "bg-green/15 text-green" :
-                    data.sentiment.sentiment === "BEARISH" ? "bg-red/15 text-red" :
+                    sentiment.sentiment === "BULLISH" ? "bg-green/15 text-green" :
+                    sentiment.sentiment === "BEARISH" ? "bg-red/15 text-red" :
                     "bg-border text-soft"
                   }`}>
-                    {data.sentiment.sentiment === "BULLISH" ? "📈 BULLISH" :
-                     data.sentiment.sentiment === "BEARISH" ? "📉 BEARISH" :
+                    {sentiment.sentiment === "BULLISH" ? "📈 BULLISH" :
+                     sentiment.sentiment === "BEARISH" ? "📉 BEARISH" :
                      "↔️ NEUTRAL"}
                   </span>
                 </div>
                 <div className="font-display text-xl font-bold text-text">
-                  Market Sentiment: {data.sentiment.bullishScore}% Bullish
+                  Market Sentiment: {sentiment.bullishScore}% Bullish
                 </div>
               </div>
               <div className="text-right">
                 <div className="font-mono text-sm text-soft">Confidence</div>
                 <div className={`font-mono text-lg font-bold ${
-                  data.sentiment.confidence === "High" ? "text-green" :
-                  data.sentiment.confidence === "Medium" ? "text-amber" :
+                  sentiment.confidence === "High" ? "text-green" :
+                  sentiment.confidence === "Medium" ? "text-amber" :
                   "text-red"
                 }`}>
-                  {data.sentiment.confidence}
+                  {sentiment.confidence}
                 </div>
               </div>
             </div>
@@ -285,10 +286,10 @@ export default function EarlyEntryPage() {
                   <div className="h-1.5 rounded-full bg-muted/30 overflow-hidden mb-2">
                     <div
                       className="h-full bg-gradient-to-r from-red via-yellow to-green"
-                      style={{ width: `${data.sentiment.factors?.[f.factor] || 50}%` }}
+                      style={{ width: `${sentiment.factors?.[f.factor] || 50}%` }}
                     />
                   </div>
-                  <div className="font-mono text-sm font-bold text-text mb-1">{data.sentiment.factors?.[f.factor] || 50}/100</div>
+                  <div className="font-mono text-sm font-bold text-text mb-1">{sentiment.factors?.[f.factor] || 50}/100</div>
                   <div className="font-mono text-[9px] text-muted">{f.desc}</div>
                 </div>
               ))}
