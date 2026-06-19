@@ -3,8 +3,6 @@ import { loadUniverse, monthReturns } from "../../lib/dataset";
 import { significance } from "../../lib/stats";
 import { trendState, marketRegime } from "../../lib/regime";
 import { getCalendar } from "../../lib/events";
-import { calculateSentiment } from "../../lib/sentiment";
-import { setAccessToken } from "../../lib/upstox";
 
 const MCP_URL    = process.env.MCP_URL    || "https://nse-data-mcp.vercel.app/mcp";
 
@@ -57,14 +55,6 @@ export async function GET(request) {
   const month  = parseInt(searchParams.get("month") || "1");
   const top    = parseInt(searchParams.get("top")   || "25");
   const sector = searchParams.get("sector") || "ALL";
-
-  // Extract Upstox token from cookies or headers (exact same pattern as early-entry)
-  const cookie = request.cookies.get("upstox_token")?.value;
-  const headerToken = request.headers.get("x-upstox-token");
-  const token = cookie || headerToken;
-  if (token) {
-    setAccessToken(token);
-  }
 
   try {
     const result = await callMCPTool("get_monthly_ranking", { month, top, sector });
@@ -132,21 +122,22 @@ export async function GET(request) {
 
     try { payload.calendar = getCalendar(); } catch { /* ignore */ }
 
-    // Compute market sentiment (async, non-blocking)
-    try { payload.sentiment = await calculateSentiment(); } catch { /* ignore sentiment errors */ }
+    // Get sentiment from early-entry endpoint (uses same Upstox token, guaranteed to work)
+    try {
+      const earlyEntryRes = await fetch("http://localhost:3000/api/early-entry", {
+        headers: request.headers,
+      });
+      if (earlyEntryRes.ok) {
+        const earlyEntryData = await earlyEntryRes.json();
+        if (earlyEntryData.sentiment) {
+          payload.sentiment = earlyEntryData.sentiment;
+        }
+      }
+    } catch (e) {
+      console.log("Could not fetch sentiment from early-entry:", e.message);
+    }
 
-    // Don't cache if sentiment is incomplete (missing Upstox token)
-    // This ensures sentiment updates immediately after authentication
-    const hasSentimentData = payload.sentiment &&
-      Object.values(payload.sentiment.factors || {}).some(f => f !== 50);
-
-    return NextResponse.json(payload, {
-      headers: {
-        "Cache-Control": hasSentimentData
-          ? "public, s-maxage=300, stale-while-revalidate=600"  // Cache when sentiment is complete
-          : "no-cache, no-store, must-revalidate", // Don't cache when sentiment is incomplete
-      },
-    });
+    return NextResponse.json(payload);
   } catch (e) {
     console.error("Rankings API error:", e.message);
     return NextResponse.json(

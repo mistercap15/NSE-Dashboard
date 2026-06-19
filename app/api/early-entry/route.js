@@ -3,9 +3,130 @@ import { getDailyCandles, getQuote, setAccessToken } from "@/app/lib/upstox"
 import { toInstrumentKey } from "@/app/lib/instruments"
 import { computeSupportZones, computePriceContext, computeSignalScore } from "@/app/lib/technicals"
 import { getNextMonth } from "@/app/lib/date"
+import { loadUniverse } from "@/app/lib/dataset"
+import { marketRegime } from "@/app/lib/regime"
 
 const MCP_URL   = process.env.MCP_URL || "https://nse-data-mcp.vercel.app/mcp"
 const MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
+
+// ── Sentiment calculation (uses same Upstox token as early-entry) ────────
+async function calculateSentiment() {
+  try {
+    console.log("[sentiment] Starting...")
+
+    // Price action: Nifty trend
+    let priceAction = 50
+    try {
+      const candles = await getDailyCandles("NSE_EQ|NIFTYBEES", 60)
+      if (candles?.length >= 20) {
+        const ma5 = candles.slice(-5).map(c => c.close).reduce((a,b) => a+b) / 5
+        const ma20 = candles.slice(-20).map(c => c.close).reduce((a,b) => a+b) / 20
+        const latest = candles[candles.length - 1].close
+        if (latest > ma5 && ma5 > ma20) priceAction = Math.min(85 + ((ma5-ma20)/ma20)*300, 100)
+        else if (latest < ma5 && ma5 < ma20) priceAction = Math.max(15 - ((ma20-ma5)/ma20)*300, 0)
+        else if (latest > ma5) priceAction = 65
+        else priceAction = 35
+      }
+    } catch (e) { console.log("[sentiment] priceAction:", e.message) }
+
+    // Breadth: % stocks up
+    let breadth = 50
+    try {
+      const universe = loadUniverse()
+      const symbols = universe.symbols.slice(0, 50)
+      const results = await Promise.allSettled(symbols.map(s => getQuote(`NSE_EQ|${s}`)))
+      let ups = 0, downs = 0
+      results.forEach(r => {
+        if (r.status === "fulfilled" && r.value) {
+          const change = r.value.changePct || 0
+          if (change > 0.1) ups++
+          else if (change < -0.1) downs++
+        }
+      })
+      const total = ups + downs
+      if (total > 10) breadth = Math.max(0, Math.min(100, 50 + ((ups - downs) / total) * 100))
+    } catch (e) { console.log("[sentiment] breadth:", e.message) }
+
+    // Bid-ask spreads
+    let bidAskSpread = 50
+    try {
+      const universe = loadUniverse()
+      const symbols = universe.symbols.slice(0, 20)
+      const results = await Promise.allSettled(symbols.map(s => getQuote(`NSE_EQ|${s}`)))
+      let spreadSum = 0, count = 0
+      results.forEach(r => {
+        if (r.status === "fulfilled" && r.value?.bid && r.value?.ask && r.value?.ltp) {
+          const spread = ((r.value.ask - r.value.bid) / r.value.ltp) * 100
+          spreadSum += spread
+          count++
+        }
+      })
+      if (count > 0) {
+        const avg = spreadSum / count
+        if (avg < 0.2) bidAskSpread = 90
+        else if (avg < 0.5) bidAskSpread = 50 + ((0.5-avg)/0.3)*40
+        else bidAskSpread = Math.max(10, 50 - ((avg-0.5)*100))
+      }
+    } catch (e) { console.log("[sentiment] spreads:", e.message) }
+
+    // Volume surge
+    let volume = 50
+    try {
+      const universe = loadUniverse()
+      const symbols = universe.symbols.slice(0, 15)
+      const results = await Promise.allSettled(symbols.map(async s => {
+        const candles = await getDailyCandles(`NSE_EQ|${s}`, 25)
+        if (candles?.length >= 20) {
+          const today = candles[candles.length - 1].volume
+          const avg20 = candles.slice(-20).map(c => c.volume).reduce((a,b) => a+b) / 20
+          return avg20 > 0 ? today / avg20 : null
+        }
+      }))
+      const ratios = results.filter(r => r.status === "fulfilled" && r.value).map(r => r.value)
+      if (ratios.length > 0) {
+        const avg = ratios.reduce((a,b) => a+b) / ratios.length
+        if (avg >= 1.3) volume = Math.min(100, 75 + (avg-1.3)*200)
+        else if (avg < 0.7) volume = Math.max(0, 25 - (0.7-avg)*200)
+        else volume = 50 + (avg-1)*100
+      }
+    } catch (e) { console.log("[sentiment] volume:", e.message) }
+
+    // Volatility
+    let volatility = 50
+    try {
+      const candles = await getDailyCandles("NSE_EQ|NIFTYBEES", 65)
+      if (candles?.length >= 20) {
+        const atr20 = candles.slice(-20).map((c,i,arr) => {
+          if (i === 0) return 0
+          return Math.max(c.high - c.low, Math.abs(c.high - arr[i-1].close), Math.abs(c.low - arr[i-1].close))
+        }).reduce((a,b) => a+b) / 20
+        const atr60 = candles.map((c,i,arr) => {
+          if (i === 0) return 0
+          return Math.max(c.high - c.low, Math.abs(c.high - arr[i-1].close), Math.abs(c.low - arr[i-1].close))
+        }).reduce((a,b) => a+b) / candles.length
+        const ratio = atr60 > 0 ? atr20 / atr60 : 1
+        if (ratio > 1.3) volatility = Math.max(0, 50 - (ratio-1.3)*200)
+        else if (ratio < 0.8) volatility = Math.min(100, 50 + (0.8-ratio)*200)
+      }
+    } catch (e) { console.log("[sentiment] volatility:", e.message) }
+
+    const bullishScore = Math.round(0.3*priceAction + 0.25*breadth + 0.15*bidAskSpread + 0.2*volume + 0.1*(100-volatility))
+    const sentiment = bullishScore > 65 ? "BULLISH" : bullishScore < 35 ? "BEARISH" : "NEUTRAL"
+
+    console.log(`[sentiment] Result: ${sentiment} ${bullishScore}`)
+
+    return {
+      bullishScore,
+      bearishScore: 100 - bullishScore,
+      sentiment,
+      confidence: bullishScore > 80 || bullishScore < 20 ? "High" : "Medium",
+      factors: { priceAction, breadth, bidAskSpread, volume, volatility }
+    }
+  } catch (e) {
+    console.error("[sentiment] Error:", e.message)
+    return { bullishScore: 50, bearishScore: 50, sentiment: "NEUTRAL", confidence: "Low", factors: {} }
+  }
+}
 
 function runPreTradeChecklist(stock, context, candles) {
   const checks = []
@@ -316,6 +437,9 @@ export async function GET(request) {
       .map(r => r.value)
       .sort((a, b) => (b.signal?.score || 0) - (a.signal?.score || 0))
 
+    // Calculate market sentiment (uses same token, won't fail)
+    const sentiment = await calculateSentiment()
+
     return NextResponse.json({
       targetMonth,
       currentMonth,
@@ -324,6 +448,7 @@ export async function GET(request) {
       results:         scanResults,
       buySignals:      scanResults.filter(s => s.status === "BUY" || s.status === "BUY_HALF").length,
       watchlist:       scanResults.filter(s => s.status === "WATCH").length,
+      sentiment,
     })
 
   } catch (e) {
