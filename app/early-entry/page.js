@@ -224,6 +224,67 @@ export default function EarlyEntryPage() {
           </p>
         </div>
 
+        {/* MARKET SENTIMENT PANEL - ALWAYS VISIBLE */}
+        {data?.sentiment && (
+          <div className={`mb-6 rounded-lg border px-6 py-5 ${
+            data.sentiment.sentiment === "BULLISH" ? "border-green/25 bg-green/5" :
+            data.sentiment.sentiment === "BEARISH" ? "border-red/25 bg-red/5" :
+            "border-border bg-card/50"
+          }`}>
+            <div className="mb-4 flex items-center justify-between">
+              <div>
+                <div className="flex items-center gap-2 mb-1">
+                  <span className={`font-mono text-[12px] font-semibold px-3 py-1 rounded ${
+                    data.sentiment.sentiment === "BULLISH" ? "bg-green/15 text-green" :
+                    data.sentiment.sentiment === "BEARISH" ? "bg-red/15 text-red" :
+                    "bg-border text-soft"
+                  }`}>
+                    {data.sentiment.sentiment === "BULLISH" ? "📈 BULLISH" :
+                     data.sentiment.sentiment === "BEARISH" ? "📉 BEARISH" :
+                     "↔️ NEUTRAL"}
+                  </span>
+                </div>
+                <div className="font-display text-xl font-bold text-text">
+                  Market Sentiment: {data.sentiment.bullishScore}% Bullish
+                </div>
+              </div>
+              <div className="text-right">
+                <div className="font-mono text-sm text-soft">Confidence</div>
+                <div className={`font-mono text-lg font-bold ${
+                  data.sentiment.confidence === "High" ? "text-green" :
+                  data.sentiment.confidence === "Medium" ? "text-amber" :
+                  "text-red"
+                }`}>
+                  {data.sentiment.confidence}
+                </div>
+              </div>
+            </div>
+
+            {/* 5 Factors Grid */}
+            <div className="grid md:grid-cols-5 gap-3">
+              {[
+                { name: "Price Action", weight: "30%", factor: "priceAction", desc: "Nifty trend" },
+                { name: "Breadth", weight: "25%", factor: "breadth", desc: "Stocks up/down" },
+                { name: "Spreads", weight: "15%", factor: "bidAskSpread", desc: "Market conviction" },
+                { name: "Volume", weight: "20%", factor: "volume", desc: "Participation" },
+                { name: "Volatility", weight: "10%", factor: "volatility", desc: "Fear/Greed" },
+              ].map((f) => (
+                <div key={f.factor} className="p-3 rounded bg-black/20 border border-border/50">
+                  <div className="font-mono text-[10px] text-dim mb-2">{f.name} ({f.weight})</div>
+                  <div className="h-1.5 rounded-full bg-muted/30 overflow-hidden mb-2">
+                    <div
+                      className="h-full bg-gradient-to-r from-red via-yellow to-green"
+                      style={{ width: `${data.sentiment.factors?.[f.factor] || 50}%` }}
+                    />
+                  </div>
+                  <div className="font-mono text-sm font-bold text-text mb-1">{data.sentiment.factors?.[f.factor] || 50}/100</div>
+                  <div className="font-mono text-[9px] text-muted">{f.desc}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Upstox connection status */}
         {tokenExpired ? (
           <div className="mb-6 p-4 rounded-lg border border-red/30 bg-red/5 flex items-center justify-between">
