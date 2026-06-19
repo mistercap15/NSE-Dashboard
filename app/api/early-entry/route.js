@@ -78,8 +78,10 @@ async function calculateSentiment() {
       console.log(`[sentiment] breadth: ${ups}up/${downs}down, volRatios: ${volRatios.length}`)
     } catch (e) { console.log("[sentiment] breadth/volume:", e.message) }
 
-    // Bid-ask spreads (live only — needs market depth from quotes)
+    // Bid-ask spreads (live only — needs live market depth, so only
+    // measurable while the market is open; ask price is 0 after close)
     let bidAskSpread = 50
+    let spreadAvailable = false
     try {
       const universe = loadUniverse()
       const symbols = universe.symbols.slice(0, 20)
@@ -93,12 +95,13 @@ async function calculateSentiment() {
         }
       })
       if (count > 0) {
+        spreadAvailable = true
         const avg = spreadSum / count
         if (avg < 0.2) bidAskSpread = 90
         else if (avg < 0.5) bidAskSpread = 50 + ((0.5-avg)/0.3)*40
         else bidAskSpread = Math.max(10, 50 - ((avg-0.5)*100))
       }
-      console.log(`[sentiment] spreads: ${count} with bid/ask`)
+      console.log(`[sentiment] spreads: ${count} with bid/ask (available=${spreadAvailable})`)
     } catch (e) { console.log("[sentiment] spreads:", e.message) }
 
     // Volatility
@@ -120,20 +123,37 @@ async function calculateSentiment() {
       }
     } catch (e) { console.log("[sentiment] volatility:", e.message) }
 
-    const bullishScore = Math.round(0.3*priceAction + 0.25*breadth + 0.15*bidAskSpread + 0.2*volume + 0.1*(100-volatility))
+    // Weighted score over only the factors we could actually measure.
+    // Spreads drop out when the market is closed (no live depth) — its weight
+    // is redistributed across the rest so an unmeasured factor never drags the
+    // score toward a fake neutral.
+    const contributions = [
+      { weight: 0.30, value: priceAction },
+      { weight: 0.25, value: breadth },
+      { weight: 0.20, value: volume },
+      { weight: 0.10, value: 100 - volatility },
+      ...(spreadAvailable ? [{ weight: 0.15, value: bidAskSpread }] : []),
+    ]
+    const totalWeight = contributions.reduce((s, c) => s + c.weight, 0)
+    const bullishScore = Math.round(
+      contributions.reduce((s, c) => s + c.weight * c.value, 0) / totalWeight
+    )
     const sentiment = bullishScore > 65 ? "BULLISH" : bullishScore < 35 ? "BEARISH" : "NEUTRAL"
+    const liveCount = 4 + (spreadAvailable ? 1 : 0)
 
-    console.log(`[sentiment] Result: ${sentiment} ${bullishScore}`)
+    console.log(`[sentiment] Result: ${sentiment} ${bullishScore} (${liveCount}/5 live)`)
 
     return {
       bullishScore,
       bearishScore: 100 - bullishScore,
       sentiment,
       confidence: bullishScore > 80 || bullishScore < 20 ? "High" : "Medium",
+      liveCount,
+      marketOpen: spreadAvailable,
       factors: {
         priceAction:  Math.round(priceAction),
         breadth:      Math.round(breadth),
-        bidAskSpread: Math.round(bidAskSpread),
+        bidAskSpread: spreadAvailable ? Math.round(bidAskSpread) : null,
         volume:       Math.round(volume),
         volatility:   Math.round(volatility),
       }

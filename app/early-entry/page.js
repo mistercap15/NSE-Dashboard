@@ -273,20 +273,38 @@ export default function EarlyEntryPage() {
                 { name: "Spreads", weight: "15%", factor: "bidAskSpread", desc: "Market conviction" },
                 { name: "Volume", weight: "20%", factor: "volume", desc: "Participation" },
                 { name: "Volatility", weight: "10%", factor: "volatility", desc: "Fear/Greed" },
-              ].map((f) => (
-                <div key={f.factor} className="p-3 rounded bg-black/20 border border-border/50">
-                  <div className="font-mono text-[10px] text-dim mb-2">{f.name} ({f.weight})</div>
-                  <div className="h-1.5 rounded-full bg-muted/30 overflow-hidden mb-2">
-                    <div
-                      className="h-full bg-gradient-to-r from-red via-yellow to-green"
-                      style={{ width: `${sentiment.factors?.[f.factor] || 50}%` }}
-                    />
+              ].map((f) => {
+                const val = sentiment.factors?.[f.factor]
+                const unavailable = val === null || val === undefined
+                return (
+                  <div key={f.factor} className="p-3 rounded bg-black/20 border border-border/50">
+                    <div className="font-mono text-[10px] text-dim mb-2">{f.name} ({f.weight})</div>
+                    <div className="h-1.5 rounded-full bg-muted/30 overflow-hidden mb-2">
+                      <div
+                        className="h-full bg-gradient-to-r from-red via-yellow to-green"
+                        style={{ width: `${unavailable ? 0 : val}%` }}
+                      />
+                    </div>
+                    {unavailable ? (
+                      <>
+                        <div className="font-mono text-sm font-bold text-dim mb-1">— / 100</div>
+                        <div className="font-mono text-[9px] text-amber">Market closed — live only</div>
+                      </>
+                    ) : (
+                      <>
+                        <div className="font-mono text-sm font-bold text-text mb-1">{val}/100</div>
+                        <div className="font-mono text-[9px] text-muted">{f.desc}</div>
+                      </>
+                    )}
                   </div>
-                  <div className="font-mono text-sm font-bold text-text mb-1">{sentiment.factors?.[f.factor] || 50}/100</div>
-                  <div className="font-mono text-[9px] text-muted">{f.desc}</div>
-                </div>
-              ))}
+                )
+              })}
             </div>
+            {sentiment.liveCount != null && (
+              <div className="mt-3 font-mono text-[10px] text-dim">
+                {sentiment.liveCount}/5 factors live{sentiment.marketOpen === false ? " · spreads need an open market (9:15am–3:30pm IST)" : ""}
+              </div>
+            )}
           </div>
         )}
 
