@@ -40,25 +40,45 @@ async function calculateSentiment() {
       }
     } catch (e) { console.log("[sentiment] priceAction:", e.message) }
 
-    // Breadth: % stocks up
+    // Breadth + Volume share ONE basket fetch of daily candles (candles are the
+    // proven-reliable Upstox call — same one early-entry uses for prices).
+    // 40 calendar days ≈ 28 trading days, safely above the 20-day lookback.
     let breadth = 50
+    let volume = 50
     try {
       const universe = loadUniverse()
-      const symbols = universe.symbols.slice(0, 50)
-      const results = await Promise.allSettled(symbols.map(s => getQuote(toInstrumentKey(s))))
+      const symbols = universe.symbols.slice(0, 40)
+      const results = await Promise.allSettled(symbols.map(s => getDailyCandles(toInstrumentKey(s), 40)))
+
       let ups = 0, downs = 0
+      const volRatios = []
       results.forEach(r => {
-        if (r.status === "fulfilled" && r.value) {
-          const change = r.value.changePct || 0
-          if (change > 0.1) ups++
-          else if (change < -0.1) downs++
-        }
+        if (r.status !== "fulfilled" || !r.value || r.value.length < 21) return
+        const c = r.value
+        const today = c[c.length - 1]
+        const prev  = c[c.length - 2]
+        // Advance/decline from close-over-close
+        const chg = ((today.close - prev.close) / prev.close) * 100
+        if (chg > 0.1) ups++
+        else if (chg < -0.1) downs++
+        // Volume ratio: today vs trailing 20-day average
+        const avg20 = c.slice(-21, -1).map(x => x.volume).reduce((a, b) => a + b, 0) / 20
+        if (avg20 > 0) volRatios.push(today.volume / avg20)
       })
+
       const total = ups + downs
       if (total > 10) breadth = Math.max(0, Math.min(100, 50 + ((ups - downs) / total) * 100))
-    } catch (e) { console.log("[sentiment] breadth:", e.message) }
 
-    // Bid-ask spreads
+      if (volRatios.length > 0) {
+        const avg = volRatios.reduce((a, b) => a + b, 0) / volRatios.length
+        if (avg >= 1.3) volume = Math.min(100, 75 + (avg - 1.3) * 200)
+        else if (avg < 0.7) volume = Math.max(0, 25 - (0.7 - avg) * 200)
+        else volume = 50 + (avg - 1) * 100
+      }
+      console.log(`[sentiment] breadth: ${ups}up/${downs}down, volRatios: ${volRatios.length}`)
+    } catch (e) { console.log("[sentiment] breadth/volume:", e.message) }
+
+    // Bid-ask spreads (live only — needs market depth from quotes)
     let bidAskSpread = 50
     try {
       const universe = loadUniverse()
@@ -78,29 +98,8 @@ async function calculateSentiment() {
         else if (avg < 0.5) bidAskSpread = 50 + ((0.5-avg)/0.3)*40
         else bidAskSpread = Math.max(10, 50 - ((avg-0.5)*100))
       }
+      console.log(`[sentiment] spreads: ${count} with bid/ask`)
     } catch (e) { console.log("[sentiment] spreads:", e.message) }
-
-    // Volume surge
-    let volume = 50
-    try {
-      const universe = loadUniverse()
-      const symbols = universe.symbols.slice(0, 15)
-      const results = await Promise.allSettled(symbols.map(async s => {
-        const candles = await getDailyCandles(toInstrumentKey(s), 25)
-        if (candles?.length >= 20) {
-          const today = candles[candles.length - 1].volume
-          const avg20 = candles.slice(-20).map(c => c.volume).reduce((a,b) => a+b) / 20
-          return avg20 > 0 ? today / avg20 : null
-        }
-      }))
-      const ratios = results.filter(r => r.status === "fulfilled" && r.value).map(r => r.value)
-      if (ratios.length > 0) {
-        const avg = ratios.reduce((a,b) => a+b) / ratios.length
-        if (avg >= 1.3) volume = Math.min(100, 75 + (avg-1.3)*200)
-        else if (avg < 0.7) volume = Math.max(0, 25 - (0.7-avg)*200)
-        else volume = 50 + (avg-1)*100
-      }
-    } catch (e) { console.log("[sentiment] volume:", e.message) }
 
     // Volatility
     let volatility = 50
@@ -131,7 +130,13 @@ async function calculateSentiment() {
       bearishScore: 100 - bullishScore,
       sentiment,
       confidence: bullishScore > 80 || bullishScore < 20 ? "High" : "Medium",
-      factors: { priceAction, breadth, bidAskSpread, volume, volatility }
+      factors: {
+        priceAction:  Math.round(priceAction),
+        breadth:      Math.round(breadth),
+        bidAskSpread: Math.round(bidAskSpread),
+        volume:       Math.round(volume),
+        volatility:   Math.round(volatility),
+      }
     }
   } catch (e) {
     console.error("[sentiment] Error:", e.message)
