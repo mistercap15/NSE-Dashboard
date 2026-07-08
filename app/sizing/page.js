@@ -95,6 +95,33 @@ function allocateLots(candidates, maxLots) {
   });
 }
 
+// ── Price levels from an entry price (pure) ──────────────────────────────────
+// Every level keys off `entry` = opening price of the first trading day of the
+// month. `lots` is the recommended (allocated) lot count for this position.
+// Returns null when there's no usable entry — callers render "—".
+function computeLevels(entry, medianReturn, worst, lotSize, lots) {
+  if (!Number.isFinite(entry) || entry <= 0 || !lotSize || !lots) return null;
+
+  // TARGET — entry compounded by the median seasonal return for the month.
+  const targetPrice    = Math.round(entry * (1 + (medianReturn || 0) / 100));
+  const expectedProfit = Math.round((targetPrice - entry) * lotSize * lots);
+
+  // STOP — historical worst month, widened 1.2×, as the exit. `worst` is
+  // negative (e.g. -6.33 → stopPct -7.6%). Tweak the 1.2 buffer here to make
+  // stops tighter/looser. (This is our own rule, NOT early-entry's support stop.)
+  const stopPct    = (worst || 0) * 1.2;
+  const stopPrice  = Math.round(entry * (1 + stopPct / 100));
+  const riskAmount = Math.round((entry - stopPrice) * lotSize * lots);
+
+  // AVERAGE-IN — only meaningful for 2+ lot plans (nothing to stage on 1 lot).
+  // Sits at the MIDPOINT of entry and stop: a planned dip fill that is still
+  // ABOVE the stop. It fills the SAME recommended size in two stages — it does
+  // NOT add beyond it. If price breaks the stop you exit; no further averaging.
+  const avgInPrice = lots >= 2 ? Math.round((entry + stopPrice) / 2) : null;
+
+  return { targetPrice, expectedProfit, stopPrice, stopPct, riskAmount, avgInPrice };
+}
+
 const gradeColor = (g) =>
   g === "A+" ? "text-green" : g === "A" ? "text-accent" : g === "B" ? "text-amber" : "text-dim";
 
@@ -112,10 +139,28 @@ export default function SizingPage() {
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState(null);
 
+  // Upstox connection state (drives the banner + graceful degradation).
+  const [upstoxReady,  setUpstoxReady]  = useState(false);
+  const [tokenExpired, setTokenExpired] = useState(false);
+
+  // Entry prices per symbol: { SYM: { entry, provisional } }. Empty when Upstox
+  // is unavailable — the sizing engine works fine without it (columns show "—").
+  const [prices,        setPrices]        = useState({});
+  const [priceMeta,     setPriceMeta]     = useState({ provisionalMonth: false, year: null });
+  const [pricesLoading, setPricesLoading] = useState(false);
+
   // Persist the money settings on change.
   useEffect(() => { localStorage.setItem("ps.capital", String(capital)); }, [capital]);
   useEffect(() => { localStorage.setItem("ps.reserve", String(reserve)); }, [reserve]);
   useEffect(() => { localStorage.setItem("ps.avgLotCost", String(avgLotCost)); }, [avgLotCost]);
+
+  // Detect Upstox connection once on mount (mirrors early-entry).
+  useEffect(() => {
+    fetch("/api/upstox/status")
+      .then((r) => r.json())
+      .then((d) => { setUpstoxReady(!!d.connected); setTokenExpired(!!d.expired); })
+      .catch(() => setUpstoxReady(false));
+  }, []);
 
   const fetchRankings = useCallback(async (m) => {
     setLoading(true);
@@ -135,6 +180,25 @@ export default function SizingPage() {
 
   useEffect(() => { fetchRankings(month); }, [month, fetchRankings]);
 
+  // Fetch first-trading-day entry prices whenever the month or symbol set
+  // changes. Batched server-side; failures degrade to no prices (never blocks).
+  const symbolsKey = stocks.map((s) => s.symbol).join(",");
+  useEffect(() => {
+    if (!symbolsKey) { setPrices({}); return; }
+    let cancelled = false;
+    setPricesLoading(true);
+    fetch(`/api/sizing/entry-prices?month=${month}&symbols=${encodeURIComponent(symbolsKey)}`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (cancelled) return;
+        setPrices(d.prices || {});
+        setPriceMeta({ provisionalMonth: !!d.provisionalMonth, year: d.year });
+      })
+      .catch(() => { if (!cancelled) setPrices({}); })
+      .finally(() => { if (!cancelled) setPricesLoading(false); });
+    return () => { cancelled = true; };
+  }, [month, symbolsKey]);
+
   // ── Derived capital math + allocation (recomputes on any input change) ──────
   const model = useMemo(() => {
     const usable  = Math.max(0, capital - reserve);
@@ -146,15 +210,28 @@ export default function SizingPage() {
       .filter((s) => !s.belowBar && s.cappedLots >= 1)
       .sort((a, b) => b.score - a.score);
 
-    // Live price present on the payload? If so we can show true per-lot notional.
-    const hasLivePrice = candidates.some((c) => priceOf(c) !== null);
-
     const allocated = allocateLots(candidates, budget).map((c) => {
-      const live = priceOf(c);
-      // Prefer real notional (price × lot_size) when available; else the assumption.
-      const lotCost = live && c.lot_size ? live * c.lot_size : avgLotCost;
-      return { ...c, lotCost, lotCostLive: Boolean(live && c.lot_size), capitalUsed: c.allocLots * lotCost };
+      // Entry = first-trading-day open (or provisional live). Fall back to any
+      // price riding on the rankings payload, else null.
+      const p = prices[c.symbol];
+      const rawEntry = p && Number.isFinite(p.entry) ? p.entry : priceOf(c);
+      const entry = Number.isFinite(rawEntry) && rawEntry > 0 ? rawEntry : null;
+      const provisional = p ? !!p.provisional : false;
+
+      // Per-lot cost: real notional (entry × lot_size) when we have an entry,
+      // else the flat avg-cost assumption. Budget (maxLots) still uses avgLotCost.
+      const lotCost = entry && c.lot_size ? entry * c.lot_size : avgLotCost;
+      const levels = computeLevels(entry, c.median_return, c.worst, c.lot_size, c.allocLots);
+
+      return {
+        ...c, entry, provisional, levels,
+        lotCost, lotCostReal: Boolean(entry && c.lot_size),
+        capitalUsed: c.allocLots * lotCost,
+      };
     });
+
+    // Do we actually have first-day/live entry prices to show?
+    const hasEntryPrices = allocated.some((c) => c.entry !== null);
 
     const sized   = allocated.filter((c) => c.allocLots >= 1);
     const reserved = allocated.filter((c) => c.allocLots === 0); // qualified, no capital left
@@ -165,13 +242,13 @@ export default function SizingPage() {
     const deployedPct = usable > 0 ? Math.round((deployed / usable) * 100) : 0;
 
     return {
-      usable, budget, hasLivePrice,
+      usable, budget, hasEntryPrices,
       sized, reserved, belowBar,
       qualifiedCount: candidates.length,
       totalLots, deployed, dryPowder, deployedPct,
       positions: sized.length,
     };
-  }, [stocks, capital, reserve, avgLotCost]);
+  }, [stocks, capital, reserve, avgLotCost, prices]);
 
   const thin = !loading && model.qualifiedCount > 0 && model.qualifiedCount < 5;
   const mName = MONTH_FULL[month - 1];
@@ -191,6 +268,35 @@ export default function SizingPage() {
             How many lots to enter per stock — conviction-graded, risk-capped, then rationed against real capital.
           </p>
         </div>
+
+        {/* Upstox connection status (mirrors early-entry) — prices only */}
+        {tokenExpired ? (
+          <div className="mb-6 p-4 rounded-lg border border-red/30 bg-red/5 flex items-center justify-between gap-3">
+            <div>
+              <div className="font-mono text-[11px] uppercase tracking-widest mb-1 text-red">✕ Upstox Session Expired</div>
+              <div className="font-body text-sm text-dim">
+                Sizing still works — but entry / target / stop prices need a live token. Re-authenticate to restore them.
+              </div>
+            </div>
+            <a href="/api/upstox/login"
+              className="font-mono text-sm px-4 py-2 rounded border border-red/30 bg-red/10 text-red hover:bg-red/20 transition-colors whitespace-nowrap">
+              Re-authenticate →
+            </a>
+          </div>
+        ) : !upstoxReady ? (
+          <div className="mb-6 p-4 rounded-lg border border-amber/20 bg-amber/5 flex items-center justify-between gap-3">
+            <div>
+              <div className="font-mono text-[11px] uppercase tracking-widest mb-1 text-amber">⚠ Upstox Not Connected</div>
+              <div className="font-body text-sm text-dim">
+                Sizing, grades and capital math work without it — connect Upstox to fill in Entry / Target / Stop / Average-in.
+              </div>
+            </div>
+            <a href="/api/upstox/login"
+              className="font-mono text-sm px-4 py-2 rounded border border-accent/30 bg-accent/10 text-accent hover:bg-accent/20 transition-colors whitespace-nowrap">
+              Connect Upstox →
+            </a>
+          </div>
+        ) : null}
 
         {/* Controls */}
         <div className="bg-card border border-border rounded-lg p-4 md:p-5 mb-6">
@@ -246,9 +352,11 @@ export default function SizingPage() {
             </span>
             <span className="font-mono text-[10px] text-muted">
               Basis:{" "}
-              {model.hasLivePrice
-                ? <span className="text-accent">live notional (price × lot) where available, else avg cost</span>
-                : <span>flat avg cost / lot ({fmtINR(avgLotCost)}) — no live price on feed</span>}
+              {model.hasEntryPrices
+                ? <span className="text-accent">
+                    {priceMeta.provisionalMonth ? "provisional live entry" : "first-day open"} × lot where available, else avg cost
+                  </span>
+                : <span>flat avg cost / lot ({fmtINR(avgLotCost)}) — {pricesLoading ? "loading prices…" : "no live prices"}</span>}
             </span>
           </div>
         </div>
@@ -289,12 +397,29 @@ export default function SizingPage() {
               </div>
             )}
 
+            {/* Provisional-entry note (future month → no first-day open yet) */}
+            {model.hasEntryPrices && priceMeta.provisionalMonth && (
+              <div className="mb-6 rounded-lg border border-amber/25 bg-amber/5 px-4 py-3">
+                <span className="font-mono text-[11px] text-amber leading-relaxed">
+                  Entry prices for {mName}{priceMeta.year ? ` ${priceMeta.year}` : ""} are <strong>provisional (live)</strong> —
+                  the month hasn&apos;t started, so there&apos;s no first-day open yet. They lock to the first trading day&apos;s
+                  open once the month opens.
+                </span>
+              </div>
+            )}
+
             {/* Main sizing table */}
             <div className="bg-card border border-border rounded-lg mb-6 overflow-hidden">
               <div className="px-5 py-3 border-b border-border flex items-center gap-3">
                 <div className="w-2 h-2 rounded-full bg-green" />
                 <h2 className="font-display text-base font-semibold text-text">Recommended sizing — {mName}</h2>
                 <span className="font-mono text-[10px] text-dim">{model.sized.length} sized</span>
+                {pricesLoading && (
+                  <span className="ml-auto flex items-center gap-2 font-mono text-[10px] text-dim">
+                    <span className="w-3 h-3 border border-accent border-t-transparent rounded-full animate-spin" />
+                    prices…
+                  </span>
+                )}
               </div>
 
               {model.sized.length === 0 ? (
@@ -303,7 +428,7 @@ export default function SizingPage() {
                 </div>
               ) : (
                 <div className="overflow-x-auto">
-                  <table className="w-full min-w-[860px] text-sm">
+                  <table className="w-full min-w-[1180px] text-sm">
                     <thead>
                       <tr className="border-b border-border">
                         <th className="text-left  py-2.5 px-3 font-mono text-[11px] text-dim font-normal">Stock</th>
@@ -315,6 +440,15 @@ export default function SizingPage() {
                         <th className="text-right py-2.5 px-3 font-mono text-[11px] text-dim font-normal">Score</th>
                         <th className="text-center py-2.5 px-3 font-mono text-[11px] text-dim font-normal">Grade</th>
                         <th className="text-center py-2.5 px-3 font-mono text-[11px] text-dim font-normal">Rec. Lots</th>
+                        <th className="text-right py-2.5 px-3 font-mono text-[11px] text-dim font-normal">Entry</th>
+                        <th className="text-right py-2.5 px-3 font-mono text-[11px] text-dim font-normal">Target</th>
+                        <th className="text-right py-2.5 px-3 font-mono text-[11px] text-dim font-normal">Stop</th>
+                        <th
+                          className="text-right py-2.5 px-3 font-mono text-[11px] text-dim font-normal"
+                          title="Planned 2nd-stage fill for 2+ lot positions. Fills the SAME recommended size in two stages — it never adds beyond it. If price breaks the stop, exit; no further averaging."
+                        >
+                          Average-in
+                        </th>
                         <th className="text-right py-2.5 px-3 font-mono text-[11px] text-dim font-normal">Capital used</th>
                         <th className="text-left  py-2.5 px-3 font-mono text-[11px] text-dim font-normal">Risk cap</th>
                       </tr>
@@ -342,9 +476,54 @@ export default function SizingPage() {
                               <span className="block font-mono text-[9px] text-amber">partial of {s.recLots}</span>
                             )}
                           </td>
+
+                          {/* Entry — first-day open (locked) or provisional live */}
+                          <td className="py-2.5 px-3 text-right">
+                            {s.entry != null ? (
+                              <>
+                                <div className="font-mono text-[12px] text-text">{fmtINR(s.entry)}</div>
+                                <div className={`font-mono text-[9px] ${s.provisional ? "text-amber" : "text-dim"}`}>
+                                  {s.provisional ? "provisional·live" : "1st-day open"}
+                                </div>
+                              </>
+                            ) : <span className="font-mono text-[12px] text-muted">—</span>}
+                          </td>
+
+                          {/* Target — entry × (1 + median%) + expected profit */}
+                          <td className="py-2.5 px-3 text-right">
+                            {s.levels ? (
+                              <>
+                                <div className="font-mono text-[12px] text-text">{fmtINR(s.levels.targetPrice)}</div>
+                                <div className="font-mono text-[9px] text-green">+{fmtINR(s.levels.expectedProfit)}</div>
+                              </>
+                            ) : <span className="font-mono text-[12px] text-muted">—</span>}
+                          </td>
+
+                          {/* Stop — worst×1.2 below entry + stop% + rupee risk */}
+                          <td className="py-2.5 px-3 text-right">
+                            {s.levels ? (
+                              <>
+                                <div className="font-mono text-[12px] text-red">{fmtINR(s.levels.stopPrice)}</div>
+                                <div className="font-mono text-[9px] text-red/70">
+                                  {s.levels.stopPct.toFixed(1)}% · {fmtINR(s.levels.riskAmount)} risk
+                                </div>
+                              </>
+                            ) : <span className="font-mono text-[12px] text-muted">—</span>}
+                          </td>
+
+                          {/* Average-in — 2nd-stage fill, only for 2+ lot plans */}
+                          <td className="py-2.5 px-3 text-right">
+                            {s.levels?.avgInPrice ? (
+                              <>
+                                <div className="font-mono text-[12px] text-amber">{fmtINR(s.levels.avgInPrice)}</div>
+                                <div className="font-mono text-[9px] text-dim">add 2nd half</div>
+                              </>
+                            ) : <span className="font-mono text-[12px] text-muted">—</span>}
+                          </td>
+
                           <td className="py-2.5 px-3 font-mono text-[12px] text-right text-text">
                             {fmtINR(s.capitalUsed)}
-                            {s.lotCostLive && <span className="block font-mono text-[9px] text-accent">live</span>}
+                            {s.lotCostReal && <span className="block font-mono text-[9px] text-accent">live</span>}
                           </td>
                           <td className="py-2.5 px-3 font-mono text-[10px] text-amber">
                             {s.capReasons.length ? s.capReasons.join(" · ") : <span className="text-muted">—</span>}
