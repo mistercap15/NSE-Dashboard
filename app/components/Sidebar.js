@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 import { useTheme } from "next-themes";
 import {
   Sun, Moon, Menu, X,
-  LayoutDashboard, TrendingUp, CalendarDays, SlidersHorizontal, Search, RotateCcw, Zap, LineChart,
+  LayoutDashboard, TrendingUp, CalendarDays, SlidersHorizontal, Search, RotateCcw, Zap, LineChart, TrendingDown,
 } from "lucide-react";
 import { MONTHS } from "../lib/api";
 import { getCurrentMonth, getCurrentYear } from "../lib/date";
@@ -18,6 +18,7 @@ const navItems = [
   { href: "/calendar",        label: "Calendar",       Icon: CalendarDays },
   { href: "/sector-rotation", label: "Sector Rotation", Icon: RotateCcw },
   { href: "/early-entry",     label: "Early Entry",    Icon: Zap },
+  { href: "/swing-low",       label: "Swing Low",      Icon: TrendingDown },
   { href: "/screener",  label: "Screener",       Icon: SlidersHorizontal },
 ];
 
