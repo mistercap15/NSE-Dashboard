@@ -177,7 +177,7 @@ export default function Sidebar() {
                   onClick={() => toggleGroup(label)}
                   aria-expanded={open}
                   className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-sm transition-all duration-150 ${
-                    hasActive && !open ? "text-accent" : "text-soft hover:text-text hover:bg-white/[0.03]"
+                    hasActive ? "text-accent" : "text-soft hover:text-text hover:bg-white/[0.03]"
                   }`}
                 >
                   <GroupIcon size={15} />
@@ -185,7 +185,7 @@ export default function Sidebar() {
                   {hasActive && !open && <div className="w-1 h-1 rounded-full bg-accent" />}
                   <ChevronDown
                     size={14}
-                    className={`ml-auto text-dim transition-transform duration-200 ${open ? "rotate-180" : ""}`}
+                    className={`ml-auto transition-transform duration-200 ${hasActive ? "text-accent" : "text-dim"} ${open ? "rotate-180" : ""}`}
                   />
                 </button>
 
