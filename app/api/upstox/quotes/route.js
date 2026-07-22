@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { getBatchQuotes, setAccessToken } from "@/app/lib/upstox"
-import { toInstrumentKey, WATCHLIST } from "@/app/lib/instruments"
+import { WATCHLIST } from "@/app/lib/instruments"
+import { ensureInstrumentMap, keyFor } from "@/app/lib/instrumentMaster"
 
 export async function GET(request) {
   const cookie = request.cookies.get("upstox_token")?.value
@@ -14,13 +15,14 @@ export async function GET(request) {
     : WATCHLIST
 
   try {
-    const instrumentKeys = symbols.map(toInstrumentKey)
+    await ensureInstrumentMap()
+    const instrumentKeys = symbols.map(keyFor)
     const quotes         = await getBatchQuotes(instrumentKeys)
 
     // Normalize response
     const result = {}
     symbols.forEach(sym => {
-      const key   = toInstrumentKey(sym)
+      const key   = keyFor(sym)
       const quote = quotes[key]
       if (quote) {
         result[sym] = {

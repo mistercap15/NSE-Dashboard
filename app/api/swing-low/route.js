@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getDailyCandles, setAccessToken } from "@/app/lib/upstox";
-import { toInstrumentKey } from "@/app/lib/instruments";
+import { ensureInstrumentMap, keyFor } from "@/app/lib/instrumentMaster";
 import { loadUniverse, monthReturns } from "@/app/lib/dataset";
 import { getNextMonth } from "@/app/lib/date";
 import { analyzeSwingLow, scoreSwingLow, bucketOf } from "@/app/lib/swinglow";
@@ -58,6 +58,10 @@ export async function GET(request) {
     return NextResponse.json({ ...CACHE.payload, cached: true });
   }
 
+  // Load Upstox's instrument master so every F&O symbol resolves to a real key
+  // (the hardcoded ISIN_MAP misses ~34 names). Falls back to ISIN_MAP if it fails.
+  await ensureInstrumentMap();
+
   // Precompute next-month seasonal win rate per symbol from the snapshot.
   const seasonalOf = (sym) => {
     const rec = universe.series[sym];
@@ -76,7 +80,7 @@ export async function GET(request) {
   await pool(symbols, CONCURRENCY, async (sym) => {
     let candles;
     try {
-      candles = await getDailyCandles(toInstrumentKey(sym), LOOKBACK_DAYS);
+      candles = await getDailyCandles(keyFor(sym), LOOKBACK_DAYS);
     } catch {
       failed++;
       return;

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server"
 import { getDailyCandles, setAccessToken } from "@/app/lib/upstox"
-import { toInstrumentKey } from "@/app/lib/instruments"
+import { ensureInstrumentMap, keyFor } from "@/app/lib/instrumentMaster"
 
 export async function GET(request) {
   const cookie = request.cookies.get("upstox_token")?.value
@@ -15,7 +15,8 @@ export async function GET(request) {
   }
 
   try {
-    const instrumentKey = toInstrumentKey(symbol)
+    await ensureInstrumentMap()
+    const instrumentKey = keyFor(symbol)
     const candles       = await getDailyCandles(instrumentKey, days)
 
     return NextResponse.json({

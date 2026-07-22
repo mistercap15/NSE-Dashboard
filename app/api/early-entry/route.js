@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server"
 import { getDailyCandles, getQuote, setAccessToken } from "@/app/lib/upstox"
-import { toInstrumentKey } from "@/app/lib/instruments"
+import { ensureInstrumentMap, keyFor } from "@/app/lib/instrumentMaster"
 import { computeSupportZones, computePriceContext, computeSignalScore } from "@/app/lib/technicals"
 import { getNextMonth } from "@/app/lib/date"
 import { loadUniverse } from "@/app/lib/dataset"
@@ -15,7 +15,7 @@ const MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct"
 async function getMarketProxyCandles(days) {
   let candles = await getDailyCandles("NSE_INDEX|Nifty 50", days)
   if (!candles?.length) {
-    candles = await getDailyCandles(toInstrumentKey("RELIANCE"), days)
+    candles = await getDailyCandles(keyFor("RELIANCE"), days)
   }
   return candles
 }
@@ -48,7 +48,7 @@ async function calculateSentiment() {
     try {
       const universe = loadUniverse()
       const symbols = universe.symbols.slice(0, 40)
-      const results = await Promise.allSettled(symbols.map(s => getDailyCandles(toInstrumentKey(s), 40)))
+      const results = await Promise.allSettled(symbols.map(s => getDailyCandles(keyFor(s), 40)))
 
       let ups = 0, downs = 0
       const volRatios = []
@@ -85,7 +85,7 @@ async function calculateSentiment() {
     try {
       const universe = loadUniverse()
       const symbols = universe.symbols.slice(0, 20)
-      const results = await Promise.allSettled(symbols.map(s => getQuote(toInstrumentKey(s))))
+      const results = await Promise.allSettled(symbols.map(s => getQuote(keyFor(s))))
       let spreadSum = 0, count = 0
       results.forEach(r => {
         if (r.status === "fulfilled" && r.value?.bid && r.value?.ask && r.value?.ltp) {
@@ -314,6 +314,9 @@ export async function GET(request) {
   if (cookie)     setAccessToken(cookie)
   else if (cronToken) setAccessToken(cronToken)
 
+  // Resolve instrument keys from Upstox's master (self-healing vs hardcoded map).
+  await ensureInstrumentMap()
+
   const { searchParams } = new URL(request.url)
   const targetMonth = parseInt(searchParams.get("month") || String(getNextMonth())) // next month default
   const currentMonth = targetMonth === 1 ? 12 : targetMonth - 1
@@ -356,7 +359,7 @@ export async function GET(request) {
         let priceError   = null
 
         try {
-          const instrumentKey = toInstrumentKey(stock.symbol)
+          const instrumentKey = keyFor(stock.symbol)
           candles = await getDailyCandles(instrumentKey, 65)
 
           const lastCandle = candles[candles.length - 1]
