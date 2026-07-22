@@ -1,5 +1,6 @@
 import { NextResponse }                        from "next/server"
 import { hasValidToken, setAccessToken, isTokenExpired } from "@/app/lib/upstox"
+import { SESSION_COOKIE, UPSTOX_COOKIE }         from "@/app/lib/auth"
 
 export async function GET(request) {
   const cookie = request.cookies.get("upstox_token")?.value
@@ -10,9 +11,11 @@ export async function GET(request) {
 
   const res = NextResponse.json({ connected, expired })
 
-  // Auto-clear the stale cookie so the UI shows the correct login state
+  // Upstox expired → clear both cookies so the next navigation falls through the
+  // middleware to /login, which re-runs the PIN → Upstox chain (one clean re-auth).
   if (expired && cookie) {
-    res.cookies.delete("upstox_token")
+    res.cookies.delete(UPSTOX_COOKIE)
+    res.cookies.delete(SESSION_COOKIE)
   }
 
   return res

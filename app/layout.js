@@ -1,6 +1,7 @@
 import "../styles/globals.css";
 import { Providers } from "./providers";
 import Footer from "./components/Footer";
+import AuthWatcher from "./components/AuthWatcher";
 
 export const metadata = {
   title: "NSE Ranking System",
@@ -12,6 +13,7 @@ export default function RootLayout({ children }) {
     <html lang="en" suppressHydrationWarning>
       <body className="scanlines">
         <Providers>{children}</Providers>
+        <AuthWatcher />
         <Footer />
       </body>
     </html>

@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useTheme } from "next-themes";
 import {
-  Sun, Moon, Menu, X, ChevronDown,
+  Sun, Moon, Menu, X, ChevronDown, LogOut,
   LayoutDashboard, TrendingUp, CalendarDays, SlidersHorizontal, Search, RotateCcw, Zap, LineChart, TrendingDown, Scale, Layers,
 } from "lucide-react";
 import { MONTHS } from "../lib/api";
@@ -236,12 +236,21 @@ export default function Sidebar() {
           </div>
         </div>
 
-        {/* Bottom info */}
-        <div className="px-4 py-3 border-t border-border">
+        {/* Bottom info + logout */}
+        <div className="px-4 py-3 border-t border-border flex items-center justify-between gap-2">
           <div className="text-[10px] font-mono text-muted">
             205 F&O stocks<br />
             <span className="text-dim">Real NSE data</span>
           </div>
+          <a
+            href="/api/auth/logout"
+            className="flex items-center gap-1.5 font-mono text-[10px] text-dim hover:text-red hover:bg-red/5 px-2 py-1.5 rounded transition-colors"
+            aria-label="Log out"
+            title="Log out"
+          >
+            <LogOut size={13} />
+            Logout
+          </a>
         </div>
       </aside>
     </>

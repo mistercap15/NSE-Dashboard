@@ -38,12 +38,15 @@ let _tokenExpired = false
 
 // ── Auth functions ────────────────────────────────────────────────
 
-export function getLoginUrl() {
+export function getLoginUrl(state) {
   const params = new URLSearchParams({
     response_type: "code",
     client_id:     API_KEY,
     redirect_uri:  REDIRECT_URI,
   })
+  // Upstox echoes `state` back to the callback — we use it to return the user
+  // to the page they were heading for before the OAuth round-trip.
+  if (state) params.set("state", state)
   return `${AUTH_URL}?${params.toString()}`
 }
 
