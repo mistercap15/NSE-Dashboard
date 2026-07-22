@@ -4,23 +4,44 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useTheme } from "next-themes";
 import {
-  Sun, Moon, Menu, X,
-  LayoutDashboard, TrendingUp, CalendarDays, SlidersHorizontal, Search, RotateCcw, Zap, LineChart, TrendingDown, Scale,
+  Sun, Moon, Menu, X, ChevronDown,
+  LayoutDashboard, TrendingUp, CalendarDays, SlidersHorizontal, Search, RotateCcw, Zap, LineChart, TrendingDown, Scale, Layers,
 } from "lucide-react";
 import { MONTHS } from "../lib/api";
 import { getCurrentMonth, getCurrentYear } from "../lib/date";
 
-const navItems = [
-  { href: "/",          label: "Overview",       Icon: LayoutDashboard },
-  { href: "/rankings",  label: "Rankings",       Icon: TrendingUp },
-  { href: "/backtest",  label: "Backtest",       Icon: LineChart },
-  { href: "/sizing",    label: "Sizing",         Icon: Scale },
-  { href: "/analysis",  label: "Stock Analysis", Icon: Search },
-  { href: "/calendar",        label: "Calendar",       Icon: CalendarDays },
-  { href: "/sector-rotation", label: "Sector Rotation", Icon: RotateCcw },
-  { href: "/early-entry",     label: "Early Entry",    Icon: Zap },
-  { href: "/swing-low",       label: "Swing Low",      Icon: TrendingDown },
-  { href: "/screener",  label: "Screener",       Icon: SlidersHorizontal },
+// Standalone top link (no group).
+const homeItem = { href: "/", label: "Overview", Icon: LayoutDashboard };
+
+// Collapsible nav groups. Each group expands to reveal its pages.
+const navGroups = [
+  {
+    label: "Seasonality",
+    Icon: TrendingUp,
+    children: [
+      { href: "/rankings",        label: "Rankings",        Icon: TrendingUp },
+      { href: "/sector-rotation", label: "Sector Rotation", Icon: RotateCcw },
+      { href: "/calendar",        label: "Calendar",        Icon: CalendarDays },
+      { href: "/backtest",        label: "Backtest",        Icon: LineChart },
+    ],
+  },
+  {
+    label: "Trade Setups",
+    Icon: Zap,
+    children: [
+      { href: "/early-entry", label: "Early Entry", Icon: Zap },
+      { href: "/swing-low",   label: "Swing Low",   Icon: TrendingDown },
+      { href: "/sizing",      label: "Sizing",      Icon: Scale },
+    ],
+  },
+  {
+    label: "Research",
+    Icon: Layers,
+    children: [
+      { href: "/analysis", label: "Stock Analysis", Icon: Search },
+      { href: "/screener", label: "Screener",       Icon: SlidersHorizontal },
+    ],
+  },
 ];
 
 export default function Sidebar() {
@@ -30,12 +51,20 @@ export default function Sidebar() {
   const currentYear = getCurrentYear();
   const [mounted,     setMounted]     = useState(false);
   const [mobileOpen,  setMobileOpen]  = useState(false);
+  const [openGroups,  setOpenGroups]  = useState({});
 
   useEffect(() => setMounted(true), []);
 
   // Close drawer on navigation
   useEffect(() => { setMobileOpen(false); }, [pathname]);
 
+  // Auto-expand whichever group holds the active route.
+  useEffect(() => {
+    const g = navGroups.find((grp) => grp.children.some((c) => c.href === pathname));
+    if (g) setOpenGroups((prev) => ({ ...prev, [g.label]: true }));
+  }, [pathname]);
+
+  const toggleGroup = (label) => setOpenGroups((prev) => ({ ...prev, [label]: !prev[label] }));
   const toggleTheme = () => setTheme(theme === "dark" ? "light" : "dark");
 
   return (
@@ -117,13 +146,14 @@ export default function Sidebar() {
         </div>
 
         {/* Nav */}
-        <nav className="flex-1 py-4 px-3 space-y-1">
-          {navItems.map(({ href, label, Icon }) => {
-            const active = pathname === href;
+        <nav className="flex-1 overflow-y-auto py-4 px-3 space-y-1">
+          {/* Overview — standalone */}
+          {(() => {
+            const active = pathname === homeItem.href;
+            const { Icon } = homeItem;
             return (
               <Link
-                key={href}
-                href={href}
+                href={homeItem.href}
                 className={`flex items-center gap-3 px-3 py-2.5 rounded-md text-sm transition-all duration-150 ${
                   active
                     ? "bg-accent/10 text-accent border border-accent/20"
@@ -131,9 +161,57 @@ export default function Sidebar() {
                 }`}
               >
                 <Icon size={15} />
-                <span className="font-body">{label}</span>
+                <span className="font-body">{homeItem.label}</span>
                 {active && <div className="ml-auto w-1 h-1 rounded-full bg-accent" />}
               </Link>
+            );
+          })()}
+
+          {/* Collapsible groups */}
+          {navGroups.map(({ label, Icon: GroupIcon, children }) => {
+            const open = !!openGroups[label];
+            const hasActive = children.some((c) => c.href === pathname);
+            return (
+              <div key={label} className="pt-1">
+                <button
+                  onClick={() => toggleGroup(label)}
+                  aria-expanded={open}
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-sm transition-all duration-150 ${
+                    hasActive && !open ? "text-accent" : "text-soft hover:text-text hover:bg-white/[0.03]"
+                  }`}
+                >
+                  <GroupIcon size={15} />
+                  <span className="font-body font-medium">{label}</span>
+                  {hasActive && !open && <div className="w-1 h-1 rounded-full bg-accent" />}
+                  <ChevronDown
+                    size={14}
+                    className={`ml-auto text-dim transition-transform duration-200 ${open ? "rotate-180" : ""}`}
+                  />
+                </button>
+
+                {open && (
+                  <div className="mt-1 ml-3 pl-3 border-l border-border space-y-0.5 animate-fade-in">
+                    {children.map(({ href, label: childLabel, Icon }) => {
+                      const active = pathname === href;
+                      return (
+                        <Link
+                          key={href}
+                          href={href}
+                          className={`flex items-center gap-2.5 px-3 py-2 rounded-md text-[13px] transition-all duration-150 ${
+                            active
+                              ? "bg-accent/10 text-accent border border-accent/20"
+                              : "text-dim hover:text-text hover:bg-white/[0.03]"
+                          }`}
+                        >
+                          <Icon size={14} />
+                          <span className="font-body">{childLabel}</span>
+                          {active && <div className="ml-auto w-1 h-1 rounded-full bg-accent" />}
+                        </Link>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
             );
           })}
         </nav>
