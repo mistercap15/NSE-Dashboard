@@ -14,6 +14,7 @@ const navItems = [
   { href: "/",          label: "Overview",       Icon: LayoutDashboard },
   { href: "/rankings",  label: "Rankings",       Icon: TrendingUp },
   { href: "/backtest",  label: "Backtest",       Icon: LineChart },
+  { href: "/sizing",    label: "Sizing",         Icon: Scale },
   { href: "/analysis",  label: "Stock Analysis", Icon: Search },
   { href: "/calendar",        label: "Calendar",       Icon: CalendarDays },
   { href: "/sector-rotation", label: "Sector Rotation", Icon: RotateCcw },
