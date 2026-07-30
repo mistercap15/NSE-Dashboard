@@ -5,11 +5,11 @@ module.exports = {
   theme: {
     extend: {
       fontFamily: {
-        // Simple system fonts — no web-font loading, clean everywhere.
+        // Simple system sans-serif everywhere — including `font-mono`, so the
+        // many existing font-mono usages (numbers, labels) also render sans.
         display: ["system-ui", "-apple-system", "Segoe UI", "Roboto", "Helvetica", "Arial", "sans-serif"],
         body:    ["system-ui", "-apple-system", "Segoe UI", "Roboto", "Helvetica", "Arial", "sans-serif"],
-        // Numbers stay monospaced for column alignment, but a plain system mono.
-        mono:    ["ui-monospace", "SFMono-Regular", "Menlo", "Consolas", "monospace"],
+        mono:    ["system-ui", "-apple-system", "Segoe UI", "Roboto", "Helvetica", "Arial", "sans-serif"],
       },
       colors: {
         bg:      "rgb(var(--color-bg) / <alpha-value>)",

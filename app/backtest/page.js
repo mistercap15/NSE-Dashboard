@@ -175,9 +175,9 @@ export default function BacktestPage() {
                     </linearGradient>
                   </defs>
                   <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.08)" />
-                  <XAxis dataKey="ym" tick={{ fontSize: 10, fontFamily: "monospace", fill: "#64748b" }}
+                  <XAxis dataKey="ym" tick={{ fontSize: 10, fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif", fill: "#64748b" }}
                     tickFormatter={(v) => v.slice(0, 4)} minTickGap={40} />
-                  <YAxis tick={{ fontSize: 10, fontFamily: "monospace", fill: "#64748b" }} width={50} />
+                  <YAxis tick={{ fontSize: 10, fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif", fill: "#64748b" }} width={50} />
                   <Tooltip content={<ChartTooltip />} />
                   <Area type="monotone" dataKey="benchmark" name="Universe" stroke="#64748b" strokeWidth={1} fill="none" dot={false} />
                   <Area type="monotone" dataKey="equity" name="Strategy" stroke="rgb(77,159,255)" strokeWidth={2} fill="url(#eq)" dot={false} />
@@ -191,8 +191,8 @@ export default function BacktestPage() {
               <ResponsiveContainer width="100%" height={220}>
                 <BarChart data={data.yearly} margin={{ top: 5, right: 5, left: -10, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.08)" vertical={false} />
-                  <XAxis dataKey="year" tick={{ fontSize: 10, fontFamily: "monospace", fill: "#64748b" }} />
-                  <YAxis tick={{ fontSize: 10, fontFamily: "monospace", fill: "#64748b" }} width={50} />
+                  <XAxis dataKey="year" tick={{ fontSize: 10, fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif", fill: "#64748b" }} />
+                  <YAxis tick={{ fontSize: 10, fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif", fill: "#64748b" }} width={50} />
                   <Tooltip content={<ChartTooltip />} cursor={{ fill: "rgba(148,163,184,0.05)" }} />
                   <ReferenceLine y={0} stroke="#64748b" />
                   <Bar dataKey="ret" name="Return" radius={[2, 2, 0, 0]}>

@@ -393,12 +393,12 @@ function AnalysisContent() {
                     dataKey="date"
                     ticks={yearTicks}
                     tickFormatter={(v) => v?.split("-")[0]}
-                    tick={{ fontSize: 10, fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace", fill: "#64748B" }}
+                    tick={{ fontSize: 10, fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif", fill: "#64748B" }}
                     tickLine={false}
                     axisLine={false}
                   />
                   <YAxis
-                    tick={{ fontSize: 10, fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace", fill: "#64748B" }}
+                    tick={{ fontSize: 10, fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif", fill: "#64748B" }}
                     tickLine={false}
                     axisLine={false}
                     width={64}

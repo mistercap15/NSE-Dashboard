@@ -83,7 +83,7 @@ body {
 .badge {
   display: inline-flex;
   align-items: center;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
   font-size: 10px;
   font-weight: 500;
   letter-spacing: 0.5px;
