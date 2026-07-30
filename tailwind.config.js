@@ -5,9 +5,11 @@ module.exports = {
   theme: {
     extend: {
       fontFamily: {
-        display: ["Cabinet Grotesk", "sans-serif"],
-        body:    ["Satoshi", "sans-serif"],
-        mono:    ["JetBrains Mono", "monospace"],
+        // Simple system fonts — no web-font loading, clean everywhere.
+        display: ["system-ui", "-apple-system", "Segoe UI", "Roboto", "Helvetica", "Arial", "sans-serif"],
+        body:    ["system-ui", "-apple-system", "Segoe UI", "Roboto", "Helvetica", "Arial", "sans-serif"],
+        // Numbers stay monospaced for column alignment, but a plain system mono.
+        mono:    ["ui-monospace", "SFMono-Regular", "Menlo", "Consolas", "monospace"],
       },
       colors: {
         bg:      "rgb(var(--color-bg) / <alpha-value>)",
