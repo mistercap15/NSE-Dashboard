@@ -15,6 +15,19 @@ const fmtINR = (n) => `₹${Math.round(n || 0).toLocaleString("en-IN")}`;
 const gradeColor = (g) =>
   g === "A+" ? "text-green" : g === "A" ? "text-accent" : g === "B" ? "text-amber" : "text-dim";
 
+const TIER_LABEL = { PRIME: "⭐ Prime", STRONG: "Strong", WATCH: "Watch" };
+const tierCls = (t) =>
+  t === "PRIME"  ? "bg-green/15 text-green border-green/30"
+  : t === "STRONG" ? "bg-accent/10 text-accent border-accent/25"
+  : "bg-amber/10 text-amber border-amber/25";
+function TierBadge({ tier }) {
+  return (
+    <span className={`inline-block font-mono text-[9px] font-semibold px-2 py-0.5 rounded border whitespace-nowrap ${tierCls(tier)}`}>
+      {TIER_LABEL[tier] || tier}
+    </span>
+  );
+}
+
 const inputCls =
   "bg-card border border-border rounded-lg px-3 py-2 font-mono text-xs text-text " +
   "focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/40 transition-colors";
@@ -33,6 +46,7 @@ function Row({ s, expanded, onToggle }) {
   return (
     <>
       <tr className="table-row cursor-pointer" onClick={onToggle}>
+        <td className="py-2.5 px-3"><TierBadge tier={s.tier} /></td>
         <td className="py-2.5 px-3 font-mono text-[13px] font-medium text-accent">{s.symbol}</td>
         <td className="py-2.5 px-3 font-body text-[12px] text-dim">{s.sector}</td>
         <td className="py-2.5 px-3 font-mono text-[12px] text-right text-text">{fmtINR(s.price)}</td>
@@ -64,17 +78,20 @@ function Row({ s, expanded, onToggle }) {
             <div className="font-mono text-[9px] text-dim">+{s.rr?.upsidePct}% / −{s.rr?.downsidePct}%</div>
           </div>
         </td>
-        <td className="py-2.5 px-3 font-mono text-[12px] text-right">
-          {s.seasonalWR != null
-            ? <span className={s.inSeason ? "text-green" : "text-dim"}>{s.seasonalWR}%</span>
-            : <span className="text-muted">—</span>}
+        <td className="py-2.5 px-3 text-right">
+          {s.seasonalWR != null ? (
+            <div className="leading-tight">
+              <div className={`font-mono text-[12px] ${s.inSeason ? "text-green" : "text-dim"}`}>{s.seasonalWR}%</div>
+              {s.seasonalN != null && <div className="font-mono text-[9px] text-dim">n={s.seasonalN}</div>}
+            </div>
+          ) : <span className="font-mono text-[12px] text-muted">—</span>}
         </td>
         <td className="py-2.5 px-3 font-mono text-[12px] text-right text-soft">{s.score}</td>
         <td className={`py-2.5 px-3 font-mono text-[13px] font-bold text-center ${gradeColor(s.grade)}`}>{s.grade}</td>
       </tr>
       {expanded && (
         <tr className="bg-black/10">
-          <td colSpan={11} className="px-5 py-4">
+          <td colSpan={12} className="px-5 py-4">
             <div className="grid md:grid-cols-2 gap-4">
               <div>
                 <div className="font-mono text-[10px] text-dim uppercase tracking-widest mb-2">Why it qualifies</div>
@@ -108,9 +125,10 @@ function Table({ rows, expanded, setExpanded, emptyLabel }) {
   if (!rows.length) return <div className="text-dim font-mono text-sm p-8 text-center">{emptyLabel}</div>;
   return (
     <div className="overflow-x-auto">
-      <table className="w-full min-w-[1080px] text-sm">
+      <table className="w-full min-w-[1160px] text-sm">
         <thead>
           <tr className="border-b border-border">
+            <th className="text-left  py-2.5 px-3 font-mono text-[11px] text-dim font-normal">Tier</th>
             <th className="text-left  py-2.5 px-3 font-mono text-[11px] text-dim font-normal">Stock</th>
             <th className="text-left  py-2.5 px-3 font-mono text-[11px] text-dim font-normal">Sector</th>
             <th className="text-right py-2.5 px-3 font-mono text-[11px] text-dim font-normal">Price</th>
@@ -185,6 +203,7 @@ export default function SwingLowPage() {
 
   const avgRR = at.length ? (at.reduce((a, s) => a + (s.rr?.ratio || 0), 0) / at.length).toFixed(2) : "—";
   const inSeasonCount = at.filter((s) => s.inSeason).length;
+  const primeCount = at.filter((s) => s.tier === "PRIME").length;
   const best = at[0];
 
   return (
@@ -287,12 +306,13 @@ export default function SwingLowPage() {
         {data && !loading && (
           <>
             {/* Summary */}
-            <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3 mb-6">
-              <StatCard label="At swing low" value={at.length} sub="in / at the floor" color="text-green" />
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
+              <StatCard label="⭐ Prime setups" value={primeCount} sub="proven floor + R:R" color="text-green" />
+              <StatCard label="At swing low" value={at.length} sub="in / at the floor" color="text-text" />
               <StatCard label="Approaching" value={approaching.length} sub="near, not there yet" color="text-amber" />
               <StatCard label="Avg reward:risk" value={`${avgRR}${avgRR === "—" ? "" : ":1"}`} sub="of at-floor set" color="text-accent" />
               <StatCard label="In-season" value={inSeasonCount} sub={`strong in ${data.nextMonthName}`} color="text-text" />
-              <StatCard label="Top pick" value={best ? best.symbol : "—"} sub={best ? `${best.grade} · score ${best.score}` : ""} color="text-accent" mono={false} />
+              <StatCard label="Top pick" value={best ? best.symbol : "—"} sub={best ? `${best.tier === "PRIME" ? "⭐ Prime" : best.grade} · ${best.score}` : ""} color="text-accent" mono={false} />
             </div>
 
             {/* At swing low */}

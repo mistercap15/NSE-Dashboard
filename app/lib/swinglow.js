@@ -161,10 +161,14 @@ export function analyzeSwingLow(candles, { minCandles = 120 } = {}) {
 
   const bounce = nearestFloor ? bounceStats(candles, nearestFloor) : { entries: 0, bounceRate: 0, avgBouncePct: 0 };
 
-  // Reward:risk — upside to the mean-reversion target (MA200, floored at 3y mean),
-  // downside to a stop just under the floor. Ratio drives the trade math.
+  // Reward:risk — upside to the mean-reversion target, downside to a stop just
+  // under the floor. Target = MA200 (or 3y mean), but CAPPED at +30% so a
+  // deeply-crashed name doesn't show a fantasy round-trip (e.g. price 264 vs a
+  // 520 MA200 → a believable "first move", not +96%). MA200 stays visible
+  // separately so the true distance to the mean is never hidden.
   const meanClose = mean(closes);
-  const target = round(Math.max(ma200 || 0, meanClose));
+  const rawTarget = Math.max(ma200 || 0, meanClose);
+  const target = round(Math.min(rawTarget, price * 1.3));
   const stop = nearestFloor ? round(nearestFloor.low * 0.97) : round(price * 0.93);
   const upsidePct = round(((target - price) / price) * 100, 1);
   const downsidePct = round(((price - stop) / price) * 100, 1);
@@ -206,10 +210,20 @@ export function scoreSwingLow(a, seasonal) {
   const touchPts = t >= 4 ? 13 : t >= 3 ? 10 : t >= 2 ? 6 : 2;
   reasons.push(`${t} historical touches of this floor`);
 
+  // Bounce reliability, weighted by SAMPLE SIZE. A floor that never bounced
+  // in-sample (0 entries) earns nothing; a lucky 2-sample bounce is discounted
+  // vs a well-sampled one. This is what stops IRFC (n=0) / RVNL (n=2) from
+  // outranking a proven floor like MFSL (75% over n=4).
+  const be = a.bounce.entries || 0;
   let bouncePts = 0;
-  if (a.bounce.entries >= 2) {
-    bouncePts = a.bounce.bounceRate >= 0.7 ? 10 : a.bounce.bounceRate >= 0.5 ? 6 : a.bounce.bounceRate >= 0.3 ? 3 : 0;
-    if (bouncePts >= 6) reasons.push(`Bounced ${Math.round(a.bounce.bounceRate * 100)}% of the time (avg +${a.bounce.avgBouncePct}%)`);
+  if (be >= 2) {
+    const rate = a.bounce.bounceRate;
+    const rateScore = rate >= 0.7 ? 10 : rate >= 0.5 ? 7 : rate >= 0.3 ? 3 : 0;
+    const conf = be >= 5 ? 1 : be >= 3 ? 0.8 : 0.6; // sample-size confidence
+    bouncePts = Math.round(rateScore * conf);
+    if (bouncePts >= 5) reasons.push(`Bounced ${Math.round(rate * 100)}% (n=${be}, avg +${a.bounce.avgBouncePct}%)`);
+  } else {
+    reasons.push(`No proven bounce yet (n=${be})`);
   }
   const floor = floorPts + touchPts + bouncePts;
 
@@ -245,12 +259,28 @@ export function scoreSwingLow(a, seasonal) {
   const grade =
     score >= 80 ? "A+" : score >= 68 ? "A" : score >= 55 ? "B" : score >= 42 ? "C" : "SKIP";
 
+  // ── Confidence tier — orders the list by genuine robustness, not just score ──
+  // A setup is only "proven" when the floor has enough touches AND actual
+  // bounce evidence AND a sane reward:risk. Thin/unproven floors and deep
+  // falling-knives fall to WATCH regardless of a high raw score.
+  const samples = be;
+  const rr = a.rr.ratio ?? 0;
+  const proven = t >= 4 && samples >= 2 && a.bounce.bounceRate >= 0.5;
+  let tier;
+  if (proven && rr >= 2 && score >= 70) tier = "PRIME";
+  else if (t >= 3 && samples >= 2 && rr >= 1.3 && score >= 58) tier = "STRONG";
+  else tier = "WATCH";
+
   return {
-    score, grade, inSeason,
+    score, grade, tier, inSeason,
+    evidence: { touches: t, bounceSamples: samples, bounceRate: a.bounce.bounceRate, rr },
     components: { floor: Math.round(floor), oversold: Math.round(oversold), rewardRisk: rrPts, seasonality: seasonPts },
     reasons,
   };
 }
+
+// Sort order for the tiers (Prime first).
+export const TIER_RANK = { PRIME: 0, STRONG: 1, WATCH: 2 };
 
 // ── Bucket a fully-analysed+scored stock ─────────────────────────────────────
 // "at" = in/at the floor now & some oversold; "approaching" = above but nearby.

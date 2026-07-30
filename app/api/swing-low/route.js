@@ -3,7 +3,7 @@ import { getDailyCandles, setAccessToken } from "@/app/lib/upstox";
 import { ensureInstrumentMap, keyFor } from "@/app/lib/instrumentMaster";
 import { loadUniverse, monthReturns } from "@/app/lib/dataset";
 import { getNextMonth } from "@/app/lib/date";
-import { analyzeSwingLow, scoreSwingLow, bucketOf } from "@/app/lib/swinglow";
+import { analyzeSwingLow, scoreSwingLow, bucketOf, TIER_RANK } from "@/app/lib/swinglow";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Swing-low scanner. Fetches ~3yr daily candles for the whole F&O universe,
@@ -69,7 +69,7 @@ export async function GET(request) {
     const rets = monthReturns(rec.points, nextMonth);
     if (rets.length < 4) return null;
     const wr = Math.round((rets.filter((r) => r > 0).length / rets.length) * 100);
-    return { nextMonthWR: wr, nextMonthName };
+    return { nextMonthWR: wr, nextMonthName, n: rets.length };
   };
 
   const at = [];
@@ -112,9 +112,11 @@ export async function GET(request) {
       bounceSamples: a.bounce.entries,
       rr: a.rr,                        // { target, stop, upsidePct, downsidePct, ratio }
       seasonalWR: seasonal?.nextMonthWR ?? null,
+      seasonalN: seasonal?.n ?? null,
       inSeason: scored.inSeason,
       score: scored.score,
       grade: scored.grade,
+      tier: scored.tier,
       components: scored.components,
       reasons: scored.reasons,
     };
@@ -122,8 +124,12 @@ export async function GET(request) {
     (bucket === "at" ? at : approaching).push(row);
   });
 
-  at.sort((x, y) => y.score - x.score);
-  approaching.sort((x, y) => y.score - x.score);
+  // Rank by confidence tier first (Prime → Strong → Watch), then score — so the
+  // most robust, best-evidenced setups are always at the top of the list.
+  const byTierThenScore = (x, y) =>
+    (TIER_RANK[x.tier] - TIER_RANK[y.tier]) || (y.score - x.score);
+  at.sort(byTierThenScore);
+  approaching.sort(byTierThenScore);
 
   const payload = {
     generatedAt: new Date().toISOString(),
