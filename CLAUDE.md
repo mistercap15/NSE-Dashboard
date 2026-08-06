@@ -148,7 +148,8 @@ AUTH_SECRET=<long random hex>              # signs the session JWT
 - `npm run dev` (Next dev), `npm run build`, `npm start`.
 - Deploys to **Vercel on push to `master`** — so **run `npm run build` locally before pushing** (a broken build breaks the live deploy).
 - No ESLint installed (skipped during Vercel builds — not fatal).
-- Rebuild the snapshot: `node scripts/build-universe.mjs` (incremental) or `--full`.
+- **Refresh the seasonality snapshot (do this on the 1st of each month):** with Upstox connected, run `npm run refresh-data` — it fetches fresh Upstox daily candles for all ~181 F&O stocks (`scripts/export-backtest-data.mjs`) then regenerates `data/universe.json`'s monthly-return series from them (`scripts/rebuild-universe-from-export.mjs`, 2009+, month-over-month close returns). Then commit `data/universe.json`. Needs a valid Upstox token: `UPSTOX_ACCESS_TOKEN=<token> npm run refresh-data`, or a local `.upstox_token` file (written by logging into the app locally). Seasonality is completed monthly returns, so a monthly refresh is sufficient — it only gains a new data point when a month closes.
+- Legacy: `node scripts/build-universe.mjs` rebuilt the snapshot from the MCP/GOOGLEFINANCE feed, but that source had corrupted returns — prefer `npm run refresh-data` (Upstox-sourced) instead.
 
 ## Conventions & gotchas
 
