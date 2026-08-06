@@ -5,6 +5,7 @@ import { computeSupportZones, computePriceContext, computeSignalScore } from "@/
 import { getNextMonth } from "@/app/lib/date"
 import { loadUniverse } from "@/app/lib/dataset"
 import { marketRegime } from "@/app/lib/regime"
+import { upstoxTokenFor } from "@/app/lib/auth"
 
 const MCP_URL   = process.env.MCP_URL || "https://nse-data-mcp.vercel.app/mcp"
 const MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
@@ -309,9 +310,9 @@ async function callMCP(toolName, args) {
 }
 
 export async function GET(request) {
-  const cookie     = request.cookies.get("upstox_token")?.value
+  const token      = await upstoxTokenFor(request)
   const cronToken  = request.headers.get("x-upstox-token")
-  if (cookie)     setAccessToken(cookie)
+  if (token)      setAccessToken(token)
   else if (cronToken) setAccessToken(cronToken)
 
   // Resolve instrument keys from Upstox's master (self-healing vs hardcoded map).

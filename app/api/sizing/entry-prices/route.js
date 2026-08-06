@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getDailyCandles, getBatchQuotes, setAccessToken } from "@/app/lib/upstox";
 import { toInstrumentKey } from "@/app/lib/instruments";
 import { getCurrentMonth, getCurrentYear } from "@/app/lib/date";
+import { upstoxTokenFor } from "@/app/lib/auth";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Entry-price sourcing for the /sizing page.
@@ -15,8 +16,8 @@ import { getCurrentMonth, getCurrentYear } from "@/app/lib/date";
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function GET(request) {
-  const cookie = request.cookies.get("upstox_token")?.value;
-  if (cookie) setAccessToken(cookie);
+  const token = await upstoxTokenFor(request);
+  if (token) setAccessToken(token);
 
   const { searchParams } = new URL(request.url);
   const month = parseInt(searchParams.get("month") || String(getCurrentMonth()));

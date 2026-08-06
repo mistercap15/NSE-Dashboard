@@ -2,10 +2,11 @@ import { NextResponse } from "next/server"
 import { getBatchQuotes, setAccessToken } from "@/app/lib/upstox"
 import { WATCHLIST } from "@/app/lib/instruments"
 import { ensureInstrumentMap, keyFor } from "@/app/lib/instrumentMaster"
+import { upstoxTokenFor } from "@/app/lib/auth"
 
 export async function GET(request) {
-  const cookie = request.cookies.get("upstox_token")?.value
-  if (cookie) setAccessToken(cookie)
+  const token = await upstoxTokenFor(request)
+  if (token) setAccessToken(token)
 
   const { searchParams } = new URL(request.url)
   const symbolsParam = searchParams.get("symbols")

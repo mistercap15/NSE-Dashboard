@@ -1,10 +1,21 @@
 import { NextResponse } from "next/server";
-import { createSession, sessionCookieOptions, safeEqual, safeNext, SESSION_COOKIE } from "@/app/lib/auth";
+import {
+  createSession,
+  createMobileSession,
+  sessionCookieOptions,
+  safeEqual,
+  safeNext,
+  SESSION_COOKIE,
+} from "@/app/lib/auth";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PIN login. Verifies a 6-digit PIN (plaintext APP_PIN env), sets the signed
 // session cookie, and returns the post-login redirect target. Middleware then
 // chains into Upstox OAuth if it isn't connected yet.
+//
+// The native app can't use cookies, so the response body also carries an
+// encrypted session token for it to hold. The web ignores `token` and rides the
+// cookie exactly as before.
 //
 // Brute-force guard: a 6-digit PIN is only 1e6 combos on a public URL, so we
 // throttle per-IP — a fixed delay on every failure plus an escalating lockout.
@@ -54,7 +65,10 @@ export async function POST(request) {
   if (safeEqual(pin, expected)) {
     attempts.delete(ip); // reset on success
     const token = await createSession({ sub: "owner" });
-    const res = NextResponse.json({ ok: true, next: safeNext(next) });
+    // Bearer session for the native app — no Upstox token yet, the OAuth
+    // callback re-mints this with one attached.
+    const bearer = await createMobileSession({ sub: "owner" });
+    const res = NextResponse.json({ ok: true, next: safeNext(next), token: bearer });
     res.cookies.set(SESSION_COOKIE, token, sessionCookieOptions());
     return res;
   }

@@ -1,9 +1,10 @@
 import { NextResponse }                        from "next/server"
 import { hasValidToken, setAccessToken, isTokenExpired } from "@/app/lib/upstox"
-import { SESSION_COOKIE, UPSTOX_COOKIE }         from "@/app/lib/auth"
+import { SESSION_COOKIE, UPSTOX_COOKIE, upstoxTokenFor } from "@/app/lib/auth"
 
 export async function GET(request) {
-  const cookie = request.cookies.get("upstox_token")?.value
+  // Cookie (web) or the encrypted claim in the bearer session (mobile).
+  const cookie = await upstoxTokenFor(request)
   if (cookie) setAccessToken(cookie)
 
   const expired   = isTokenExpired()

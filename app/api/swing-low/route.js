@@ -4,6 +4,7 @@ import { ensureInstrumentMap, keyFor } from "@/app/lib/instrumentMaster";
 import { loadUniverse, monthReturns } from "@/app/lib/dataset";
 import { getNextMonth } from "@/app/lib/date";
 import { analyzeSwingLow, scoreSwingLow, bucketOf, TIER_RANK } from "@/app/lib/swinglow";
+import { upstoxTokenFor } from "@/app/lib/auth";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Swing-low scanner. Fetches ~3yr daily candles for the whole F&O universe,
@@ -39,8 +40,8 @@ async function pool(items, limit, worker) {
 }
 
 export async function GET(request) {
-  const cookie = request.cookies.get("upstox_token")?.value;
-  if (cookie) setAccessToken(cookie);
+  const token = await upstoxTokenFor(request);
+  if (token) setAccessToken(token);
 
   const { searchParams } = new URL(request.url);
   const refresh = searchParams.get("refresh") === "1";

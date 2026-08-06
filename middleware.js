@@ -1,11 +1,16 @@
 import { NextResponse } from "next/server";
-import { SESSION_COOKIE, UPSTOX_COOKIE, verifySession, safeNext } from "@/app/lib/auth";
+import { UPSTOX_COOKIE, verifySession, sessionToken, safeNext } from "@/app/lib/auth";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Route gate. Enforces the PIN session on every request, and (for page loads)
 // that Upstox is connected — redirecting into the Upstox OAuth chain if not.
 //   • Pages:  no session → /login;  session but no Upstox cookie → /api/upstox/login
 //   • API:    no session → 401 JSON  (handlers already degrade if Upstox is down)
+//
+// The session arrives as the `app_session` cookie (web) or an `Authorization:
+// Bearer` header (native app) — `sessionToken` accepts either. The Upstox gate
+// below stays cookie-only on purpose: it guards page loads, and only the web
+// loads pages. The app carries its Upstox token inside the bearer session.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Reachable without a session (the login chain itself + Upstox OAuth round-trip).
@@ -22,7 +27,7 @@ export async function middleware(request) {
 
   if (PUBLIC_PATHS.has(pathname)) return NextResponse.next();
 
-  const session = await verifySession(request.cookies.get(SESSION_COOKIE)?.value);
+  const session = await verifySession(sessionToken(request));
   const isApi = pathname.startsWith("/api/");
 
   // 1) PIN session required everywhere.
