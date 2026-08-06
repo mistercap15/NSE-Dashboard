@@ -4,6 +4,7 @@
 
 - **Repo:** github.com/mistercap15/NSE-Dashboard (branch: `master`, auto-deploys to Vercel on push)
 - **Owner:** solo user; pushes go **directly to `master`** (no feature branches) unless stated otherwise.
+- **Mobile:** a self-contained spec to build an Expo/React-Native version (reusing this backend) lives at [docs/EXPO_APP_PROMPT.md](docs/EXPO_APP_PROMPT.md).
 
 ---
 
