@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "refresh-data": "node scripts/export-backtest-data.mjs && node scripts/rebuild-universe-from-export.mjs"
+    "refresh-data": "node scripts/export-backtest-data.mjs && node scripts/rebuild-universe-from-export.mjs",
+    "test:levels": "node scripts/test-levels.mjs"
   },
   "dependencies": {
     "@react-pdf/renderer": "^4.5.1",

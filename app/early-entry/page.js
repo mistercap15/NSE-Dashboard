@@ -179,6 +179,10 @@ export default function EarlyEntryPage() {
   const [tokenExpired,    setTokenExpired]    = useState(false)
   const [selectedMonth,   setSelectedMonth]   = useState(() => getNextMonth())
   const [expanded,        setExpanded]        = useState(null)
+  // Entry/stop/target from the shared engine (app/lib/levels.js). This page
+  // used to derive its own — 3% under the second support — which is why the
+  // same stock showed a different stop here than on /swing-low.
+  const [levels,          setLevels]          = useState({})
 
   useEffect(() => {
     fetch("/api/upstox/status")
@@ -201,6 +205,22 @@ export default function EarlyEntryPage() {
       // Also set sentiment when scan completes
       if (json.sentiment) {
         setSentiment(json.sentiment)
+      }
+
+      // Levels for every pick, from the one engine all screens share.
+      const syms = (json.results || []).map(r => r.symbol)
+      if (syms.length) {
+        try {
+          const lr = await fetch(
+            `/api/levels?symbols=${encodeURIComponent(syms.join(","))}&month=${selectedMonth}`
+          )
+          const lj = await lr.json()
+          setLevels(lj.levels || {})
+        } catch {
+          setLevels({}) // levels are a bonus here; the scan still stands
+        }
+      } else {
+        setLevels({})
       }
     } catch (e) {
       setError(e.message)
@@ -467,21 +487,18 @@ export default function EarlyEntryPage() {
                 const medianReturn   = s.nextMonth.median_return || s.nextMonth.avg_return
                 const winRate        = s.nextMonth.win_rate
 
-                // Stop loss: 3% below second support, or 7% from entry
-                const slPrice = farSupport
-                  ? Math.round(farSupport.price * 0.97)
-                  : price ? Math.round(price * 0.93) : null
+                // Levels come from the shared engine now — same stop rule as
+                // /swing-low and /sizing. The old local maths (3% under the
+                // second support) is gone; only the rupee conversions remain,
+                // which are arithmetic rather than rules.
+                const L = levels[s.symbol] || null
+                const slPrice = L ? Math.round(L.stop.price) : null
+                const slPct   = L ? L.stop.pct : null
                 const slAmount = slPrice && price && s.lot_size
                   ? Math.round((price - slPrice) * s.lot_size)
                   : null
-                const slPct = slPrice && price
-                  ? Math.round((price - slPrice) / price * 100 * 10) / 10
-                  : null
 
-                // Target
-                const targetPrice = price && medianReturn
-                  ? Math.round(price * (1 + medianReturn / 100))
-                  : null
+                const targetPrice = L?.target ? Math.round(L.target.price) : null
                 const expectedProfit = targetPrice && price && s.lot_size
                   ? Math.round((targetPrice - price) * s.lot_size)
                   : null
@@ -489,11 +506,10 @@ export default function EarlyEntryPage() {
                 // Notional exposure
                 const notional = price && s.lot_size ? price * s.lot_size : null
 
-                // Averaging down
+                // Averaging down — midpoint of entry and stop, from the engine,
+                // so a planned dip fill still sits above the stop.
                 const secondSupportPrice = farSupport?.price
-                const newAverage = price && secondSupportPrice
-                  ? Math.round((price + secondSupportPrice) / 2)
-                  : null
+                const newAverage = L ? Math.round(L.averageIn) : null
                 const newProfit = targetPrice && newAverage && s.lot_size
                   ? Math.round((targetPrice - newAverage) * s.lot_size * 2)
                   : null

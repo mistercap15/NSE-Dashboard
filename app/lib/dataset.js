@@ -29,6 +29,10 @@ function build() {
     symbols: symbols.length ? symbols : Object.keys(model),
     series: model,
     sectors,
+    // Exposed alongside `sectors` for symmetry. It was previously reachable only
+    // as series[sym].lotSize, which reads like an oversight at the call site —
+    // consumers assumed a top-level map and silently got undefined.
+    lotSize,
     minYear,
     maxYear,
     generatedAt,

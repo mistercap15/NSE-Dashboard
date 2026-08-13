@@ -12,6 +12,8 @@
 // Tunables live at the top of each function and in SCORE_WEIGHTS — adjust freely.
 // ─────────────────────────────────────────────────────────────────────────────
 
+import { computeLevels, floorsToSupports } from "./levels";
+
 const round = (n, d = 2) => {
   const f = 10 ** d;
   return Math.round(n * f) / f;
@@ -122,7 +124,7 @@ export function bounceStats(candles, zone, { forwardDays = 40, bounceThresholdPc
 
 // ── Full per-stock analysis ──────────────────────────────────────────────────
 // Returns null when there isn't enough history to be meaningful.
-export function analyzeSwingLow(candles, { minCandles = 120 } = {}) {
+export function analyzeSwingLow(candles, { minCandles = 120, seasonality = null } = {}) {
   if (!candles || candles.length < minCandles) return null;
 
   const closes = candles.map((c) => c.close);
@@ -161,18 +163,30 @@ export function analyzeSwingLow(candles, { minCandles = 120 } = {}) {
 
   const bounce = nearestFloor ? bounceStats(candles, nearestFloor) : { entries: 0, bounceRate: 0, avgBouncePct: 0 };
 
-  // Reward:risk — upside to the mean-reversion target, downside to a stop just
-  // under the floor. Target = MA200 (or 3y mean), but CAPPED at +30% so a
-  // deeply-crashed name doesn't show a fantasy round-trip (e.g. price 264 vs a
-  // 520 MA200 → a believable "first move", not +96%). MA200 stays visible
+  // Reward:risk now comes from the shared engine in lib/levels.js rather than
+  // being computed here. The floor is this screener's structural support, so it
+  // is handed over as such and the stop lands in the same place it always did —
+  // the point is that the sizing and early-entry screens now derive their stops
+  // from that same function, instead of each inventing one.
+  //
+  // The target stays mean-reversion (MA200 / 3y mean, capped at +30%), because
+  // that is the trade this screener is actually finding. MA200 remains exposed
   // separately so the true distance to the mean is never hidden.
   const meanClose = mean(closes);
-  const rawTarget = Math.max(ma200 || 0, meanClose);
-  const target = round(Math.min(rawTarget, price * 1.3));
-  const stop = nearestFloor ? round(nearestFloor.low * 0.97) : round(price * 0.93);
-  const upsidePct = round(((target - price) / price) * 100, 1);
-  const downsidePct = round(((price - stop) / price) * 100, 1);
-  const rr = downsidePct > 0 ? round(upsidePct / downsidePct, 2) : null;
+  const levels = computeLevels({
+    entry: price,
+    entryBasis: "live",
+    supports: nearestFloor ? floorsToSupports([nearestFloor]) : [],
+    seasonality,
+    reversionTarget: Math.max(ma200 || 0, meanClose),
+    strategy: "reversion",
+  });
+
+  const target = levels?.target?.price ?? null;
+  const stop = levels?.stop?.price ?? null;
+  const upsidePct = levels?.target?.pct ?? null;
+  const downsidePct = levels?.stop?.pct ?? null;
+  const rr = levels?.riskReward ?? null;
 
   return {
     price: round(price),
@@ -188,6 +202,8 @@ export function analyzeSwingLow(candles, { minCandles = 120 } = {}) {
     belowMa200: ma200 ? price < ma200 : null,
     bounce,
     rr: { target, stop, upsidePct, downsidePct, ratio: rr },
+    // Full shared-engine output: basis labels, warnings, risk checks.
+    levels,
   };
 }
 

@@ -95,33 +95,6 @@ function allocateLots(candidates, maxLots) {
   });
 }
 
-// ── Price levels from an entry price (pure) ──────────────────────────────────
-// Every level keys off `entry` = opening price of the first trading day of the
-// month. `lots` is the recommended (allocated) lot count for this position.
-// Returns null when there's no usable entry — callers render "—".
-function computeLevels(entry, medianReturn, worst, lotSize, lots) {
-  if (!Number.isFinite(entry) || entry <= 0 || !lotSize || !lots) return null;
-
-  // TARGET — entry compounded by the median seasonal return for the month.
-  const targetPrice    = Math.round(entry * (1 + (medianReturn || 0) / 100));
-  const expectedProfit = Math.round((targetPrice - entry) * lotSize * lots);
-
-  // STOP — historical worst month, widened 1.2×, as the exit. `worst` is
-  // negative (e.g. -6.33 → stopPct -7.6%). Tweak the 1.2 buffer here to make
-  // stops tighter/looser. (This is our own rule, NOT early-entry's support stop.)
-  const stopPct    = (worst || 0) * 1.2;
-  const stopPrice  = Math.round(entry * (1 + stopPct / 100));
-  const riskAmount = Math.round((entry - stopPrice) * lotSize * lots);
-
-  // AVERAGE-IN — only meaningful for 2+ lot plans (nothing to stage on 1 lot).
-  // Sits at the MIDPOINT of entry and stop: a planned dip fill that is still
-  // ABOVE the stop. It fills the SAME recommended size in two stages — it does
-  // NOT add beyond it. If price breaks the stop you exit; no further averaging.
-  const avgInPrice = lots >= 2 ? Math.round((entry + stopPrice) / 2) : null;
-
-  return { targetPrice, expectedProfit, stopPrice, stopPct, riskAmount, avgInPrice };
-}
-
 const gradeColor = (g) =>
   g === "A+" ? "text-green" : g === "A" ? "text-accent" : g === "B" ? "text-amber" : "text-dim";
 
@@ -187,12 +160,17 @@ export default function SizingPage() {
     if (!symbolsKey) { setPrices({}); return; }
     let cancelled = false;
     setPricesLoading(true);
-    fetch(`/api/sizing/entry-prices?month=${month}&symbols=${encodeURIComponent(symbolsKey)}`)
+    fetch(`/api/levels?symbols=${encodeURIComponent(symbolsKey)}&month=${month}&entry=open`)
       .then((r) => r.json())
       .then((d) => {
         if (cancelled) return;
-        setPrices(d.prices || {});
-        setPriceMeta({ provisionalMonth: !!d.provisionalMonth, year: d.year });
+        setPrices(d.levels || {});
+        setPriceMeta({
+          provisionalMonth: Object.values(d.levels || {}).some(
+            (l) => l.entry?.basis === "provisional"
+          ),
+          year: null,
+        });
       })
       .catch(() => { if (!cancelled) setPrices({}); })
       .finally(() => { if (!cancelled) setPricesLoading(false); });
@@ -213,18 +191,31 @@ export default function SizingPage() {
     const allocated = allocateLots(candidates, budget).map((c) => {
       // Entry = first-trading-day open (or provisional live). Fall back to any
       // price riding on the rankings payload, else null.
+      // Levels arrive fully formed from app/lib/levels.js — this page no longer
+      // computes its own stop/target, which is what made it disagree with
+      // /swing-low and /early-entry about the same stock.
       const p = prices[c.symbol];
-      const rawEntry = p && Number.isFinite(p.entry) ? p.entry : priceOf(c);
+      const rawEntry = p?.entry?.price ?? priceOf(c);
       const entry = Number.isFinite(rawEntry) && rawEntry > 0 ? rawEntry : null;
-      const provisional = p ? !!p.provisional : false;
+      const provisional = p?.entry?.basis === "provisional";
 
       // Per-lot cost: real notional (entry × lot_size) when we have an entry,
       // else the flat avg-cost assumption. Budget (maxLots) still uses avgLotCost.
       const lotCost = entry && c.lot_size ? entry * c.lot_size : avgLotCost;
-      const levels = computeLevels(entry, c.median_return, c.worst, c.lot_size, c.allocLots);
+      const levels = p || null;
+      // riskAmount/rewardAmount from the API assume a single lots value for the
+      // whole batch, so recompute them against THIS stock's allocation. Pure
+      // arithmetic over the engine's levels — no rule is being re-invented.
+      const perLot = c.lot_size || 0;
+      const riskAmount = levels && perLot
+        ? Math.round((levels.entry.price - levels.stop.price) * perLot * c.allocLots)
+        : null;
+      const rewardAmount = levels?.target && perLot
+        ? Math.round((levels.target.price - levels.entry.price) * perLot * c.allocLots)
+        : null;
 
       return {
-        ...c, entry, provisional, levels,
+        ...c, entry, provisional, levels, riskAmount, rewardAmount,
         lotCost, lotCostReal: Boolean(entry && c.lot_size),
         capitalUsed: c.allocLots * lotCost,
       };
@@ -493,8 +484,8 @@ export default function SizingPage() {
                           <td className="py-2.5 px-3 text-right">
                             {s.levels ? (
                               <>
-                                <div className="font-mono text-[12px] text-text">{fmtINR(s.levels.targetPrice)}</div>
-                                <div className="font-mono text-[9px] text-green">+{fmtINR(s.levels.expectedProfit)}</div>
+                                <div className="font-mono text-[12px] text-text">{s.levels.target ? fmtINR(s.levels.target.price) : "—"}</div>
+                                <div className="font-mono text-[9px] text-green">{s.rewardAmount != null ? `+${fmtINR(s.rewardAmount)}` : ""}</div>
                               </>
                             ) : <span className="font-mono text-[12px] text-muted">—</span>}
                           </td>
@@ -503,9 +494,9 @@ export default function SizingPage() {
                           <td className="py-2.5 px-3 text-right">
                             {s.levels ? (
                               <>
-                                <div className="font-mono text-[12px] text-red">{fmtINR(s.levels.stopPrice)}</div>
+                                <div className="font-mono text-[12px] text-red">{fmtINR(s.levels.stop.price)}</div>
                                 <div className="font-mono text-[9px] text-red/70">
-                                  {s.levels.stopPct.toFixed(1)}% · {fmtINR(s.levels.riskAmount)} risk
+                                  {s.levels.stop.pct.toFixed(1)}%{s.riskAmount != null ? ` · ${fmtINR(s.riskAmount)} risk` : ""}
                                 </div>
                               </>
                             ) : <span className="font-mono text-[12px] text-muted">—</span>}
@@ -513,9 +504,9 @@ export default function SizingPage() {
 
                           {/* Average-in — 2nd-stage fill, only for 2+ lot plans */}
                           <td className="py-2.5 px-3 text-right">
-                            {s.levels?.avgInPrice ? (
+                            {s.levels?.averageIn && s.allocLots >= 2 ? (
                               <>
-                                <div className="font-mono text-[12px] text-amber">{fmtINR(s.levels.avgInPrice)}</div>
+                                <div className="font-mono text-[12px] text-amber">{fmtINR(s.levels.averageIn)}</div>
                                 <div className="font-mono text-[9px] text-dim">add 2nd half</div>
                               </>
                             ) : <span className="font-mono text-[12px] text-muted">—</span>}

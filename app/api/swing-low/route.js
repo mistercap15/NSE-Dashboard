@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getDailyCandles, setAccessToken } from "@/app/lib/upstox";
 import { ensureInstrumentMap, keyFor } from "@/app/lib/instrumentMaster";
 import { loadUniverse, monthReturns } from "@/app/lib/dataset";
+import { seasonalityFor } from "@/app/lib/levels";
 import { getNextMonth } from "@/app/lib/date";
 import { analyzeSwingLow, scoreSwingLow, bucketOf, TIER_RANK } from "@/app/lib/swinglow";
 import { upstoxTokenFor } from "@/app/lib/auth";
@@ -63,14 +64,22 @@ export async function GET(request) {
   // (the hardcoded ISIN_MAP misses ~34 names). Falls back to ISIN_MAP if it fails.
   await ensureInstrumentMap();
 
-  // Precompute next-month seasonal win rate per symbol from the snapshot.
+  // Precompute next-month seasonality per symbol from the snapshot. Carries the
+  // win rate the scorer wants AND the median/worst the shared levels engine
+  // needs for its risk budget, so both read the same numbers.
   const seasonalOf = (sym) => {
     const rec = universe.series[sym];
     if (!rec) return null;
     const rets = monthReturns(rec.points, nextMonth);
     if (rets.length < 4) return null;
-    const wr = Math.round((rets.filter((r) => r > 0).length / rets.length) * 100);
-    return { nextMonthWR: wr, nextMonthName, n: rets.length };
+    const stats = seasonalityFor(rets);
+    return {
+      nextMonthWR: stats.winRate,
+      nextMonthName,
+      n: stats.n,
+      medianReturn: stats.medianReturn,
+      worst: stats.worst,
+    };
   };
 
   const at = [];
@@ -89,9 +98,11 @@ export async function GET(request) {
     if (!Array.isArray(candles) || candles.length < 120) { failed++; return; }
     scanned++;
 
-    const a = analyzeSwingLow(candles);
-    if (!a) return;
     const seasonal = seasonalOf(sym);
+    // Seasonality goes in up front: it is the risk budget the shared stop rule
+    // uses when choosing which support to hide behind.
+    const a = analyzeSwingLow(candles, { seasonality: seasonal });
+    if (!a) return;
     const scored = scoreSwingLow(a, seasonal);
     if (!scored) return;
     const bucket = bucketOf(a, scored);
@@ -112,6 +123,7 @@ export async function GET(request) {
       bounceAvgPct: a.bounce.avgBouncePct,
       bounceSamples: a.bounce.entries,
       rr: a.rr,                        // { target, stop, upsidePct, downsidePct, ratio }
+      levels: a.levels,                // shared-engine detail: bases, warnings, risk check
       seasonalWR: seasonal?.nextMonthWR ?? null,
       seasonalN: seasonal?.n ?? null,
       inSeason: scored.inSeason,
