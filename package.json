@@ -9,7 +9,9 @@
     "refresh-data": "node scripts/export-backtest-data.mjs && node scripts/rebuild-universe-from-export.mjs",
     "test:levels": "node scripts/test-levels.mjs",
     "test:conviction": "node scripts/test-conviction.mjs",
-    "test": "npm run test:levels && npm run test:conviction"
+    "test": "npm run test:levels && npm run test:conviction && npm run test:qualify",
+    "test:qualify": "node scripts/test-qualify.mjs",
+    "build-promoter": "node scripts/build-promoter.mjs"
   },
   "dependencies": {
     "@react-pdf/renderer": "^4.5.1",

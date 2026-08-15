@@ -25,6 +25,9 @@ import {
 } from "@/app/lib/conviction";
 import { getCurrentMonth, getCurrentYear } from "@/app/lib/date";
 import { upstoxTokenFor } from "@/app/lib/auth";
+import { qualify, promoterActivity } from "@/app/lib/qualify";
+import { filingsFor, snapshotMeta, snapshotAgeDays } from "@/app/lib/promoter";
+import { lastThursday } from "@/app/lib/events";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // The Playbook: the month's few highest-conviction trades, ready to act on.
@@ -166,6 +169,13 @@ export async function GET(request) {
     const prevMonth = month === 1 ? 12 : month - 1;
     const nextMonthName = MONTH_NAMES[month - 1];
 
+    // The hold runs to the month's F&O expiry — the same last-Thursday rule the
+    // calendar uses. Everything date-based in the qualifiers is measured in IST
+    // so a run just after midnight UTC doesn't shift the window by a day.
+    const istToday = istDay();
+    const expiry = lastThursday(getCurrentYear(), month);
+    const holdEndsOn = `${expiry.getFullYear()}-${String(expiry.getMonth() + 1).padStart(2, "0")}-${String(expiry.getDate()).padStart(2, "0")}`;
+
     // ── 3. One candle fetch per symbol, everything derived from it ────────
     const candidates = [];
 
@@ -255,8 +265,21 @@ export async function GET(request) {
 
       const conviction = convictionOf({ edge, structure, timing, sources });
 
+      // Disqualifying facts the score can't see: illiquidity, promoter
+      // distress, regulatory filings, an earnings date inside the hold. Run
+      // here rather than inside buildPlaybook so that stays a pure ranking
+      // function and the qualifiers remain reusable by the other screens.
+      const filings = filingsFor(sym);
+      const gate = qualify(
+        { symbol: sym, conviction },
+        { candles, filings, today: istToday, holdEndsOn },
+      );
+
       candidates.push({
         symbol: sym,
+        gate,
+        // Display only — never fed into conviction or sizing. See qualify.js.
+        promoter: promoterActivity(filings, istToday),
         sector: r.sector ?? universe.sectors?.[sym] ?? null,
         lotSize: universe.lotSize?.[sym] ?? r.lot_size ?? null,
         conviction,
@@ -286,12 +309,26 @@ export async function GET(request) {
       capital, reserve, avgLotCost, riskPerTradePct, maxPortfolioRiskPct, maxPositions: top,
     });
 
+    // How often the qualifiers fired, counted at the source rather than by
+    // pattern-matching the reason strings. A filter that vetoes most of a month
+    // is miscalibrated, and that has to be visible rather than inferred from a
+    // suspiciously short list.
+    const gatedOut = candidates.filter((c) => c.gate?.rejects?.length).length;
+    const flagged = candidates.filter((c) => c.gate?.warnings?.length).length;
+
     const payload = {
       ...base,
       picks: capitalPlan.positions,
       rejected,
       considered,
       shortlisted: withEdge.length,
+      filings: {
+        ...snapshotMeta(),
+        ageDays: snapshotAgeDays(),
+        holdEndsOn,
+        gatedOut,
+        flagged,
+      },
       capital: {
         capital,
         reserve,

@@ -56,6 +56,68 @@ function ConvictionBars({ components }) {
   );
 }
 
+const FLAG_ICONS = {
+  earnings: "📊",
+  earnings_estimated: "📊",
+  dividend: "💰",
+  fundraise: "📈",
+  corporate_action: "🔀",
+  board_meeting: "👥",
+  stake_falling: "📉",
+};
+
+/**
+ * Warnings from the qualifier layer — things the conviction score can't see.
+ *
+ * Amber rather than red on purpose: none of these blocks the trade. An earnings
+ * date inside the hold is a legitimate trade whose risk simply isn't the one
+ * the stop describes, and the card should say so rather than implying the stop
+ * covers it.
+ */
+function FlagChips({ flags }) {
+  const warnings = (flags ?? []).filter((f) => f.level === "warn");
+  if (!warnings.length) return null;
+  return (
+    <div className="mt-3 space-y-1.5">
+      {warnings.map((f, i) => (
+        <div
+          key={`${f.code}-${i}`}
+          className="flex items-start gap-2 rounded-md border border-amber/25 bg-amber/10 px-2 py-1.5"
+        >
+          <span className="text-[11px] leading-4">{FLAG_ICONS[f.code] ?? "⚠️"}</span>
+          <span className="font-body text-[11px] text-amber leading-4">{f.message}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Recent promoter dealing. Shown, never scored — NSE's insider archive can't be
+ * queried backwards consistently enough to calibrate a weight against.
+ */
+function PromoterNote({ p }) {
+  if (!p) return null;
+  const parts = [];
+  if (p.buys) parts.push(`${p.buys} open-market ${p.buys === 1 ? "buy" : "buys"} (${fmtCompact(p.buyValue)})`);
+  if (p.sells) parts.push(`${p.sells} ${p.sells === 1 ? "sale" : "sales"} (${fmtCompact(p.sellValue)})`);
+  if (p.revoked) parts.push(`${p.revoked} pledge ${p.revoked === 1 ? "release" : "releases"}`);
+  if (p.pledged) parts.push(`${p.pledged} new ${p.pledged === 1 ? "pledge" : "pledges"}`);
+  if (!parts.length) return null;
+
+  return (
+    <div className="mt-4">
+      <div className="font-mono text-[10px] text-dim uppercase tracking-widest mb-2">Promoter activity</div>
+      <p className="font-body text-[12px] text-soft leading-5">
+        {parts.join(" · ")} in the last {p.windowDays} days.
+      </p>
+      <p className="font-body text-[10.5px] text-dim leading-4 mt-1">
+        Context only — this doesn&apos;t affect the conviction score or your lot size.
+      </p>
+    </div>
+  );
+}
+
 function PickCard({ pick, rank }) {
   const [open, setOpen] = useState(false);
   const band = BAND[pick.band] || BAND.LOW;
@@ -129,6 +191,8 @@ function PickCard({ pick, rank }) {
               </div>
             )}
 
+            <FlagChips flags={pick.flags} />
+
             <div className="font-mono text-[10px] text-dim mt-3">
               {open ? "Hide" : `${pick.reasons.length} reasons · full plan`} {open ? "▲" : "▼"}
             </div>
@@ -152,6 +216,7 @@ function PickCard({ pick, rank }) {
                     Conviction breakdown
                   </div>
                   <ConvictionBars components={pick.components} />
+                  <PromoterNote p={pick.promoter} />
                 </div>
 
                 <div className="space-y-1">

@@ -224,6 +224,15 @@ export function buildPlaybook(candidates, { top = 6 } = {}) {
 
   for (const cand of candidates) {
     const why = [];
+
+    // Disqualifying facts the score can't see — illiquidity, promoter distress,
+    // regulatory filings. Computed by app/lib/qualify.js and attached upstream,
+    // so this stays a pure ranking function and the qualifiers stay reusable by
+    // the other screens. Warnings are NOT rejections; they ride along instead.
+    if (Array.isArray(cand.gate?.rejects)) {
+      why.push(...cand.gate.rejects.map((r) => r.message));
+    }
+
     if ((cand.edge.years ?? 0) < GATES.minYears) why.push(`only ${cand.edge.years ?? 0}y of history`);
     if (!cand.levels) why.push("no live price levels");
     else {
@@ -250,8 +259,9 @@ export function buildPlaybook(candidates, { top = 6 } = {}) {
         lotSize: cand.lotSize ?? null,
         levels: cand.levels ?? null,
         why,
+        flags: cand.gate?.warnings ?? [],
       });
-    } else passed.push(cand);
+    } else passed.push({ ...cand, flags: cand.gate?.warnings ?? [] });
   }
 
   passed.sort((a, b) => b.conviction - a.conviction);

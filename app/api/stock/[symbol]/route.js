@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+import { promoterActivity } from "@/app/lib/qualify";
+import { filingsFor, snapshotMeta } from "@/app/lib/promoter";
 
 const MCP_URL = process.env.MCP_URL || "https://nse-data-mcp.vercel.app/mcp";
 
@@ -36,7 +38,23 @@ export async function GET(request, { params }) {
     const raw = result?._raw;
     if (!raw) return NextResponse.json({ error: "No data found for " + symbol }, { status: 404 });
 
-    return NextResponse.json(raw);
+    // Promoter dealing and the stake trend, as CONTEXT. This is the browsable
+    // home for the shadow-mode data — it belongs beside a single stock, where
+    // "promoters bought ₹40cr last month" is useful, rather than in a screener
+    // that would imply you can find trades by scanning it. You can't: the
+    // signal was tested and doesn't predict returns.
+    const filings = filingsFor(symbol);
+    const today = new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10);
+
+    return NextResponse.json({
+      ...raw,
+      promoter: {
+        activity: promoterActivity(filings, today),
+        /** Newest first, for a small sparkline. */
+        holding: (filings?.holding ?? []).slice(0, 8),
+        asOf: snapshotMeta().generatedAt,
+      },
+    });
   } catch (e) {
     console.error(`Stock API error [${symbol}]:`, e.message);
     return NextResponse.json({ error: e.message }, { status: 500 });
