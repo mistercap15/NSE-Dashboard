@@ -173,7 +173,13 @@ export async function GET(request) {
     // calendar uses. Everything date-based in the qualifiers is measured in IST
     // so a run just after midnight UTC doesn't shift the window by a day.
     const istToday = istDay();
-    const expiry = lastThursday(getCurrentYear(), month);
+    let expiry = lastThursday(getCurrentYear(), month);
+    // Planning January while it's December means next year's expiry, not one
+    // eight months gone. Without this the event gates see a negative horizon
+    // and silently stay quiet for exactly the month you're planning.
+    if (`${expiry.getFullYear()}-${String(expiry.getMonth() + 1).padStart(2, "0")}` < istToday.slice(0, 7)) {
+      expiry = lastThursday(getCurrentYear() + 1, month);
+    }
     const holdEndsOn = `${expiry.getFullYear()}-${String(expiry.getMonth() + 1).padStart(2, "0")}-${String(expiry.getDate()).padStart(2, "0")}`;
 
     // ── 3. One candle fetch per symbol, everything derived from it ────────
