@@ -218,12 +218,27 @@ export function buildPlaybook(candidates, { top = 6 } = {}) {
     }
     if (cand.conviction < GATES.minConviction) why.push(`conviction ${cand.conviction} below ${GATES.minConviction}`);
 
-    if (why.length) rejected.push({ symbol: cand.symbol, conviction: cand.conviction, why });
-    else passed.push(cand);
+    if (why.length) {
+      // Carry the plan through, not just the verdict. "RELIANCE was rejected"
+      // is an assertion; "RELIANCE would have been ₹1,329 with a stop at ₹1,262
+      // for 0.3× — rejected on reward:risk" is something you can disagree with,
+      // and disagreeing is the point of showing the list at all.
+      rejected.push({
+        symbol: cand.symbol,
+        sector: cand.sector ?? null,
+        conviction: cand.conviction,
+        band: cand.band ?? null,
+        components: cand.components ?? null,
+        lotSize: cand.lotSize ?? null,
+        levels: cand.levels ?? null,
+        why,
+      });
+    } else passed.push(cand);
   }
 
   passed.sort((a, b) => b.conviction - a.conviction);
-  return { picks: passed.slice(0, top), rejected: rejected.slice(0, 20), considered: candidates.length };
+  rejected.sort((a, b) => b.conviction - a.conviction);
+  return { picks: passed.slice(0, top), rejected: rejected.slice(0, 12), considered: candidates.length };
 }
 
 /**

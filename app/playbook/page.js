@@ -205,6 +205,86 @@ function PickCard({ pick, rank }) {
   );
 }
 
+/**
+ * A candidate that scored but failed a gate, shown with the plan it would have
+ * been. Deliberately quiet: dashed border, no card background, no conviction
+ * colour, numbers in grey. Only the blocking reason carries any colour, so this
+ * block can never be skim-read as a trade to take.
+ */
+function RejectedCard({ pick }) {
+  const [open, setOpen] = useState(false);
+  const lv = pick.levels;
+
+  return (
+    <button
+      onClick={() => setOpen((o) => !o)}
+      className="w-full text-left rounded-xl border border-dashed border-border p-4 hover:bg-surface/30 transition-colors"
+    >
+      <div className="flex items-center gap-3">
+        <div className="w-7 h-7 rounded-lg border border-dashed border-border grid place-items-center shrink-0">
+          <span className="text-dim text-xs">✕</span>
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="font-display text-[15px] font-bold text-soft">{pick.symbol}</div>
+          <div className="font-mono text-[10px] text-dim mt-0.5">
+            {pick.sector || "—"}
+            {pick.lotSize ? ` · lot ${pick.lotSize.toLocaleString("en-IN")}` : ""}
+          </div>
+        </div>
+        <div className="text-right shrink-0">
+          <div className="font-mono text-base font-bold text-dim">{Math.round(pick.conviction)}</div>
+          <div className="font-mono text-[8px] text-dim tracking-widest">SCORE</div>
+        </div>
+      </div>
+
+      {lv && (
+        <div className="grid grid-cols-4 gap-3 mt-3 pt-3 border-t border-border">
+          <MutedLevel label="Would enter" value={fmtINR(lv.entry.price)} />
+          <MutedLevel label="Stop" value={fmtINR(lv.stop.price)} sub={`−${lv.stop.pct}%`} />
+          <MutedLevel
+            label="Target"
+            value={lv.target ? fmtINR(lv.target.price) : "—"}
+            sub={lv.target ? pct(lv.target.pct) : null}
+          />
+          <MutedLevel
+            label="R:R"
+            value={lv.riskReward != null ? `${lv.riskReward.toFixed(1)}×` : "—"}
+          />
+        </div>
+      )}
+
+      <div className="flex gap-2 mt-3">
+        <span className="text-amber text-[11px] leading-4">⊘</span>
+        <span className="font-mono text-[10px] text-amber leading-4">{pick.why.join(" · ")}</span>
+      </div>
+
+      {open && pick.components && (
+        <div className="mt-4 opacity-70">
+          <div className="font-mono text-[9px] text-dim uppercase tracking-widest mb-2">
+            Where it fell short
+          </div>
+          <ConvictionBars components={pick.components} />
+          {lv?.stop?.basis && (
+            <p className="font-mono text-[10px] text-dim mt-2">
+              Stop would have sat {lv.stop.basis.replace(/_/g, " ").toLowerCase()}.
+            </p>
+          )}
+        </div>
+      )}
+    </button>
+  );
+}
+
+function MutedLevel({ label, value, sub }) {
+  return (
+    <div>
+      <div className="font-mono text-[8px] text-dim tracking-widest">{label.toUpperCase()}</div>
+      <div className="font-mono text-[13px] font-bold text-soft mt-0.5">{value}</div>
+      {sub && <div className="font-mono text-[8px] text-dim mt-0.5">{sub}</div>}
+    </div>
+  );
+}
+
 function Level({ label, value, sub, tone }) {
   return (
     <div>
@@ -354,17 +434,16 @@ export default function PlaybookPage() {
 
         {data?.rejected?.length > 0 && (
           <div className="mt-8">
-            <div className="font-mono text-[11px] text-dim uppercase tracking-widest mb-3">
+            <div className="font-mono text-[11px] text-dim uppercase tracking-widest mb-2">
               Considered but rejected
             </div>
-            <div className="rounded-xl border border-border bg-card p-4 space-y-1">
+            <p className="font-mono text-[10px] text-dim mb-3 max-w-2xl leading-4">
+              Scored, priced, then dropped at a gate. The plan each would have been is here so you
+              can judge the call rather than take it on trust — but these are not trades to take.
+            </p>
+            <div className="grid md:grid-cols-2 gap-3">
               {data.rejected.slice(0, 10).map((r) => (
-                <div key={r.symbol} className="flex gap-3 py-1">
-                  <span className="font-mono text-[11px] text-soft font-bold w-24 shrink-0">
-                    {r.symbol}
-                  </span>
-                  <span className="font-mono text-[10px] text-dim">{r.why.join(" · ")}</span>
-                </div>
+                <RejectedCard key={r.symbol} pick={r} />
               ))}
             </div>
           </div>

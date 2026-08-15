@@ -124,6 +124,17 @@ ok("no upside rejected", /no upside/.test(why.NOUPSIDE), why.NOUPSIDE);
 ok("low conviction rejected", /conviction 30/.test(why.LOWCONV), why.LOWCONV);
 ok("top-N respected", buildPlaybook([mk("A", 90), mk("B", 89), mk("C", 88)], { top: 2 }).picks.length === 2);
 
+// A rejection has to carry the plan it would have been, or the list is just a
+// verdict you can't argue with.
+const rejBadRR = pb.rejected.find((r) => r.symbol === "BADRR");
+ok("rejections carry their levels", rejBadRR.levels?.entry?.price === 1000, JSON.stringify(rejBadRR.levels?.entry));
+ok("rejections carry conviction and lot size",
+   rejBadRR.conviction === 77 && rejBadRR.levels.lotSize === 100);
+ok("rejections are ordered by conviction",
+   pb.rejected.every((r, i) => i === 0 || pb.rejected[i - 1].conviction >= r.conviction));
+// A stock with no levels at all still has to appear, just without a plan.
+ok("a levels-less rejection survives", pb.rejected.find((r) => r.symbol === "NOLEVELS").levels === null);
+
 // ── CAPITAL ─────────────────────────────────────────────────────────────────
 // 1000 x 100 = 100,000 per lot. Usable 500,000 - 100,000 = 400,000 -> 4 lots.
 // Capital is rationed against MARGIN per lot, not contract notional — a
