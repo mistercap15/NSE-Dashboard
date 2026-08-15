@@ -12,6 +12,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import snapshot from "../../data/promoter.json";
+import { promoterActivity } from "./qualify";
 
 /** ISO date of the snapshot build, for the UI's freshness note. */
 export function snapshotMeta() {
@@ -38,6 +39,26 @@ export function filingsFor(symbol) {
     announcements: rec.announcements ?? [],
     boardMeetings: rec.boardMeetings ?? [],
     resultsHistory: rec.resultsHistory ?? [],
+  };
+}
+
+/**
+ * The promoter block a stock-detail response carries.
+ *
+ * Lives here rather than in either route because TWO routes serve a stock
+ * detail screen — /api/analysis for the mobile app and /api/stock/[symbol] for
+ * the web dashboard. They drifted once already: the block was added to the web
+ * route only, so the mobile card silently never rendered and the endpoint I
+ * tested wasn't the one the app calls. One helper, both callers.
+ */
+export function promoterBlockFor(symbol, now = new Date()) {
+  const filings = filingsFor(symbol);
+  const today = new Date(now.getTime() + 5.5 * 3600000).toISOString().slice(0, 10);
+  return {
+    activity: promoterActivity(filings, today),
+    /** Newest first. */
+    holding: (filings?.holding ?? []).slice(0, 8),
+    asOf: snapshotMeta().generatedAt,
   };
 }
 

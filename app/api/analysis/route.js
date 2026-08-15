@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { promoterBlockFor } from "@/app/lib/promoter";
 
 const MCP_URL = process.env.MCP_URL || "https://nse-data-mcp.vercel.app/mcp";
 
@@ -32,7 +33,7 @@ export async function GET(request) {
     if (data.error) throw new Error(data.error.message);
     const raw = data.result?._raw;
     if (!raw) return NextResponse.json({ error: "No data found for " + symbol }, { status: 404 });
-    return NextResponse.json(raw);
+    return NextResponse.json({ ...raw, promoter: promoterBlockFor(symbol) });
   } catch (e) {
     return NextResponse.json({ error: e.message }, { status: 500 });
   }
