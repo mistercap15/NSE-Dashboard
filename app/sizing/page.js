@@ -251,13 +251,22 @@ export default function SizingPage() {
 
         {/* Header */}
         <div className="mb-6">
-          <div className="font-mono text-[11px] text-dim uppercase tracking-widest mb-2">Position Sizing</div>
+          <div className="font-mono text-[11px] text-dim uppercase tracking-widest mb-2">Capital</div>
           <h1 className="font-display text-3xl font-bold text-text">
             {mName}<span className="text-accent">.</span>
           </h1>
           <p className="font-mono text-[11px] text-dim mt-2 max-w-2xl">
-            How many lots to enter per stock — conviction-graded, risk-capped, then rationed against real capital.
+            The money settings everything sizes against — capital, reserve and a typical lot cost.
+            Saved locally and read by the Playbook.
           </p>
+          {/* The Playbook is where trades are actually chosen now. This page keeps
+              the full month-wide allocation as the wider view behind it. */}
+          <a
+            href="/playbook"
+            className="inline-block mt-3 font-mono text-[11px] text-accent hover:underline"
+          >
+            → Today&apos;s highest-conviction trades are in the Playbook
+          </a>
         </div>
 
         {/* Upstox connection status (mirrors early-entry) — prices only */}

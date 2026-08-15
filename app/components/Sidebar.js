@@ -5,8 +5,7 @@ import { usePathname } from "next/navigation";
 import { useTheme } from "next-themes";
 import {
   Sun, Moon, Menu, X, ChevronDown, LogOut,
-  LayoutDashboard, TrendingUp, CalendarDays, SlidersHorizontal, Search, RotateCcw, Zap, LineChart, TrendingDown, Scale, Layers,
-} from "lucide-react";
+  LayoutDashboard, TrendingUp, CalendarDays, SlidersHorizontal, Search, RotateCcw, Zap, LineChart, TrendingDown, Scale, Layers, Target } from "lucide-react";
 import { MONTHS } from "../lib/api";
 import { getCurrentMonth, getCurrentYear } from "../lib/date";
 
@@ -29,9 +28,10 @@ const navGroups = [
     label: "Trade Setups",
     Icon: Zap,
     children: [
+      { href: "/playbook",    label: "Playbook",    Icon: Target },
       { href: "/early-entry", label: "Early Entry", Icon: Zap },
       { href: "/swing-low",   label: "Swing Low",   Icon: TrendingDown },
-      { href: "/sizing",      label: "Sizing",      Icon: Scale },
+      { href: "/sizing",      label: "Capital",     Icon: Scale },
     ],
   },
   {
