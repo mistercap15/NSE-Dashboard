@@ -126,6 +126,11 @@ export default function SizingPage() {
   useEffect(() => { localStorage.setItem("ps.capital", String(capital)); }, [capital]);
   useEffect(() => { localStorage.setItem("ps.reserve", String(reserve)); }, [reserve]);
   useEffect(() => { localStorage.setItem("ps.avgLotCost", String(avgLotCost)); }, [avgLotCost]);
+  // Risk limits live here too — the Playbook reads them from the same keys.
+  const [riskPerTradePct, setRiskPerTradePct] = useState(() => readNum("ps.riskPerTradePct", 5));
+  const [maxPortfolioRiskPct, setMaxPortfolioRiskPct] = useState(() => readNum("ps.maxPortfolioRiskPct", 15));
+  useEffect(() => { localStorage.setItem("ps.riskPerTradePct", String(riskPerTradePct)); }, [riskPerTradePct]);
+  useEffect(() => { localStorage.setItem("ps.maxPortfolioRiskPct", String(maxPortfolioRiskPct)); }, [maxPortfolioRiskPct]);
 
   // Detect Upstox connection once on mount (mirrors early-entry).
   useEffect(() => {
@@ -340,7 +345,34 @@ export default function SizingPage() {
                 className={`${numberInput} mt-1.5`}
               />
             </label>
+
+            {/* Risk limits. These decide the Playbook's position sizes — margin
+                is only its final ceiling — so they live beside the money. */}
+            <label className="block">
+              <span className="font-mono text-[10px] text-dim uppercase tracking-widest">Risk / trade %</span>
+              <input
+                type="number" min={0.1} max={50} step={0.5} value={riskPerTradePct}
+                onChange={(e) => setRiskPerTradePct(Number(e.target.value) || 0.1)}
+                className={`${numberInput} mt-1.5`}
+              />
+            </label>
+
+            <label className="block">
+              <span className="font-mono text-[10px] text-dim uppercase tracking-widest">Total risk %</span>
+              <input
+                type="number" min={0.1} max={100} step={1} value={maxPortfolioRiskPct}
+                onChange={(e) => setMaxPortfolioRiskPct(Number(e.target.value) || 0.1)}
+                className={`${numberInput} mt-1.5`}
+              />
+            </label>
           </div>
+
+          <p className="font-mono text-[10px] text-dim mt-3 leading-4 max-w-3xl">
+            Risk limits size the Playbook&apos;s positions from what a trade loses at its stop, so a
+            wide stop earns a smaller position rather than the same one with more risk. The textbook
+            2%/6% is unreachable with Indian F&amp;O lot sizes — one lot with a normal stop can risk
+            10%+ of a retail account — so the defaults are 5% and 15%.
+          </p>
 
           <div className="mt-4 pt-3 border-t border-border flex flex-wrap items-center gap-x-6 gap-y-1">
             <span className="font-mono text-[11px] text-dim">

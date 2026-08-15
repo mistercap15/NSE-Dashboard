@@ -161,7 +161,9 @@ function PickCard({ pick, rank }) {
                     v={lv?.riskReward != null ? `${lv.riskReward.toFixed(1)}×` : "—"}
                     tone={lv?.riskReward >= 2 ? "text-green" : "text-amber"}
                   />
-                  <Row k="Risk at stop" v={pick.lots ? fmtINR(pick.riskAmount) : "—"} tone="text-red" />
+                  <Row k="Risk per lot" v={`${fmtINR(pick.riskPerLot)} · ${pick.riskPerLotPct}% of capital`} tone="text-red" />
+                  <Row k="Risk at this size" v={pick.lots ? fmtINR(pick.riskAmount) : "—"} tone="text-red" />
+                  <Row k="Size limited by" v={pick.cappedBy} />
                   <Row k="Reward at target" v={pick.lots ? fmtINR(pick.rewardAmount) : "—"} tone="text-green" />
                   {pick.swingLow?.floor && (
                     <Row
@@ -184,11 +186,20 @@ function PickCard({ pick, rank }) {
 
               {pick.lots === 0 && (
                 <div className="mt-4 p-3 rounded-lg border border-amber/30 bg-amber/5">
-                  <p className="font-mono text-[11px] text-amber">
-                    Capital ran out before this one. One lot needs {fmtINR(pick.lotCost)} — raise
-                    capital on the Capital page or trade fewer names.
+                  <p className="font-mono text-[11px] text-amber font-bold">
+                    {pick.tooRisky ? "Too big for your account" : "No capital left"}
+                  </p>
+                  <p className="font-mono text-[10px] text-soft mt-1 leading-4">
+                    {pick.tooRisky
+                      ? `One lot risks ${fmtINR(pick.riskPerLot)} — ${pick.riskPerLotPct}% of your capital, above your ${cap?.riskPerTradePct}% limit. Sizing this properly needs about ${fmtCompact(pick.capitalNeededForOneLot || 0)}.`
+                      : `Capped by ${pick.cappedBy}. One lot needs ${fmtINR(pick.lotCost)} of margin.`}
                   </p>
                 </div>
+              )}
+              {pick.lots > 0 && pick.lots < pick.wantedLots && (
+                <p className="font-mono text-[10px] text-dim mt-3">
+                  Conviction earned {pick.wantedLots} lots; {pick.cappedBy} allowed {pick.lots}.
+                </p>
               )}
 
               <a
@@ -314,6 +325,8 @@ export default function PlaybookPage() {
   const [capital, setCapital] = useState(1500000);
   const [reserve, setReserve] = useState(250000);
   const [avgLotCost, setAvgLotCost] = useState(150000);
+  const [riskPerTradePct, setRiskPerTradePct] = useState(5);
+  const [maxPortfolioRiskPct, setMaxPortfolioRiskPct] = useState(15);
 
   useEffect(() => {
     const c = Number(window.localStorage.getItem("ps.capital"));
@@ -322,6 +335,10 @@ export default function PlaybookPage() {
     if (Number.isFinite(r) && r >= 0) setReserve(r);
     const a = Number(window.localStorage.getItem("ps.avgLotCost"));
     if (Number.isFinite(a) && a > 0) setAvgLotCost(a);
+    const rt = Number(window.localStorage.getItem("ps.riskPerTradePct"));
+    const rp = Number(window.localStorage.getItem("ps.maxPortfolioRiskPct"));
+    if (Number.isFinite(rt) && rt > 0) setRiskPerTradePct(rt);
+    if (Number.isFinite(rp) && rp > 0) setMaxPortfolioRiskPct(rp);
   }, []);
 
   const build = useCallback(async () => {
@@ -329,7 +346,8 @@ export default function PlaybookPage() {
     setError(null);
     try {
       const res = await fetch(
-        `/api/playbook?month=${month}&capital=${capital}&reserve=${reserve}&avgLotCost=${avgLotCost}&top=6`,
+        `/api/playbook?month=${month}&capital=${capital}&reserve=${reserve}&avgLotCost=${avgLotCost}` +
+        `&riskPerTradePct=${riskPerTradePct}&maxPortfolioRiskPct=${maxPortfolioRiskPct}&top=6`,
       );
       const json = await res.json();
       if (json.error) throw new Error(json.error);
@@ -339,7 +357,7 @@ export default function PlaybookPage() {
     } finally {
       setLoading(false);
     }
-  }, [month, capital, reserve, avgLotCost]);
+  }, [month, capital, reserve, avgLotCost, riskPerTradePct, maxPortfolioRiskPct]);
 
   const cap = data?.capital;
   const picks = data?.picks || [];
@@ -393,13 +411,16 @@ export default function PlaybookPage() {
           </div>
         )}
 
+        {/* Risk leads. "% deployed" is a leveraged number — Rs3L of margin can
+            carry Rs37L of contract — so it reads as spare capacity when the
+            account is already fully committed on risk. */}
         {cap && (
           <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6">
-            <StatCard label="Usable" value={fmtCompact(cap.usable)} sub="capital − reserve" mono />
-            <StatCard label="Deployed" value={`${cap.deployedPct}%`} sub={fmtCompact(cap.deployed)} color="text-accent" mono />
-            <StatCard label="Exposure" value={fmtCompact(cap.notional)} sub="contract notional" color="text-purple" mono />
             <StatCard label="Risk if all stop" value={fmtINR(cap.totalRisk)} sub={`${cap.riskPctOfCapital}% of capital`} color="text-red" mono />
+            <StatCard label="Risk budget" value={`${cap.riskBudgetUsedPct}%`} sub={`${fmtCompact(cap.riskBudgetLeft)} left of ${fmtCompact(cap.portfolioBudget)}`} color={cap.riskBudgetUsedPct >= 90 ? "text-amber" : "text-accent"} mono />
             <StatCard label="Reward if all hit" value={fmtINR(cap.totalReward)} color="text-green" mono />
+            <StatCard label="Margin used" value={fmtCompact(cap.deployed)} sub={`of ${fmtCompact(cap.usable)} usable`} mono />
+            <StatCard label="Exposure" value={fmtCompact(cap.notional)} sub={cap.deployed ? `${(cap.notional / cap.deployed).toFixed(1)}x leverage` : "notional"} color="text-purple" mono />
           </div>
         )}
 

@@ -28,6 +28,24 @@
 
 export const WEIGHTS = { edge: 0.45, structure: 0.3, timing: 0.25 };
 
+/**
+ * Risk budget, as a share of TOTAL capital (not usable).
+ *
+ * Margin is the wrong thing to size against for a leveraged instrument: ₹3L of
+ * margin can carry ₹37L of notional, so "24% deployed" can already be a third
+ * of the account at risk. Lots are therefore derived from what a trade actually
+ * loses at its stop, and margin is only the final ceiling.
+ *
+ * 2% per trade / 6% total is the conventional starting point — deliberately
+ * conservative, and adjustable in Capital.
+ */
+// 2%/6% is the textbook rule, and it is unreachable here: Indian F&O lots are
+// large, so ONE lot of TVSMOTOR with a 6% stop risks ₹1.8L — 12% of a ₹15L
+// account. A 2% default would refuse essentially every trade and read as broken
+// rather than as disciplined. 5%/15% is the pragmatic floor for lot-based
+// futures; it is still a real constraint, and it is editable in Capital.
+export const RISK = { perTradePct: 5, portfolioPct: 15 };
+
 /** A trade has to clear all of these before it can be recommended at all. */
 export const GATES = {
   minYears: 5,
@@ -248,50 +266,89 @@ export function buildPlaybook(candidates, { top = 6 } = {}) {
  * the list you actually get. Anything that doesn't fit is reported rather than
  * silently dropped.
  */
-export function allocateCapital(picks, { capital, reserve, avgLotCost = 150000, maxPositions = 6 }) {
+export function allocateCapital(
+  picks,
+  {
+    capital,
+    reserve,
+    avgLotCost = 150000,
+    riskPerTradePct = RISK.perTradePct,
+    maxPortfolioRiskPct = RISK.portfolioPct,
+    maxPositions = 6,
+  },
+) {
   const usable = Math.max(0, capital - reserve);
-  let remaining = usable;
+  const perTradeBudget = (capital * riskPerTradePct) / 100;
+  const portfolioBudget = (capital * maxPortfolioRiskPct) / 100;
+
+  let marginLeft = usable;
+  let riskLeft = portfolioBudget;
 
   const sized = picks.slice(0, maxPositions).map((p) => {
     const lotSize = p.levels?.lotSize ?? p.lotSize ?? 0;
     const entry = p.levels?.entry?.price ?? 0;
+    const stop = p.levels?.stop?.price ?? 0;
 
-    // NOTIONAL is the contract's face value; MARGIN is what it actually ties up.
-    // Futures are leveraged — TVSMOTOR is 700 × ₹4,307 = ₹30.1L of notional on
-    // roughly ₹1.5L of margin — so budgeting against notional makes every trade
-    // look unaffordable. `avgLotCost` is the user's own statement of what a lot
-    // costs them, which is the margin figure, so that is what capital is
-    // rationed against. Notional rides along for exposure.
+    // NOTIONAL is the contract's face value; MARGIN is what it ties up.
     const notional = lotSize && entry ? lotSize * entry : 0;
     const lotCost = avgLotCost > 0 ? avgLotCost : notional;
 
-    // Conviction sets the ambition: high conviction earns up to 2 lots, the
-    // rest 1. Capital then decides whether that is affordable.
+    // What one lot actually costs you if the stop is hit. This — not margin —
+    // is the number that decides size.
+    const riskPerLot = entry && stop && lotSize ? (entry - stop) * lotSize : 0;
+    const riskPerLotPct = capital > 0 ? (riskPerLot / capital) * 100 : 0;
+
+    // Four independent ceilings; the tightest wins.
     const wanted = p.conviction >= 75 ? 2 : 1;
-    let lots = 0;
-    if (lotCost > 0) {
-      lots = Math.min(wanted, Math.floor(remaining / lotCost));
-      remaining -= lots * lotCost;
+    const byTradeRisk = riskPerLot > 0 ? Math.floor(perTradeBudget / riskPerLot) : wanted;
+    const byPortfolioRisk = riskPerLot > 0 ? Math.floor(riskLeft / riskPerLot) : wanted;
+    const byMargin = lotCost > 0 ? Math.floor(marginLeft / lotCost) : 0;
+
+    const lots = Math.max(0, Math.min(wanted, byTradeRisk, byPortfolioRisk, byMargin));
+
+    // Which ceiling actually bound this position — the screen should be able to
+    // say "you could take more of this but the stop is too wide" rather than
+    // leaving an unexplained 1.
+    let cappedBy = "conviction";
+    if (lots < wanted) {
+      const limits = [
+        ["per-trade risk", byTradeRisk],
+        ["portfolio risk", byPortfolioRisk],
+        ["margin", byMargin],
+      ].sort((a, b) => a[1] - b[1]);
+      cappedBy = limits[0][0];
     }
 
-    const deployed = lots * lotCost;
-    const riskPerLot =
-      p.levels && lotSize ? (p.levels.entry.price - p.levels.stop.price) * lotSize : 0;
+    marginLeft -= lots * lotCost;
+    riskLeft -= lots * riskPerLot;
 
     return {
       ...p,
       lots,
       wantedLots: wanted,
+      cappedBy,
       lotCost: Math.round(lotCost),
       notionalPerLot: Math.round(notional),
       notional: Math.round(notional * lots),
-      capitalUsed: Math.round(deployed),
+      capitalUsed: Math.round(lots * lotCost),
+      riskPerLot: Math.round(riskPerLot),
+      /** One lot's risk as a share of the whole account. */
+      riskPerLotPct: round1(riskPerLotPct),
       riskAmount: Math.round(riskPerLot * lots),
       rewardAmount:
         p.levels?.target && lotSize
           ? Math.round((p.levels.target.price - p.levels.entry.price) * lotSize * lots)
           : 0,
       affordable: lots > 0,
+      /** Set when even ONE lot breaches the per-trade risk limit. */
+      tooRisky: riskPerLot > 0 && riskPerLot > perTradeBudget,
+      // What the account would have to be worth for one lot to fit the limit.
+      // "Too risky" on its own is a dead end; this turns it into a number the
+      // user can act on — raise the limit, or accept the trade is too big.
+      capitalNeededForOneLot:
+        riskPerLot > 0 && riskPerTradePct > 0
+          ? Math.round((riskPerLot / riskPerTradePct) * 100)
+          : null,
     };
   });
 
@@ -306,13 +363,19 @@ export function allocateCapital(picks, { capital, reserve, avgLotCost = 150000, 
     deployed,
     dryPowder: Math.max(0, usable - deployed),
     deployedPct: usable > 0 ? Math.round((deployed / usable) * 100) : 0,
-    /** Face value of the contracts — the exposure behind the margin. */
     notional,
     totalRisk,
     totalReward,
-    // Risk as a share of the whole account is the number that actually matters
-    // when deciding whether this plan is too aggressive.
     riskPctOfCapital: capital > 0 ? round1((totalRisk / capital) * 100) : 0,
+    // The budgets themselves, so the UI can show headroom rather than just spend.
+    riskPerTradePct,
+    maxPortfolioRiskPct,
+    perTradeBudget: Math.round(perTradeBudget),
+    portfolioBudget: Math.round(portfolioBudget),
+    riskBudgetLeft: Math.max(0, Math.round(riskLeft)),
+    riskBudgetUsedPct:
+      portfolioBudget > 0 ? Math.round((totalRisk / portfolioBudget) * 100) : 0,
     unaffordable: sized.filter((p) => !p.affordable).map((p) => p.symbol),
+    tooRisky: sized.filter((p) => p.tooRisky).map((p) => p.symbol),
   };
 }

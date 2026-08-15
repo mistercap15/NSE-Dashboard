@@ -135,52 +135,98 @@ ok("rejections are ordered by conviction",
 // A stock with no levels at all still has to appear, just without a plan.
 ok("a levels-less rejection survives", pb.rejected.find((r) => r.symbol === "NOLEVELS").levels === null);
 
-// ── CAPITAL ─────────────────────────────────────────────────────────────────
-// 1000 x 100 = 100,000 per lot. Usable 500,000 - 100,000 = 400,000 -> 4 lots.
-// Capital is rationed against MARGIN per lot, not contract notional — a
-// leveraged future would otherwise look unaffordable on any realistic account.
+// ── CAPITAL — risk-based sizing ─────────────────────────────────────────────
+// Lots come from what a trade LOSES at its stop, not from what margin it ties
+// up. Margin is a leveraged number: Rs3L of it can carry Rs37L of contract, so
+// sizing on margin can put a third of the account at risk while the screen
+// cheerfully reports "24% deployed".
+
+// goodLevels risks (1000-930) x 100 = Rs7,000/lot. On Rs10,00,000 of capital
+// that is 0.7% — comfortably inside a 2% per-trade budget.
 const alloc = allocateCapital(
   [mk("A", 82), mk("B", 78), mk("C", 62), mk("D", 61)],
-  { capital: 500000, reserve: 100000, avgLotCost: 150000 },
+  { capital: 1000000, reserve: 100000, avgLotCost: 150000, riskPerTradePct: 2, maxPortfolioRiskPct: 6 },
 );
-ok("usable capital = capital - reserve", alloc.usable === 400000, `got ${alloc.usable}`);
-ok("budgets on margin, not notional", alloc.positions[0].lotCost === 150000,
-   `got ${alloc.positions[0].lotCost}`);
-ok("notional reported separately", alloc.positions[0].notionalPerLot === 1000 * 100,
-   `got ${alloc.positions[0].notionalPerLot}`);
-ok("a leveraged lot is affordable", alloc.positions[0].lots >= 1, `got ${alloc.positions[0].lots}`);
-ok("total exposure is the sum of per-position notionals",
-   alloc.notional === alloc.positions.reduce((a, p) => a + p.notional, 0),
-   `got ${alloc.notional}`);
+ok("usable capital = capital - reserve", alloc.usable === 900000, `got ${alloc.usable}`);
+ok("risk per lot is computed from the stop", alloc.positions[0].riskPerLot === 7000,
+   `got ${alloc.positions[0].riskPerLot}`);
+ok("risk per lot reported as % of capital", alloc.positions[0].riskPerLotPct === 0.7,
+   `got ${alloc.positions[0].riskPerLotPct}`);
+ok("high conviction still earns 2 lots when risk allows", alloc.positions[0].lots === 2,
+   `got ${alloc.positions[0].lots}`);
+ok("budget headroom is reported",
+   alloc.portfolioBudget === 60000 && alloc.perTradeBudget === 20000,
+   `${alloc.perTradeBudget}/${alloc.portfolioBudget}`);
+ok("total risk stays inside the portfolio budget", alloc.totalRisk <= alloc.portfolioBudget,
+   `${alloc.totalRisk} > ${alloc.portfolioBudget}`);
 
-// A realistic leveraged lot: 700 × ₹4,307 = ₹30.1L of contract on ₹1.5L of
-// margin. Budgeting against notional here is what made every trade look
-// unaffordable on a ₹5L account.
-const levered = allocateCapital(
+// A WIDE stop is the case that matters. Real example: TVSMOTOR risked
+// Rs1,81,524 on one lot — 12% of a Rs15L account — and margin-based sizing
+// waved it through.
+const wide = allocateCapital(
   [{ symbol: "TVS", conviction: 82, edge: { years: 17 },
-     levels: { ...goodLevels, entry: { price: 4307 }, stop: { price: 4048, pct: 6 },
-               target: { price: 4660, pct: 8 }, lotSize: 700 } }],
-  { capital: 500000, reserve: 100000, avgLotCost: 150000 },
+     levels: { entry: { price: 4307 }, stop: { price: 4048, pct: 6 },
+               target: { price: 4660, pct: 8 }, riskReward: 1.4, lotSize: 700 } }],
+  { capital: 1500000, reserve: 250000, avgLotCost: 150000 },
 );
-ok("a ₹30L contract is affordable on ₹4L of usable margin",
-   levered.positions[0].lots >= 1, `got ${levered.positions[0].lots} lots`);
-ok("its notional dwarfs the margin posted",
-   levered.notional > levered.deployed * 5,
-   `notional ${levered.notional} vs deployed ${levered.deployed}`);
-ok("high conviction earns 2 lots", alloc.positions[0].lots === 2, `got ${alloc.positions[0].lots}`);
-ok("lower conviction earns 1", alloc.positions[2].wantedLots === 1);
-ok("allocation stops at the budget", alloc.deployed <= alloc.usable, `${alloc.deployed} > ${alloc.usable}`);
-ok("what didn't fit is reported",
-   alloc.positions.filter((p) => !p.affordable).length === alloc.unaffordable.length);
-ok("rupee risk uses lot size x lots",
-   alloc.positions[0].riskAmount === Math.round((1000 - 930) * 100 * 2), `got ${alloc.positions[0].riskAmount}`);
+ok("a stop that risks 12% of the account is refused",
+   wide.positions[0].lots === 0, `got ${wide.positions[0].lots} lots`);
+ok("...and says why", wide.positions[0].cappedBy === "per-trade risk",
+   `got ${wide.positions[0].cappedBy}`);
+ok("...and is flagged as too risky outright", wide.positions[0].tooRisky === true);
+ok("...and appears in the tooRisky list", wide.tooRisky.includes("TVS"));
+// A refusal has to be actionable, not a dead end.
+ok("...and says what capital it would need",
+   wide.positions[0].capitalNeededForOneLot === Math.round((181300 / 5) * 100),
+   `got ${wide.positions[0].capitalNeededForOneLot}`);
+ok("refusing it keeps total risk at zero", wide.totalRisk === 0);
+
+// Raising the per-trade limit should let it through — the budget is the knob,
+// not the stop.
+const loosened = allocateCapital(
+  [{ symbol: "TVS", conviction: 82, edge: { years: 17 },
+     levels: { entry: { price: 4307 }, stop: { price: 4048, pct: 6 },
+               target: { price: 4660, pct: 8 }, riskReward: 1.4, lotSize: 700 } }],
+  { capital: 1500000, reserve: 250000, avgLotCost: 150000, riskPerTradePct: 15, maxPortfolioRiskPct: 20 },
+);
+ok("a wider per-trade limit lets it through", loosened.positions[0].lots >= 1,
+   `got ${loosened.positions[0].lots}`);
+
+// The portfolio ceiling has to bind across positions, not just within one.
+const many = allocateCapital(
+  [mk("A", 82), mk("B", 82), mk("C", 82), mk("D", 82), mk("E", 82), mk("F", 82)],
+  { capital: 1000000, reserve: 0, avgLotCost: 50000, maxPortfolioRiskPct: 3 },
+);
+ok("portfolio risk cap binds across positions", many.totalRisk <= 30000,
+   `total risk ${many.totalRisk} > budget 30000`);
+ok("later positions get cut once the budget is spent",
+   many.positions[many.positions.length - 1].lots <= many.positions[0].lots);
+ok("something reports being capped by portfolio risk",
+   many.positions.some((p) => p.cappedBy === "portfolio risk"),
+   many.positions.map((p) => p.cappedBy).join(","));
+
+// Margin remains the final ceiling even when risk is tiny.
+const tightMargin = allocateCapital(
+  [mk("A", 82)],
+  { capital: 1000000, reserve: 900000, avgLotCost: 150000 },
+);
+ok("margin still caps when capital runs out", tightMargin.positions[0].lots === 0,
+   `got ${tightMargin.positions[0].lots}`);
+ok("...and says margin was the binding limit", tightMargin.positions[0].cappedBy === "margin",
+   `got ${tightMargin.positions[0].cappedBy}`);
+
+ok("notional is the sum of per-position notionals",
+   alloc.notional === alloc.positions.reduce((a, p) => a + p.notional, 0));
 ok("account risk % is reported", alloc.riskPctOfCapital > 0 && alloc.riskPctOfCapital < 100,
    `got ${alloc.riskPctOfCapital}`);
+ok("risk budget usage is reported", alloc.riskBudgetUsedPct > 0 && alloc.riskBudgetUsedPct <= 100,
+   `got ${alloc.riskBudgetUsedPct}`);
 
-// Zero capital must not crash or allocate.
+// Zero capital must not crash, allocate, or divide by zero.
 const broke = allocateCapital([mk("A", 90)], { capital: 0, reserve: 0, avgLotCost: 150000 });
 ok("zero capital allocates nothing", broke.deployed === 0 && broke.positions[0].lots === 0);
 ok("zero capital reports 0% risk", broke.riskPctOfCapital === 0);
+ok("zero capital doesn't produce NaN", Number.isFinite(broke.riskBudgetUsedPct));
 
 console.log(`\n  ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

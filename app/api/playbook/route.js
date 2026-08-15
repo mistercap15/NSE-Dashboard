@@ -21,6 +21,7 @@ import {
   reasonsFor,
   buildPlaybook,
   allocateCapital,
+  RISK,
 } from "@/app/lib/conviction";
 import { getCurrentMonth, getCurrentYear } from "@/app/lib/date";
 import { upstoxTokenFor } from "@/app/lib/auth";
@@ -98,11 +99,15 @@ export async function GET(request) {
   const reserve = Math.max(0, Number(searchParams.get("reserve") || 100000));
   // What one lot ties up in margin — the user's own figure from Capital.
   const avgLotCost = Math.max(0, Number(searchParams.get("avgLotCost") || 150000));
+  // Risk budgets, as a share of total capital. These decide position size;
+  // margin is only the final ceiling.
+  const riskPerTradePct = Math.max(0.1, Number(searchParams.get("riskPerTradePct") || RISK.perTradePct));
+  const maxPortfolioRiskPct = Math.max(0.1, Number(searchParams.get("maxPortfolioRiskPct") || RISK.portfolioPct));
 
   const universe = loadUniverse();
   const upstoxReady = hasValidToken() && !isTokenExpired();
 
-  const cacheKey = `${istDay()}:${month}:${top}:${capital}:${reserve}:${avgLotCost}:${upstoxReady}`;
+  const cacheKey = `${istDay()}:${month}:${top}:${capital}:${reserve}:${avgLotCost}:${riskPerTradePct}:${maxPortfolioRiskPct}:${upstoxReady}`;
   if (CACHE.key === cacheKey && CACHE.payload) {
     return NextResponse.json({ ...CACHE.payload, cached: true });
   }
@@ -277,7 +282,9 @@ export async function GET(request) {
 
     // ── 4. Gate, rank, size ──────────────────────────────────────────────
     const { picks, rejected, considered } = buildPlaybook(candidates, { top });
-    const capitalPlan = allocateCapital(picks, { capital, reserve, avgLotCost, maxPositions: top });
+    const capitalPlan = allocateCapital(picks, {
+      capital, reserve, avgLotCost, riskPerTradePct, maxPortfolioRiskPct, maxPositions: top,
+    });
 
     const payload = {
       ...base,
@@ -289,6 +296,13 @@ export async function GET(request) {
         capital,
         reserve,
         avgLotCost,
+        riskPerTradePct,
+        maxPortfolioRiskPct,
+        perTradeBudget: capitalPlan.perTradeBudget,
+        portfolioBudget: capitalPlan.portfolioBudget,
+        riskBudgetLeft: capitalPlan.riskBudgetLeft,
+        riskBudgetUsedPct: capitalPlan.riskBudgetUsedPct,
+        tooRisky: capitalPlan.tooRisky,
         usable: capitalPlan.usable,
         notional: capitalPlan.notional,
         deployed: capitalPlan.deployed,
