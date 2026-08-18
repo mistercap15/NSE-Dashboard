@@ -5,6 +5,82 @@ export function sma(closes, period) {
   return slice.reduce((a, b) => a + b, 0) / period
 }
 
+// ── Average True Range (Wilder) ───────────────────────────────────────────
+// The volatility unit the futures strategy sizes its stop in. A fixed-percent
+// stop is the wrong tool on an index future: the same 0.5% is a scratch in a
+// volatile week and inside the noise in a quiet one. ATR rescales it.
+//
+// True range is the widest of the three ways a bar can move, which is what
+// makes it gap-aware — a bar that opens well below the prior close has a true
+// range far larger than its own high-low:
+//
+//   TR = max(high - low, |high - prevClose|, |low - prevClose|)
+//
+// Smoothing is Wilder's, matching rsi() in swinglow.js: seed with a simple mean
+// of the first `period` true ranges, then roll each new bar in at weight
+// 1/period. That is NOT the same as an EMA with span = period, and charting
+// platforms quote the Wilder form — using anything else would print numbers
+// that disagree with the chart you are looking at.
+
+/**
+ * True range series, aligned index-for-index with `candles`.
+ * The first bar has no previous close, so its TR is simply high - low.
+ */
+export function trueRange(candles) {
+  if (!Array.isArray(candles)) return [];
+  return candles.map((c, i) => {
+    if (!c || !Number.isFinite(c.high) || !Number.isFinite(c.low)) return null;
+    if (i === 0) return c.high - c.low;
+    const prevClose = candles[i - 1]?.close;
+    if (!Number.isFinite(prevClose)) return c.high - c.low;
+    return Math.max(
+      c.high - c.low,
+      Math.abs(c.high - prevClose),
+      Math.abs(c.low - prevClose),
+    );
+  });
+}
+
+/**
+ * ATR series aligned to `candles`: entry i is the ATR as of bar i, or null
+ * while there is not yet enough history (the first `period - 1` bars).
+ *
+ * Returning the whole series rather than one number is deliberate — the signal
+ * engine reads ATR at the last CLOSED bar and a backtest reads it at every bar,
+ * so a scalar would force one of them to recompute.
+ *
+ * Fails open: bad or short input returns an array of nulls, never throws.
+ */
+export function atr(candles, period = 14) {
+  const n = Array.isArray(candles) ? candles.length : 0;
+  const out = new Array(n).fill(null);
+  if (!n || !Number.isFinite(period) || period < 1 || n < period) return out;
+
+  const tr = trueRange(candles);
+  if (tr.slice(0, period).some((v) => !Number.isFinite(v))) return out;
+
+  // Seed: simple mean of the first `period` true ranges.
+  let prev = tr.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  out[period - 1] = prev;
+
+  // Roll forward. A non-finite TR mid-series would poison every later value, so
+  // carry the previous ATR through it rather than emitting NaN from there on.
+  for (let i = period; i < n; i++) {
+    const t = Number.isFinite(tr[i]) ? tr[i] : prev;
+    prev = (prev * (period - 1) + t) / period;
+    out[i] = prev;
+  }
+  return out;
+}
+
+/** ATR at the newest bar that has one, or null. Convenience for signal code. */
+export function atrAt(candles, period = 14, index = -1) {
+  const series = atr(candles, period);
+  if (!series.length) return null;
+  const i = index < 0 ? series.length + index : index;
+  return series[i] ?? null;
+}
+
 // ── Swing low detection ───────────────────────────────────────────
 // A swing low is a candle whose low is lower than
 // the 'lookback' candles before AND after it

@@ -220,6 +220,31 @@ export function toInstrumentKey(symbol) {
   return isin ? `NSE_EQ|${isin}` : `NSE_EQ|${symbol}`
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// DEPRECATED — DO NOT USE. Both functions below are broken.
+//
+// They build a key by pasting the calendar month onto the symbol, producing
+// `NSE_FO|NIFTY2608`. No such instrument key exists: Upstox addresses F&O by an
+// opaque numeric exchange token — the August 2026 Nifty future is
+// `NSE_FO|58072` — which cannot be derived from the symbol at all. Checked
+// against the live instrument master: `NSE_FO|NIFTY2608` is not in it.
+//
+// They are also wrong about the contract even conceptually, keying off the
+// calendar month when what matters is the expiry: for the last few days of a
+// month the "current month" contract has already expired.
+//
+// Nothing calls these. Use the master-backed resolver instead, which returns the
+// contract WITH its expiry, lot size and freeze quantity:
+//
+//   import { ensureInstrumentMap, currentFuturesContract } from "./instrumentMaster";
+//   await ensureInstrumentMap();
+//   const contract = currentFuturesContract("NIFTY");   // nextFuturesContract() to roll
+//
+// Kept only so an old import doesn't break the build; delete once you have
+// confirmed nothing external references them.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** @deprecated Produces a non-existent instrument key — use currentFuturesContract(). */
 export function toFuturesKey(symbol) {
   const now   = new Date()
   const year  = String(now.getFullYear()).slice(2)
@@ -227,6 +252,7 @@ export function toFuturesKey(symbol) {
   return `NSE_FO|${symbol}${year}${month}`
 }
 
+/** @deprecated Produces a non-existent instrument key — use nextFuturesContract(). */
 export function toNextMonthFuturesKey(symbol) {
   const now   = new Date()
   const next  = new Date(now.getFullYear(), now.getMonth() + 1, 1)
