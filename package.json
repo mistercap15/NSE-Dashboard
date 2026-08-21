@@ -9,9 +9,10 @@
     "refresh-data": "node scripts/export-backtest-data.mjs && node scripts/rebuild-universe-from-export.mjs",
     "test:levels": "node scripts/test-levels.mjs",
     "test:conviction": "node scripts/test-conviction.mjs",
-    "test": "npm run test:levels && npm run test:conviction && npm run test:qualify && npm run test:fib",
+    "test": "npm run test:levels && npm run test:conviction && npm run test:qualify && npm run test:fib && npm run test:upstox",
     "test:qualify": "node scripts/test-qualify.mjs",
     "test:fib": "node scripts/test-fib.mjs",
+    "test:upstox": "node scripts/test-upstox.mjs",
     "build-promoter": "node scripts/build-promoter.mjs"
   },
   "dependencies": {

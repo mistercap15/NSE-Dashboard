@@ -325,11 +325,77 @@ export async function getHourlySeries(instrumentKey, { days = 60 } = {}) {
   return [...byTs.values()].sort((a, b) => (a.timestamp < b.timestamp ? -1 : 1));
 }
 
+/**
+ * Re-key a /market-quote/quotes response back to the instrument keys that were
+ * requested. Pure and exported so it can be unit-tested without a token.
+ *
+ * THE PROBLEM THIS SOLVES. Upstox does not key the response by what you asked
+ * for. You request `NSE_EQ|INE848E01016` (exchange|ISIN) and the response comes
+ * back keyed `NSE_EQ:NHPC` (exchange:SYMBOL) — a different delimiter AND a
+ * different identifier. The old normaliser only reconciled the delimiter, so
+ * `nse_eq|ine848e01016` was compared against `nse_eq|nhpc` and never matched.
+ * Batch quotes therefore returned {} for every symbol, silently: no error, no
+ * 401, just an empty object and price columns full of em dashes.
+ *
+ * Single-symbol getQuote hid the same bug behind `Object.values(map)[0]` — with
+ * exactly one entry, grabbing the only value always "works" regardless of its
+ * key. That is why live quotes looked fine while /sizing showed nothing.
+ *
+ * Matching runs in descending order of authority:
+ *   1. exact — the response key IS the requested key (future-proofing; free)
+ *   2. instrument_token — Upstox echoes the requested key inside each quote
+ *      object. This is the reliable one: exact, unambiguous, and immune to
+ *      whatever it chooses to use for the outer key.
+ *   3. delimiter/encoding-normalised key — the previous behaviour, kept because
+ *      it costs nothing and covers a response that omits instrument_token.
+ *
+ * Never throws; unmatched keys are simply absent from the result, which is what
+ * every caller already treats as "no quote for this symbol".
+ */
+export function mapQuotesToKeys(raw, requestedKeys) {
+  const out = {}
+  if (!raw || typeof raw !== "object" || !Array.isArray(requestedKeys)) return out
+
+  const entries = Object.entries(raw)
+  if (!entries.length) return out
+
+  // `NSE_EQ:NHPC`, `NSE_EQ%7CINE...` and `NSE_EQ|INE...` all collapse to one form.
+  const norm = (k) => String(k).replace(/%7C/gi, "|").replace(/:/g, "|").toLowerCase()
+
+  // instrument_token → quote. Built once rather than scanned per requested key.
+  const byToken = new Map()
+  for (const [, v] of entries) {
+    const tok = v && typeof v === "object" ? v.instrument_token : null
+    if (tok) byToken.set(norm(tok), v)
+  }
+
+  // Only real quote objects are emitted. A matched-but-null value would make
+  // `Object.keys(result).length` — which /api/upstox/quotes returns as `count` —
+  // claim a quote that isn't there.
+  const usable = (v) => v && typeof v === "object"
+
+  for (const key of requestedKeys) {
+    if (usable(raw[key])) { out[key] = raw[key]; continue }
+
+    const k = norm(key)
+    const viaToken = byToken.get(k)
+    if (usable(viaToken)) { out[key] = viaToken; continue }
+
+    const found = entries.find(([rk]) => norm(rk) === k && usable(raw[rk]))
+    if (found) out[key] = found[1]
+  }
+
+  return out
+}
+
 export async function getQuote(instrumentKey) {
   const data  = await upstoxGet("/market-quote/quotes", { instrument_key: instrumentKey })
-  // Key in response may differ in encoding — fall back to first value if exact match missing
   const quoteMap = data?.data || {}
-  const quote = quoteMap[instrumentKey] ?? Object.values(quoteMap)[0]
+  // Same re-keying as the batch path. The single-value fallback stays as a last
+  // resort: with one instrument requested there is only one thing it can be, so
+  // it is safe here in a way it would not be for a batch.
+  const quote = mapQuotesToKeys(quoteMap, [instrumentKey])[instrumentKey]
+    ?? Object.values(quoteMap)[0]
   if (!quote) throw new Error(`No quote data for ${instrumentKey} — response keys: ${Object.keys(quoteMap).join(", ")}`)
   // Upstox doesn't reliably return a percentage field — derive it from LTP vs prev close.
   const prevClose = quote.ohlc?.close
@@ -356,25 +422,7 @@ export async function getBatchQuotes(instrumentKeys) {
   const data = await upstoxGet("/market-quote/quotes", {
     instrument_key: instrumentKeys.join(",")
   })
-  const raw = data?.data || {}
-
-  // Upstox response keys may differ from requested keys (colon vs pipe, URL encoding).
-  // Build a normalized map so callers can always look up by the key they requested.
-  const normalizeKey = (k) => k.replace(/%7C/gi, "|").replace(":", "|").toLowerCase()
-  const rawEntries = Object.entries(raw)
-  const normalized = {}
-
-  for (const key of instrumentKeys) {
-    if (raw[key] !== undefined) {
-      normalized[key] = raw[key]
-    } else {
-      const keyNorm = normalizeKey(key)
-      const found = rawEntries.find(([rk]) => normalizeKey(rk) === keyNorm)
-      if (found) normalized[key] = found[1]
-    }
-  }
-
-  return normalized
+  return mapQuotesToKeys(data?.data || {}, instrumentKeys)
 }
 
 // Whether a usable market-data credential exists. Several routes gate their
