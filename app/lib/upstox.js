@@ -11,6 +11,18 @@ const API_KEY      = process.env.UPSTOX_API_KEY
 const API_SECRET   = process.env.UPSTOX_API_SECRET
 const REDIRECT_URI = process.env.UPSTOX_REDIRECT_URI
 
+// Long-lived (1 year) read-only token generated from the Upstox developer
+// console. Read server-side only — it must never be added to next.config.js's
+// `env` block, which inlines values into the client bundle.
+//
+// When set it becomes the credential for ALL market data, which is what lets
+// the dashboard show prices with nobody logged into Upstox. Everything the app
+// requests — /historical-candle/* and /market-quote/quotes — is Market Data,
+// the category Upstox serves from any IP, so this works from Vercel's dynamic
+// addresses. It is read-only and cannot reach account or order endpoints; the
+// app calls none, so nothing is lost. See resolveAccessToken() below.
+const ANALYTICS_TOKEN = process.env.UPSTOX_ANALYTICS_TOKEN || null
+
 // Token stored in .upstox_token file so it survives hot reloads
 const TOKEN_FILE = path.join(process.cwd(), ".upstox_token")
 
@@ -34,9 +46,43 @@ function clearTokenFile() {
   try { fs.unlinkSync(TOKEN_FILE) } catch {}
 }
 
-// In-memory cache — populated from file on first use
+// In-memory cache — populated from file on first use. This holds the per-user
+// OAuth token; it is only consulted when no analytics token is configured.
 let _accessToken  = process.env.UPSTOX_ACCESS_TOKEN || readTokenFromFile()
 let _tokenExpired = false
+
+/**
+ * The single place any Upstox credential is chosen. Every market-data call
+ * funnels through here via upstoxGet.
+ *
+ * ORDER MATTERS, and the analytics token deliberately wins outright rather than
+ * acting as a fallback. Two reasons:
+ *
+ *   1. Determinism. `_accessToken` is a module global that every route
+ *      overwrites with the caller's cookie (setAccessToken), so with two people
+ *      using the dashboard, whose credential served a given request depended on
+ *      who hit that warm instance last. Market data no longer touches that
+ *      variable at all.
+ *   2. It is the whole point. If a stale cookie could outrank the env token,
+ *      behaviour would differ depending on whether someone happened to have
+ *      done an OAuth login that day — which is exactly the daily ritual this
+ *      change removes.
+ *
+ * Falls back to the OAuth token when UPSTOX_ANALYTICS_TOKEN is unset, so an
+ * environment without it (local dev, or before the Vercel var is added) behaves
+ * exactly as it did before.
+ */
+export function resolveAccessToken() {
+  if (ANALYTICS_TOKEN) return ANALYTICS_TOKEN
+  // Recover from file if the in-memory copy was wiped by a hot reload.
+  if (!_accessToken) _accessToken = readTokenFromFile()
+  return _accessToken || null
+}
+
+/** Whether the long-lived market-data token is configured. */
+export function hasAnalyticsToken() {
+  return !!ANALYTICS_TOKEN
+}
 
 // ── Auth functions ────────────────────────────────────────────────
 
@@ -77,24 +123,36 @@ export async function exchangeCodeForToken(code) {
 // ── Core request ──────────────────────────────────────────────────
 
 async function upstoxGet(endpoint, params = {}, base = BASE_URL) {
-  // Recover token from file if in-memory copy was wiped by hot reload
-  if (!_accessToken) _accessToken = readTokenFromFile()
-  if (!_accessToken) throw new Error("No access token. Visit /api/upstox/login first.")
+  const token = resolveAccessToken()
+  if (!token) {
+    throw new Error(
+      "No access token. Set UPSTOX_ANALYTICS_TOKEN, or visit /api/upstox/login first."
+    )
+  }
 
   const qs  = Object.keys(params).length ? "?" + new URLSearchParams(params) : ""
   const res = await fetch(`${base}${endpoint}${qs}`, {
     headers: {
-      Authorization: `Bearer ${_accessToken}`,
+      Authorization: `Bearer ${token}`,
       Accept:        "application/json",
     },
     cache: "no-store",
   })
 
   if (res.status === 401) {
-    _accessToken  = null
-    _tokenExpired = true
-    clearTokenFile()
-    throw new Error("TOKEN_EXPIRED")
+    // "Expired" is an OAuth concept: those tokens die at 03:30 IST daily and the
+    // fix is to log in again. An analytics token lives a year, so a 401 on one
+    // means it is wrong or revoked — a configuration problem, not a stale
+    // session. Marking it expired here would set a sticky process-global flag
+    // that logs every open tab out and blanks prices for the life of the
+    // instance, so the OAuth bookkeeping only runs when OAuth is what we used.
+    if (!ANALYTICS_TOKEN) {
+      _accessToken  = null
+      _tokenExpired = true
+      clearTokenFile()
+      throw new Error("TOKEN_EXPIRED")
+    }
+    throw new Error("ANALYTICS_TOKEN_REJECTED: Upstox rejected UPSTOX_ANALYTICS_TOKEN (401).")
   }
 
   if (!res.ok) {
@@ -319,12 +377,19 @@ export async function getBatchQuotes(instrumentKeys) {
   return normalized
 }
 
+// Whether a usable market-data credential exists. Several routes gate their
+// whole price layer on this, so it has to count the analytics token — otherwise
+// they short-circuit to "not connected" while a perfectly good env token sits
+// unused.
 export function hasValidToken() {
-  if (!_accessToken) _accessToken = readTokenFromFile()
-  return !!_accessToken
+  return !!resolveAccessToken()
 }
 
+// Only ever true of the daily OAuth token. An analytics token cannot be
+// "expired" in the sense the UI means (re-login required), so reporting it as
+// such would send users to a login they no longer need.
 export function isTokenExpired() {
+  if (ANALYTICS_TOKEN) return false
   return _tokenExpired
 }
 

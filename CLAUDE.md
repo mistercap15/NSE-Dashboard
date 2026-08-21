@@ -111,12 +111,18 @@ Finds F&O stocks at a **proven multi-touch support floor** while oversold — lo
 
 ---
 
-## Authentication (PIN gate + compulsory Upstox)
+## Authentication (PIN gate) + Upstox access (separate concern)
 
-- **`middleware.js`** gates every route. Pages need a valid PIN session **and** an Upstox cookie (redirect to `/login` or `/api/upstox/login`); API routes need only the session (401 otherwise). Public paths: `/login`, `/api/auth/*`, `/api/upstox/login`, `/api/upstox/callback`.
-- **Flow:** visit page → no session → `/login` → enter 6-digit PIN → session set → middleware sees no Upstox → Upstox OAuth (`next` carried via OAuth `state`) → back to page.
-- **Session** = jose-signed JWT cookie `app_session`, expiring at the next **03:30 IST** (when Upstox tokens die). When Upstox 401s, `/api/upstox/status` clears both cookies; `AuthWatcher.js` (in root layout) bounces idle tabs to `/login`. Net: one clean re-login per day that also re-auths Upstox.
+**These are two unrelated things and must stay that way.** The `upstox_token` cookie used to serve as both the "you may view this app" gate and the "we can call Upstox" credential; because Upstox tokens die at 03:30 IST daily, that forced a login just to look at a chart.
+
+- **Authorisation — `middleware.js`.** Gates every route on the **PIN session only**. Pages without one redirect to `/login?next=…`; API routes get `401 JSON`. This is the only thing making the dashboard private. Public paths: `/login`, `/api/auth/*`, `/api/upstox/login`, `/api/upstox/callback`. **Middleware never checks the Upstox cookie and never redirects to Upstox OAuth** — re-adding that would restore the daily-login requirement and the `/?upstox_error=…` → `/api/upstox/login` redirect loop.
+- **Flow:** visit page → no session → `/login` → 6-digit PIN → session set → page loads. No Upstox step.
+- **Upstox access — `app/lib/upstox.js`.** `resolveAccessToken()` is the single choke-point every market-data call funnels through. It prefers `UPSTOX_ANALYTICS_TOKEN` (long-lived, read-only, market-data-only, works from any IP) and falls back to the per-request OAuth token when that env var is absent, so local dev and any un-migrated environment behave as before.
+- **`isTokenExpired()` only ever describes the OAuth token.** An analytics token is valid for a year, so it never reports expired. This matters: `expired` makes `AuthWatcher.js` bounce every open tab to `/login`, and makes `/api/upstox/status` clear **both** cookies. A 401 on the analytics token is a config error (`ANALYTICS_TOKEN_REJECTED`), not a stale session, and must not set that sticky process-global flag.
+- **`/api/upstox/status`** returns `{ connected, expired, source }` where `source` is `"analytics" | "oauth" | null` — UI should name the credential rather than implying a login happened.
+- **OAuth is kept, but opt-in.** `/api/upstox/login` + `/callback` still work for the deliberate account login the bot-token sync needs. Nothing forces it.
 - **PIN:** plaintext env `APP_PIN`, timing-safe compare, per-IP brute-force lockout (5 wrong → escalating 30s+ lockout, in-memory). Logout via sidebar → `/api/auth/logout`.
+- **Gotcha:** v3 `/historical-candle/*` returns 200 even with a garbage bearer — it does not validate the token. v2 `/market-quote/quotes` does 401. So candle-only features can appear to work with a broken token; test credentials against quotes.
 
 ---
 
@@ -137,6 +143,7 @@ MCP_URL=https://nse-data-mcp.vercel.app/mcp
 UPSTOX_API_KEY=...
 UPSTOX_API_SECRET=...
 UPSTOX_REDIRECT_URI=<prod callback URL>   # 127.0.0.1:3000/api/upstox/callback for local
+UPSTOX_ANALYTICS_TOKEN=<1-year read-only token>  # market data, no daily login. NEVER add to next.config.js `env`
 APP_PIN=<6-digit pin>                      # app login PIN (plaintext)
 AUTH_SECRET=<long random hex>              # signs the session JWT
 ```

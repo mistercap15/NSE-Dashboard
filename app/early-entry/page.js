@@ -177,6 +177,8 @@ export default function EarlyEntryPage() {
   const [error,           setError]           = useState(null)
   const [upstoxReady,     setUpstoxReady]     = useState(false)
   const [tokenExpired,    setTokenExpired]    = useState(false)
+  // "analytics" | "oauth" | null — which credential is serving prices.
+  const [tokenSource,     setTokenSource]     = useState(null)
   const [selectedMonth,   setSelectedMonth]   = useState(() => getNextMonth())
   const [expanded,        setExpanded]        = useState(null)
   // Entry/stop/target from the shared engine (app/lib/levels.js). This page
@@ -190,6 +192,7 @@ export default function EarlyEntryPage() {
       .then(d => {
         setUpstoxReady(d.connected)
         setTokenExpired(d.expired || false)
+        setTokenSource(d.source || null)
       })
       .catch(() => setUpstoxReady(false))
   }, [])
@@ -353,15 +356,21 @@ export default function EarlyEntryPage() {
               <div className={`font-mono text-[11px] uppercase tracking-widest mb-1 ${
                 upstoxReady ? "text-green" : "text-amber"
               }`}>
-                {upstoxReady ? "✓ Upstox Connected" : "⚠ Upstox Not Connected"}
+                {!upstoxReady
+                  ? "⚠ Market Data Unavailable"
+                  : tokenSource === "analytics"
+                    ? "✓ Market Data · Analytics Token"
+                    : "✓ Upstox Connected"}
               </div>
               <div className="font-body text-sm text-dim">
-                {upstoxReady
-                  ? "Live daily price data available — support zones computed from real OHLC"
-                  : "Connect Upstox to enable live price data and support zone detection"}
+                {!upstoxReady
+                  ? "No market-data credential is configured — support zones need live OHLC."
+                  : tokenSource === "analytics"
+                    ? "Served by the long-lived analytics token — no daily login needed."
+                    : "Live daily price data available — support zones computed from real OHLC"}
               </div>
             </div>
-            {!upstoxReady && (
+            {!upstoxReady && tokenSource !== "analytics" && (
               <a href="/api/upstox/login"
                 className="font-mono text-sm px-4 py-2 rounded border border-accent/30
                   bg-accent/10 text-accent hover:bg-accent/20 transition-colors">

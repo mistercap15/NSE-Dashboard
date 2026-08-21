@@ -1,16 +1,37 @@
 import { NextResponse } from "next/server";
-import { UPSTOX_COOKIE, verifySession, sessionToken, safeNext } from "@/app/lib/auth";
+import { verifySession, sessionToken } from "@/app/lib/auth";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Route gate. Enforces the PIN session on every request, and (for page loads)
-// that Upstox is connected — redirecting into the Upstox OAuth chain if not.
-//   • Pages:  no session → /login;  session but no Upstox cookie → /api/upstox/login
-//   • API:    no session → 401 JSON  (handlers already degrade if Upstox is down)
+// Route gate. ONE question is asked here: does this request carry a valid PIN
+// session?
+//   • Pages:  no session → /login?next=…
+//   • API:    no session → 401 JSON
 //
 // The session arrives as the `app_session` cookie (web) or an `Authorization:
-// Bearer` header (native app) — `sessionToken` accepts either. The Upstox gate
-// below stays cookie-only on purpose: it guards page loads, and only the web
-// loads pages. The app carries its Upstox token inside the bearer session.
+// Bearer` header (native app) — `sessionToken` accepts either.
+//
+// WHY THERE IS NO LONGER AN UPSTOX GATE HERE. The `upstox_token` cookie used to
+// be checked on every page load, redirecting into the OAuth chain when missing.
+// That made one cookie serve two unrelated jobs: proving the visitor is allowed
+// in, and carrying a credential Upstox calls need. Because Upstox tokens die at
+// 03:30 IST daily, the access half expired every night and forced a login just
+// to look at a chart.
+//
+// The two jobs are now separate, and only the first belongs in middleware:
+//   • AUTHORISATION — the PIN session, enforced below. Unchanged, and the only
+//     thing standing between the internet and this dashboard.
+//   • UPSTOX ACCESS — a credential concern, resolved per call in
+//     app/lib/upstox.js (resolveAccessToken). Market data comes from a
+//     long-lived analytics token in env, so no user login is involved.
+//
+// Removing the Upstox gate removes access to NOTHING: it never authorised
+// anyone, it only forced an OAuth round-trip. /api/upstox/login and /callback
+// stay public and fully working for the deliberate account login the bot-token
+// sync will need — that flow is now opt-in rather than compulsory.
+//
+// It also removes a redirect loop that existed while both jobs shared a cookie:
+// a failed token exchange redirected to /?upstox_error=…, which had no Upstox
+// cookie, which bounced straight back into /api/upstox/login.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Reachable without a session (the login chain itself + Upstox OAuth round-trip).
@@ -30,7 +51,7 @@ export async function middleware(request) {
   const session = await verifySession(sessionToken(request));
   const isApi = pathname.startsWith("/api/");
 
-  // 1) PIN session required everywhere.
+  // PIN session required everywhere. This is the whole gate.
   if (!session) {
     if (isApi) {
       return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
@@ -41,15 +62,9 @@ export async function middleware(request) {
     return NextResponse.redirect(url);
   }
 
-  // 2) Upstox is compulsory for page views — chain into OAuth if it's missing.
-  //    API routes are left to degrade gracefully (they handle no/expired token).
-  if (!isApi && !request.cookies.get(UPSTOX_COOKIE)?.value) {
-    const url = request.nextUrl.clone();
-    url.pathname = "/api/upstox/login";
-    url.search = `?next=${encodeURIComponent(safeNext(pathname + search))}`;
-    return NextResponse.redirect(url);
-  }
-
+  // Session is valid → the page is allowed, with or without an Upstox cookie.
+  // Routes that need prices resolve their own credential and degrade on their
+  // own terms; none of that is an access-control question.
   return NextResponse.next();
 }
 
