@@ -54,6 +54,52 @@ async function fetchWithTimeout(url, options, ms) {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// GET — is the droplet armed, and until when?
+//
+// The state both clients render from. "Am I logged in" is per-browser and
+// per-device, so the web and the app will always disagree about it; whether the
+// droplet holds a live token is one global fact, and it is the one that decides
+// whether the bot can actually trade. Asking the droplet is what makes the two
+// screens agree.
+//
+// Returns no credential — the receiver's /token-status reports presence and
+// expiry only, and this passes that through unchanged.
+// ─────────────────────────────────────────────────────────────────────────────
+export async function GET() {
+  const { syncUrl, secret } = config();
+  const unknown = (reason) =>
+    NextResponse.json({ present: false, expiresAt: null, account: null, expired: false, reason });
+
+  if (!syncUrl || !secret) return unknown("Sync is not configured on the server.");
+
+  // The status URL sits beside the sync URL on the same receiver.
+  const statusUrl = syncUrl.replace(/\/sync-token\/?$/, "/token-status");
+
+  try {
+    const res = await fetchWithTimeout(
+      statusUrl,
+      { headers: { "X-Sync-Secret": secret } },
+      DROPLET_TIMEOUT_MS,
+    );
+    if (!res.ok) return unknown(`Droplet returned ${res.status}.`);
+    const body = await res.json();
+    return NextResponse.json({
+      present: body.present === true,
+      expiresAt: body.expiresAt ?? null,
+      account: body.account ?? null,
+      expired: body.expired === true,
+      reason: null,
+    });
+  } catch (e) {
+    // A droplet that can't be reached is reported as unknown rather than as
+    // "no token" — the bot may well be running fine on a token this request
+    // simply couldn't see, and a false "not synced" would prompt a needless
+    // re-sync every morning.
+    return unknown(`Could not reach the droplet: ${e.message}`);
+  }
+}
+
 export async function POST(request) {
   const { accountId, syncUrl, secret } = config();
 

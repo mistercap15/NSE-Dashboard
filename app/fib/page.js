@@ -62,6 +62,9 @@ export default function FibBotPage() {
   // Whether a personal Upstox login exists on this browser. Distinct from the
   // signal's tokenValid, which is satisfied by the analytics token alone.
   const [oauthLinked, setOauthLinked] = useState(null)
+  // Whether the DROPLET holds a live token. Global, unlike oauthLinked — it is
+  // what both clients show, so the web and the app agree.
+  const [botToken, setBotToken] = useState(null)
   const [fetchErr, setFetchErr] = useState(null)
   const [lastFetch, setLastFetch] = useState(null)
 
@@ -87,9 +90,13 @@ export default function FibBotPage() {
   // render — and this page prerenders, so it fails the build, not just the page.
   const loadLinkState = useCallback(async () => {
     try {
-      const d = await (await fetch("/api/upstox/status", { cache: "no-store" })).json()
-      setOauthLinked(Boolean(d.oauthLinked))
-    } catch { /* leave unknown; both buttons stay hidden rather than lying */ }
+      const [status, bot] = await Promise.all([
+        fetch("/api/upstox/status", { cache: "no-store" }).then((r) => r.json()),
+        fetch("/api/bot/sync", { cache: "no-store" }).then((r) => r.json()),
+      ])
+      setOauthLinked(Boolean(status.oauthLinked))
+      setBotToken(bot)
+    } catch { /* leave unknown; the panel stays quiet rather than lying */ }
   }, [])
 
   // visible to anyone who can open this page; the real gate is server-side, where
@@ -129,6 +136,17 @@ export default function FibBotPage() {
   const state = !tokenValid ? "disconnected" : !signal ? "unavailable" : armed ? "armed" : "aside"
 
   const bar = barLabel(signal?.asOf)
+
+  // Deliberately not called "armed": that word already means "the signal says an
+  // order should be resting", which is a different question entirely. This is
+  // whether the droplet holds a token that hasn't lapsed. Expiry renders in IST
+  // because that is the boundary Upstox actually enforces.
+  const tokenSynced = botToken?.present === true && !botToken?.expired
+  const botExpiry = Number.isFinite(botToken?.expiresAt)
+    ? new Date(botToken.expiresAt).toLocaleTimeString("en-IN", {
+        timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit",
+      })
+    : null
 
   const STATE = {
     armed:        { label: "ORDER ARMED",       tone: "green", note: "A buy order should be resting at the entry price." },
@@ -251,10 +269,25 @@ export default function FibBotPage() {
                 Pushes your order-capable Upstox token to the droplet so the executor can trade.
               </div>
               <div className="font-mono text-[11px] text-muted mt-1.5">
-                {oauthLinked === false
-                  ? "Log in as the trading account (84BDRQ) first — the token it issues is what gets synced."
-                  : "Logged in. Prices on this page use a separate read-only token and are unaffected."}
+                {tokenSynced
+                  ? "The executor has what it needs. Tokens lapse at 03:30 IST, so this is a once-a-morning job."
+                  : oauthLinked === false
+                    ? "Log in as the trading account (84BDRQ) first — the token it issues is what gets synced."
+                    : "Logged in. Press sync to push the token to the droplet."}
               </div>
+              {/* The droplet's own answer, not what this browser happens to
+                  remember — so this reads identically in the app. */}
+              {tokenSynced && (
+                <div className="font-mono text-[11px] text-green mt-2">
+                  ✓ Token synced{botToken.account ? ` for ${botToken.account}` : ""}
+                  {botExpiry ? ` — valid until ${botExpiry}` : ""}
+                </div>
+              )}
+              {botToken?.expired && (
+                <div className="font-mono text-[11px] text-amber mt-2">
+                  ⚠ The droplet&apos;s token has expired — sync a fresh one.
+                </div>
+              )}
               {sync && (
                 <div className={`font-mono text-[11px] mt-2 ${sync.ok ? "text-green" : "text-red"}`}>
                   {sync.ok ? "✓ " : "✗ "}{sync.message}
@@ -279,10 +312,14 @@ export default function FibBotPage() {
                 <button
                   onClick={syncToken}
                   disabled={syncing}
-                  className="font-mono text-sm px-4 py-2 rounded border border-purple/30 bg-purple/10
-                    text-purple hover:bg-purple/20 transition-colors disabled:opacity-50 whitespace-nowrap"
+                  className={`font-mono text-sm px-4 py-2 rounded border transition-colors
+                    disabled:opacity-50 whitespace-nowrap ${
+                    tokenSynced
+                      ? "border-border bg-card text-dim hover:text-text"
+                      : "border-purple/30 bg-purple/10 text-purple hover:bg-purple/20"
+                  }`}
                 >
-                  {syncing ? "Syncing…" : "Sync token to droplet"}
+                  {syncing ? "Syncing…" : tokenSynced ? "Re-sync" : "Sync token to droplet"}
                 </button>
               )}
             </div>
