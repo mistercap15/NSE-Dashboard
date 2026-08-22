@@ -59,6 +59,9 @@ export default function FibBotPage() {
   // { ok, message }. Deliberately holds no token — see /api/bot/sync.
   const [sync,    setSync]    = useState(null)
   const [syncing, setSyncing] = useState(false)
+  // Whether a personal Upstox login exists on this browser. Distinct from the
+  // signal's tokenValid, which is satisfied by the analytics token alone.
+  const [oauthLinked, setOauthLinked] = useState(null)
   const [fetchErr, setFetchErr] = useState(null)
   const [lastFetch, setLastFetch] = useState(null)
 
@@ -94,10 +97,18 @@ export default function FibBotPage() {
       setSync({ ok: false, message: e.message || "Could not reach the server" })
     } finally {
       setSyncing(false)
+      loadLinkState()
     }
+  }, [loadLinkState])
+
+  const loadLinkState = useCallback(async () => {
+    try {
+      const d = await (await fetch("/api/upstox/status", { cache: "no-store" })).json()
+      setOauthLinked(Boolean(d.oauthLinked))
+    } catch { /* leave unknown; both buttons stay hidden rather than lying */ }
   }, [])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => { load(); loadLinkState() }, [load, loadLinkState])
 
   useEffect(() => {
     const id = setInterval(() => { if (isMarketHours()) load() }, POLL_MS)
@@ -237,8 +248,9 @@ export default function FibBotPage() {
                 Pushes your order-capable Upstox token to the droplet so the executor can trade.
               </div>
               <div className="font-mono text-[11px] text-muted mt-1.5">
-                Log in first, then sync. Only works when logged into the trading account
-                (84BDRQ). Prices on this page use a separate read-only token and are unaffected.
+                {oauthLinked === false
+                  ? "Log in as the trading account (84BDRQ) first — the token it issues is what gets synced."
+                  : "Logged in. Prices on this page use a separate read-only token and are unaffected."}
               </div>
               {sync && (
                 <div className={`font-mono text-[11px] mt-2 ${sync.ok ? "text-green" : "text-red"}`}>
@@ -246,27 +258,30 @@ export default function FibBotPage() {
                 </div>
               )}
             </div>
+            {/* One button at a time: the two actions are sequential, and showing
+                a login you don't need next to a sync you can't do is just noise.
+                While the link state is unknown neither renders — better briefly
+                empty than briefly wrong. */}
             <div className="flex items-center gap-2 shrink-0">
-              {/* Without this there is no way to start the OAuth flow at all.
-                  The old Connect buttons were conditional on `connected` being
-                  false, and the analytics token makes that permanently true —
-                  so they are hidden everywhere, and the token this panel syncs
-                  can only be obtained by visiting the route by hand. */}
-              <a
-                href="/api/upstox/login?next=/fib"
-                className="font-mono text-sm px-4 py-2 rounded border border-border bg-card
-                  text-soft hover:text-text hover:border-accent/40 transition-colors whitespace-nowrap"
-              >
-                Log in to trading account
-              </a>
-              <button
-                onClick={syncToken}
-                disabled={syncing}
-                className="font-mono text-sm px-4 py-2 rounded border border-purple/30 bg-purple/10
-                  text-purple hover:bg-purple/20 transition-colors disabled:opacity-50 whitespace-nowrap"
-              >
-                {syncing ? "Syncing…" : "Sync token to droplet"}
-              </button>
+              {oauthLinked === false && (
+                <a
+                  href="/api/upstox/login?next=/fib"
+                  className="font-mono text-sm px-4 py-2 rounded border border-accent/30 bg-accent/10
+                    text-accent hover:bg-accent/20 transition-colors whitespace-nowrap"
+                >
+                  Log in to trading account →
+                </a>
+              )}
+              {oauthLinked === true && (
+                <button
+                  onClick={syncToken}
+                  disabled={syncing}
+                  className="font-mono text-sm px-4 py-2 rounded border border-purple/30 bg-purple/10
+                    text-purple hover:bg-purple/20 transition-colors disabled:opacity-50 whitespace-nowrap"
+                >
+                  {syncing ? "Syncing…" : "Sync token to droplet"}
+                </button>
+              )}
             </div>
           </div>
         </div>

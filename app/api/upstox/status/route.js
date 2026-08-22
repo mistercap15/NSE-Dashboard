@@ -14,6 +14,12 @@ import { SESSION_COOKIE, UPSTOX_COOKIE, upstoxTokenFor } from "@/app/lib/auth"
 // reports the actual state, because market data comes from a long-lived
 // analytics token in env and normally involves no user login at all:
 //
+// `oauthLinked` is a separate question from `connected`, and both are needed.
+// Market data works off the analytics token, so `connected` is true whether or
+// not anyone has ever logged in — which makes it useless for deciding whether to
+// offer a login. `oauthLinked` answers only "does THIS request carry a personal
+// Upstox token", which is what the bot-token sync actually requires.
+//
 //   source "analytics" — UPSTOX_ANALYTICS_TOKEN is set. Connected, and it stays
 //                        connected: a year-long token has no daily expiry, so
 //                        `expired` is always false and nothing should ever
@@ -40,7 +46,12 @@ export async function GET(request) {
   const connected = hasValidToken() && !expired
   const source    = analytics ? "analytics" : connected ? "oauth" : null
 
-  const res = NextResponse.json({ connected, expired, source })
+  // The OAuth cookie carries the same 03:30 IST maxAge as the session, so the
+  // browser drops it when it dies — presence is a good enough proxy for
+  // validity, and a stale one still fails loudly at the sync itself.
+  const oauthLinked = Boolean(cookie)
+
+  const res = NextResponse.json({ connected, expired, source, oauthLinked })
 
   // OAuth expired → clear both cookies so the next navigation falls through the
   // middleware to /login. Only reachable on the OAuth path: with an analytics
