@@ -145,6 +145,9 @@ UPSTOX_API_SECRET=...
 UPSTOX_REDIRECT_URI=<prod callback URL>   # 127.0.0.1:3000/api/upstox/callback for local
 UPSTOX_ANALYTICS_TOKEN=<1-year read-only token>  # market data, no daily login. NEVER add to next.config.js `env`
 APP_PIN=<6-digit pin>                      # app login PIN (plaintext)
+BOT_ACCOUNT_ID=<Upstox UCC>                # trading account /api/bot/sync will sync FOR
+BOT_SYNC_SECRET=<openssl rand -hex 32>     # shared with the droplet receiver
+DROPLET_SYNC_URL=https://<subdomain>/sync-token  # where the token is pushed
 AUTH_SECRET=<long random hex>              # signs the session JWT
 ```
 `.env.local` and `.env.example` are gitignored (never committed). **Vercel must have `APP_PIN` + `AUTH_SECRET` set or the live login 500s and locks everyone out** (env changes require a redeploy).

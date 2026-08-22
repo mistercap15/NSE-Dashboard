@@ -55,6 +55,10 @@ function isMarketHours(now = new Date()) {
 export default function FibBotPage() {
   const [data,    setData]    = useState(null)
   const [loading, setLoading] = useState(true)
+  // Token sync to the droplet. `null` until a sync is attempted; then
+  // { ok, message }. Deliberately holds no token — see /api/bot/sync.
+  const [sync,    setSync]    = useState(null)
+  const [syncing, setSyncing] = useState(false)
   const [fetchErr, setFetchErr] = useState(null)
   const [lastFetch, setLastFetch] = useState(null)
 
@@ -71,6 +75,25 @@ export default function FibBotPage() {
     } finally {
       setLoading(false)
       setLastFetch(new Date())
+    }
+  }, [])
+
+  // Push the trading account's order-capable token to the droplet. The button is
+  // visible to anyone who can open this page; the real gate is server-side, where
+  // /api/bot/sync refuses unless the token's Upstox account matches BOT_ACCOUNT_ID.
+  const syncToken = useCallback(async () => {
+    setSyncing(true)
+    setSync(null)
+    try {
+      const res  = await fetch("/api/bot/sync", { method: "POST" })
+      const json = await res.json()
+      setSync(json.synced
+        ? { ok: true,  message: `Synced for ${json.account} — valid until 03:30 IST` }
+        : { ok: false, message: json.error || `Sync failed (${res.status})` })
+    } catch (e) {
+      setSync({ ok: false, message: e.message || "Could not reach the server" })
+    } finally {
+      setSyncing(false)
     }
   }, [])
 
@@ -200,6 +223,37 @@ export default function FibBotPage() {
                 <div className="font-mono text-sm text-soft">{contract.rollsInto.tradingSymbol}</div>
               </div>
             )}
+          </div>
+        </div>
+
+        {/* ── Bot token sync ─────────────────────────────────────────── */}
+        <div className="bg-card border border-border rounded-lg p-4 md:p-5 mb-6">
+          <div className="flex items-start justify-between gap-4 flex-wrap">
+            <div className="min-w-0">
+              <div className="font-mono text-[10px] text-dim uppercase tracking-widest mb-1">
+                Bot Token
+              </div>
+              <div className="font-body text-sm text-dim">
+                Pushes your order-capable Upstox token to the droplet so the executor can trade.
+              </div>
+              <div className="font-mono text-[11px] text-muted mt-1.5">
+                Only works when logged into the trading account (84BDRQ). Prices on this page
+                use a separate read-only token and are unaffected.
+              </div>
+              {sync && (
+                <div className={`font-mono text-[11px] mt-2 ${sync.ok ? "text-green" : "text-red"}`}>
+                  {sync.ok ? "✓ " : "✗ "}{sync.message}
+                </div>
+              )}
+            </div>
+            <button
+              onClick={syncToken}
+              disabled={syncing}
+              className="font-mono text-sm px-4 py-2 rounded border border-purple/30 bg-purple/10
+                text-purple hover:bg-purple/20 transition-colors disabled:opacity-50 whitespace-nowrap"
+            >
+              {syncing ? "Syncing…" : "Sync token to droplet"}
+            </button>
           </div>
         </div>
 
