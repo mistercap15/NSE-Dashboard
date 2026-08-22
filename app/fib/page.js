@@ -237,8 +237,8 @@ export default function FibBotPage() {
                 Pushes your order-capable Upstox token to the droplet so the executor can trade.
               </div>
               <div className="font-mono text-[11px] text-muted mt-1.5">
-                Only works when logged into the trading account (84BDRQ). Prices on this page
-                use a separate read-only token and are unaffected.
+                Log in first, then sync. Only works when logged into the trading account
+                (84BDRQ). Prices on this page use a separate read-only token and are unaffected.
               </div>
               {sync && (
                 <div className={`font-mono text-[11px] mt-2 ${sync.ok ? "text-green" : "text-red"}`}>
@@ -246,14 +246,28 @@ export default function FibBotPage() {
                 </div>
               )}
             </div>
-            <button
-              onClick={syncToken}
-              disabled={syncing}
-              className="font-mono text-sm px-4 py-2 rounded border border-purple/30 bg-purple/10
-                text-purple hover:bg-purple/20 transition-colors disabled:opacity-50 whitespace-nowrap"
-            >
-              {syncing ? "Syncing…" : "Sync token to droplet"}
-            </button>
+            <div className="flex items-center gap-2 shrink-0">
+              {/* Without this there is no way to start the OAuth flow at all.
+                  The old Connect buttons were conditional on `connected` being
+                  false, and the analytics token makes that permanently true —
+                  so they are hidden everywhere, and the token this panel syncs
+                  can only be obtained by visiting the route by hand. */}
+              <a
+                href="/api/upstox/login?next=/fib"
+                className="font-mono text-sm px-4 py-2 rounded border border-border bg-card
+                  text-soft hover:text-text hover:border-accent/40 transition-colors whitespace-nowrap"
+              >
+                Log in to trading account
+              </a>
+              <button
+                onClick={syncToken}
+                disabled={syncing}
+                className="font-mono text-sm px-4 py-2 rounded border border-purple/30 bg-purple/10
+                  text-purple hover:bg-purple/20 transition-colors disabled:opacity-50 whitespace-nowrap"
+              >
+                {syncing ? "Syncing…" : "Sync token to droplet"}
+              </button>
+            </div>
           </div>
         </div>
 
