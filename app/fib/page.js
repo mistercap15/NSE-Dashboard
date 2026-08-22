@@ -82,6 +82,16 @@ export default function FibBotPage() {
   }, [])
 
   // Push the trading account's order-capable token to the droplet. The button is
+  // Declared before syncToken, which depends on it. `const` is not hoisted, so
+  // the reverse order throws "Cannot access before initialization" during
+  // render — and this page prerenders, so it fails the build, not just the page.
+  const loadLinkState = useCallback(async () => {
+    try {
+      const d = await (await fetch("/api/upstox/status", { cache: "no-store" })).json()
+      setOauthLinked(Boolean(d.oauthLinked))
+    } catch { /* leave unknown; both buttons stay hidden rather than lying */ }
+  }, [])
+
   // visible to anyone who can open this page; the real gate is server-side, where
   // /api/bot/sync refuses unless the token's Upstox account matches BOT_ACCOUNT_ID.
   const syncToken = useCallback(async () => {
@@ -100,13 +110,6 @@ export default function FibBotPage() {
       loadLinkState()
     }
   }, [loadLinkState])
-
-  const loadLinkState = useCallback(async () => {
-    try {
-      const d = await (await fetch("/api/upstox/status", { cache: "no-store" })).json()
-      setOauthLinked(Boolean(d.oauthLinked))
-    } catch { /* leave unknown; both buttons stay hidden rather than lying */ }
-  }, [])
 
   useEffect(() => { load(); loadLinkState() }, [load, loadLinkState])
 
