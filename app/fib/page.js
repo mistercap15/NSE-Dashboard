@@ -228,7 +228,18 @@ export default function FibBotPage() {
           <div className="flex flex-wrap items-center gap-x-8 gap-y-3">
             <div>
               <div className="font-mono text-[10px] text-dim uppercase tracking-widest mb-1">Contract</div>
-              <div className="font-mono text-base text-text">{contract?.tradingSymbol || DASH}</div>
+              <div className="font-mono text-base text-text flex items-center gap-2">
+                {contract?.tradingSymbol || DASH}
+                {/* Without this, a contract change mid-month reads as a bug: the
+                    front month is still trading, so "why is it on September?" is
+                    the obvious question. Says the switch was deliberate. */}
+                {contract?.rolled && (
+                  <span className="font-mono text-[9px] px-1.5 py-0.5 rounded bg-purple/15 text-purple
+                    uppercase tracking-widest" title="Rolled early — the previous contract was too close to expiry for a trade to finish">
+                    rolled early
+                  </span>
+                )}
+              </div>
             </div>
             <div>
               <div className="font-mono text-[10px] text-dim uppercase tracking-widest mb-1">Instrument Key</div>
