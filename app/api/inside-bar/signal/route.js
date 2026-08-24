@@ -41,6 +41,26 @@ const HISTORY_DAYS = 40;
 /** Below this there isn't enough to find a mother/inside pair and judge it. */
 const MIN_BARS = IB_CONFIG.setupLookback + 5;
 
+/**
+ * Switch to the next contract this many CALENDAR days before expiry.
+ *
+ * Derived rather than picked: a trade must be able to run its full course before
+ * the contract dies, so the roll has to happen at least one timeout-horizon out.
+ * 20 bars ÷ 7 bars a session = 2.9 trading days, ≈ 4 calendar days once
+ * weekends are counted, plus a day of margin.
+ *
+ * The old behaviour — refuse to open inside a fixed 2-day window — was worse in
+ * both directions: it skipped valid signals AND the window was shorter than the
+ * timeout, so a trade opened at its edge could still be force-settled at expiry.
+ * Rolling keeps trading, on the contract where the liquidity is migrating anyway.
+ *
+ * The levels MUST be computed on the contract being traded. The two months trade
+ * ~130 points apart (cost of carry), so a level from the front month is simply a
+ * different price on the next one — a stop-entry placed there would trigger
+ * instantly rather than on a breakout.
+ */
+const ROLL_DAYS = 4;
+
 const CACHE_TTL_MS = 60000;
 let CACHE = { key: null, at: 0, payload: null };
 
@@ -78,7 +98,13 @@ export async function GET(request) {
   try {
     await ensureInstrumentMap();
 
-    const contract = currentFuturesContract(underlying);
+    // Roll early. Inside ROLL_DAYS of expiry the NEXT contract becomes the one
+    // we compute and trade, so its levels are native to the instrument.
+    const front = currentFuturesContract(underlying);
+    const next = nextFuturesContract(underlying);
+    const frontDays = front ? (front.expiry - Date.now()) / 86400000 : 0;
+    const rolled = Boolean(front && next && frontDays <= ROLL_DAYS);
+    const contract = rolled ? next : front;
     if (!contract) {
       return NextResponse.json({
         ...base,
@@ -86,8 +112,10 @@ export async function GET(request) {
       });
     }
 
-    const roll = nextFuturesContract(underlying);
+    // What THIS contract rolls into next, for display.
+    const roll = rolled ? null : next;
     const contractOut = {
+      rolled,
       instrumentKey: contract.instrumentKey,
       tradingSymbol: contract.tradingSymbol,
       expiry: contract.expiry,
