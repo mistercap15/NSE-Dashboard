@@ -36,13 +36,39 @@ const PROFILE_TIMEOUT_MS = 8000;
 function config() {
   return {
     accountId: process.env.BOT_ACCOUNT_ID || "",
-    syncUrl: process.env.DROPLET_SYNC_URL || "",
+    // Trimmed: a trailing space or newline in a dashboard env var makes the URL
+    // unparseable, and the resulting failure looks identical to the host being down.
+    syncUrl: (process.env.DROPLET_SYNC_URL || "").trim(),
     secret: process.env.BOT_SYNC_SECRET || "",
   };
 }
 
 const deny = (error, status = 403) =>
   NextResponse.json({ synced: false, error }, { status });
+
+/**
+ * Why a fetch failed, in words. Node's undici reports almost everything as the
+ * bare string "fetch failed", which is undiagnosable from a UI — it covers a
+ * malformed URL, a DNS miss, a refused connection and a TLS error alike. The
+ * cause is one level down in `.cause`.
+ */
+function describeFetchError(e, url) {
+  const cause = e?.cause;
+  const code = cause?.code || e?.code;
+  const detail = code ? `${code}` : (cause?.message || e?.message || "unknown");
+  const hints = {
+    ENOTFOUND: "the hostname does not resolve — check DROPLET_SYNC_URL for a typo",
+    EAI_AGAIN: "DNS lookup failed temporarily",
+    ECONNREFUSED: "the host refused the connection — is the receiver running?",
+    ECONNRESET: "the connection was reset mid-request",
+    CERT_HAS_EXPIRED: "the TLS certificate has expired",
+    UNABLE_TO_VERIFY_LEAF_SIGNATURE: "the TLS certificate could not be verified",
+    ERR_INVALID_URL: "DROPLET_SYNC_URL is not a valid URL",
+  };
+  const hint = hints[code] ? ` — ${hints[code]}` : "";
+  // The URL is not a credential; the secret travels in a header.
+  return `${detail}${hint} (tried ${url})`;
+}
 
 async function fetchWithTimeout(url, options, ms) {
   const ctrl = new AbortController();
@@ -96,7 +122,7 @@ export async function GET() {
     // "no token" — the bot may well be running fine on a token this request
     // simply couldn't see, and a false "not synced" would prompt a needless
     // re-sync every morning.
-    return unknown(`Could not reach the droplet: ${e.message}`);
+    return unknown(`Could not reach the droplet: ${describeFetchError(e, statusUrl)}`);
   }
 }
 
@@ -106,6 +132,18 @@ export async function POST(request) {
   // Misconfiguration is a refusal, not a default. Without the expected account
   // id there is no identity gate at all, and syncing to an unset URL with an
   // empty secret would be worse than doing nothing.
+  // A URL that cannot even be parsed should say that, not "fetch failed".
+  if (syncUrl) {
+    try {
+      const u = new URL(syncUrl.trim());
+      if (u.protocol !== "https:") {
+        return deny(`DROPLET_SYNC_URL must be https, got "${u.protocol}" (${syncUrl.trim()}).`, 503);
+      }
+    } catch {
+      return deny(`DROPLET_SYNC_URL is not a valid URL: "${syncUrl}".`, 503);
+    }
+  }
+
   if (!accountId || !syncUrl || !secret) {
     return deny(
       "Sync is not configured on the server (needs BOT_ACCOUNT_ID, DROPLET_SYNC_URL, BOT_SYNC_SECRET).",
@@ -178,7 +216,7 @@ export async function POST(request) {
       return deny(`Droplet rejected the sync (${res.status}). ${detail.slice(0, 160)}`, 502);
     }
   } catch (e) {
-    return deny(`Could not reach the droplet: ${e.message}`, 502);
+    return deny(`Could not reach the droplet: ${describeFetchError(e, syncUrl)}`, 502);
   }
 
   // The token is never echoed back. The caller already has it in their cookie;
