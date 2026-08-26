@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { upstoxTokenFor, nextTokenExpiryMs } from "@/app/lib/auth";
+import { fetchResilient } from "@/app/lib/dnsFallback";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Push the trading account's Upstox token to the droplet that runs the bot.
@@ -30,6 +31,14 @@ const PROFILE_URL = "https://api.upstox.com/v2/user/profile";
 /** The droplet is a small server on a home-grade link; don't hang a Vercel
  *  function on it. Long enough for a TLS handshake plus the profile check. */
 const DROPLET_TIMEOUT_MS = 10000;
+
+/** Droplet calls go through fetchResilient, which falls back to DNS-over-HTTPS
+ *  when the platform resolver fails. Vercel's Lambda resolver intermittently
+ *  cannot resolve the Funnel hostname's `ts.net` zone and negative-caches the
+ *  miss, which is what made this button fail in runs. The Upstox profile check
+ *  below deliberately stays on plain fetch — it is the security gate, its
+ *  hostname has never had a resolution problem, and it is not the thing to
+ *  loosen while fixing something else. */
 const PROFILE_TIMEOUT_MS = 8000;
 
 /** Refuse rather than guess when the deployment is half-configured. */
@@ -57,7 +66,7 @@ function describeFetchError(e, url) {
   const code = cause?.code || e?.code;
   const detail = code ? `${code}` : (cause?.message || e?.message || "unknown");
   const hints = {
-    ENOTFOUND: "the hostname does not resolve — check DROPLET_SYNC_URL for a typo",
+    ENOTFOUND: "the hostname could not be resolved, even over DNS-over-HTTPS — check DROPLET_SYNC_URL",
     EAI_AGAIN: "DNS lookup failed temporarily",
     ECONNREFUSED: "the host refused the connection — is the receiver running?",
     ECONNRESET: "the connection was reset mid-request",
@@ -103,7 +112,7 @@ export async function GET() {
   const statusUrl = syncUrl.replace(/\/sync-token\/?$/, "/token-status");
 
   try {
-    const res = await fetchWithTimeout(
+    const res = await fetchResilient(
       statusUrl,
       { headers: { "X-Sync-Secret": secret } },
       DROPLET_TIMEOUT_MS,
@@ -198,7 +207,7 @@ export async function POST(request) {
   const expiresAt = nextTokenExpiryMs();
 
   try {
-    const res = await fetchWithTimeout(
+    const res = await fetchResilient(
       syncUrl,
       {
         method: "POST",
