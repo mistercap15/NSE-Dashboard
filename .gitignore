@@ -43,3 +43,6 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 .upstox_token
+
+# python venv for scripts/fetch_oi_delivery.py (jugaad-data)
+.venv*
