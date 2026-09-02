@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 import { useTheme } from "next-themes";
 import {
   Sun, Moon, Menu, X, ChevronDown, LogOut,
-  LayoutDashboard, TrendingUp, CalendarDays, SlidersHorizontal, Search, RotateCcw, Zap, LineChart, TrendingDown, Scale, Layers, Target, Bot, Boxes, Bitcoin } from "lucide-react";
+  LayoutDashboard, TrendingUp, CalendarDays, SlidersHorizontal, Search, RotateCcw, Zap, LineChart, TrendingDown, Scale, Layers, Target, Bot, Bitcoin } from "lucide-react";
 import { MONTHS } from "../lib/api";
 import { getCurrentMonth, getCurrentYear } from "../lib/date";
 
@@ -33,7 +33,6 @@ const navGroups = [
       { href: "/swing-low",   label: "Swing Low",   Icon: TrendingDown },
       { href: "/sizing",      label: "Capital",     Icon: Scale },
       { href: "/fib",         label: "Fib Bot",     Icon: Bot },
-      { href: "/inside-bar",  label: "Inside Bar",  Icon: Boxes },
       { href: "/crypto-fib",  label: "Crypto Fib",  Icon: Bitcoin },
     ],
   },
