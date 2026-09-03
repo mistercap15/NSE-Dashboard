@@ -1,5 +1,8 @@
-const MCP_URL    = process.env.MCP_URL    || "https://nse-data-mcp.vercel.app/mcp";
-const MCP_SECRET = process.env.MCP_SECRET || "Hanuman0715";
+// No MCP credential is sent, and none is needed: the Apps Script behind the MCP
+// handles its own auth. There used to be an MCP_SECRET here with a hardcoded
+// fallback — it was assigned and never referenced, so it authenticated nothing
+// while looking like it did. Removed rather than left as decoration.
+const MCP_URL = process.env.MCP_URL || "https://nse-data-mcp.vercel.app/mcp";
 
 async function callMCP(toolName, args = {}) {
   const res = await fetch(MCP_URL, {
