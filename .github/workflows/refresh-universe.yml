@@ -1,0 +1,118 @@
+name: 📅 Refresh seasonality snapshot
+
+# Rebuilds data/universe.json from fresh Upstox daily candles and commits it.
+#
+# WHY THIS CAN RUN UNATTENDED. The refresh only ever calls
+# /historical-candle/* — market data. That is exactly what UPSTOX_ANALYTICS_TOKEN
+# serves: read-only, valid a year, and accepted from any IP, so this needs none
+# of the daily 03:30 IST OAuth dance the trading bots depend on. It cannot place
+# an order even if something here went badly wrong.
+#
+# WHY MONTHLY. Seasonality is built from COMPLETED monthly returns. It gains a
+# data point only when a month closes, so running more often just burns API
+# calls to rewrite the same file.
+
+on:
+  schedule:
+    # 06:00 UTC = 11:30 IST on the 1st. The previous month is closed and settled
+    # by then, and it is well clear of the 03:30 IST token boundary.
+    - cron: "0 6 1 * *"
+  workflow_dispatch:          # so it can be run by hand after a bad month
+
+permissions:
+  contents: write             # it commits universe.json
+
+concurrency:
+  group: refresh-universe
+  cancel-in-progress: false   # never interrupt a half-written snapshot
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45       # ~181 symbols of daily candles, generously
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install
+        run: npm ci
+
+      - name: Fail early if the token is missing
+        env:
+          TOKEN: ${{ secrets.UPSTOX_ANALYTICS_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "::error::UPSTOX_ANALYTICS_TOKEN is not set. Add it under"
+            echo "::error::Settings → Secrets and variables → Actions."
+            exit 1
+          fi
+
+      - name: Record the snapshot we started from
+        run: |
+          cp data/universe.json /tmp/universe.before.json
+          node -e "
+            const u = require('./data/universe.json');
+            console.log('before:', u.symbols.length, 'symbols, generated', u.generatedAt);
+          "
+
+      - name: Refresh
+        env:
+          # The export script reads UPSTOX_ACCESS_TOKEN. The analytics token is
+          # what goes in it — same header, market-data scope only.
+          UPSTOX_ACCESS_TOKEN: ${{ secrets.UPSTOX_ANALYTICS_TOKEN }}
+        run: npm run refresh-data
+
+      - name: Sanity-check the new snapshot before committing
+        # A truncated or half-written file must never reach master. Vercel
+        # deploys on push, and every seasonality page reads this one file.
+        run: |
+          node -e "
+            const fs = require('fs');
+            const before = JSON.parse(fs.readFileSync('/tmp/universe.before.json', 'utf8'));
+            const after  = JSON.parse(fs.readFileSync('data/universe.json', 'utf8'));
+
+            const fail = (m) => { console.error('::error::' + m); process.exit(1); };
+
+            if (!after.symbols?.length) fail('new snapshot has no symbols');
+            if (!after.series)          fail('new snapshot has no series');
+            if (!after.generatedAt)     fail('new snapshot has no generatedAt');
+
+            // A real month adds data. Losing more than a handful of symbols
+            // means a partial fetch, not a legitimate F&O list change.
+            const lost = before.symbols.filter((s) => !after.symbols.includes(s));
+            if (lost.length > 10)
+              fail('lost ' + lost.length + ' symbols (' + lost.slice(0, 8).join(', ') + '…) — refusing');
+
+            // Every symbol should carry some history.
+            const empty = after.symbols.filter((s) => !Object.keys(after.series[s] || {}).length);
+            if (empty.length > 5)
+              fail(empty.length + ' symbols have no returns at all — refusing');
+
+            console.log('ok:', after.symbols.length, 'symbols,',
+                        'lost', lost.length + ',', 'empty', empty.length);
+          "
+
+      - name: Commit if anything changed
+        run: |
+          if git diff --quiet -- data/universe.json; then
+            echo "Snapshot is unchanged — nothing to commit."
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/universe.json
+          git commit -m "chore: refresh seasonality snapshot for $(date -u '+%B %Y')
+
+          Rebuilt from Upstox daily candles by the monthly workflow. Seasonality
+          is completed monthly returns, so this gains a data point only when a
+          month closes.
+
+          Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+          git push
