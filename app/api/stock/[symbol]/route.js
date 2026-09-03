@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { promoterBlockFor } from "@/app/lib/promoter";
+import { withCompletedMonthsOnly } from "@/app/lib/seasonalityFromPrices";
 
 const MCP_URL = process.env.MCP_URL || "https://nse-data-mcp.vercel.app/mcp";
 
@@ -45,7 +46,10 @@ export async function GET(request, { params }) {
     //
     // Built by the shared helper so this route and /api/analysis — the mobile
     // app's equivalent — cannot drift apart again.
-    return NextResponse.json({ ...raw, promoter: promoterBlockFor(symbol) });
+    // Same correction as /api/analysis — the in-progress month is not a
+    // completed year. Shared helper so the two cannot drift apart.
+    return NextResponse.json({ ...withCompletedMonthsOnly(raw),
+                               promoter: promoterBlockFor(symbol) });
   } catch (e) {
     console.error(`Stock API error [${symbol}]:`, e.message);
     return NextResponse.json({ error: e.message }, { status: 500 });
