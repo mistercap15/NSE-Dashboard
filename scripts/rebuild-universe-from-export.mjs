@@ -26,6 +26,22 @@ const EXPORT_DIR = join(ROOT, "data", "exports");
 // (Pre-2009 closes are still used to compute the Jan-2009 return, just not stored.)
 const START_YM = "2009-01";
 
+// The month currently in progress, in IST. Its "return" is however many days
+// have elapsed — on the 1st, a single session — and storing that as a monthly
+// return makes it a completed year in every seasonality count downstream.
+//
+// This is the same defect that made the stock-detail page disagree with
+// /rankings (see app/lib/seasonalityFromPrices.js), reaching the snapshot by a
+// different road. It matters more now that the refresh runs on a schedule: the
+// workflow fires on the 1st, so without this the file would gain a one-day
+// "month" every single time it ran.
+//
+// IST, not the runner's clock — GitHub Actions runs in UTC, which disagrees
+// with the exchange for five and a half hours around every month boundary.
+const CURRENT_YM = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit",
+}).format(new Date()).slice(0, 7);
+
 // Monthly % return series from daily candles: (monthEndClose / prevMonthEndClose − 1)·100.
 function monthlySeries(candles) {
   const monthEnd = {};
@@ -36,6 +52,7 @@ function monthlySeries(candles) {
     const pm = m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, "0")}`;
     if (monthEnd[pm] == null || monthEnd[pm] === 0) continue;
     if (ym < START_YM) continue; // prev-month still used above; just not stored
+    if (ym >= CURRENT_YM) continue; // a month still running is not a data point
     out[ym] = Math.round((monthEnd[ym] / monthEnd[pm] - 1) * 100 * 100) / 100;
   }
   return out;
