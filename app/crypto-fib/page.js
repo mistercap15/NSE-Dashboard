@@ -75,9 +75,9 @@ export default function CryptoFibPage() {
 
   const state = !signal ? "unavailable" : armed ? "armed" : "aside"
   const HERO = {
-    armed:       { label: "ORDER ARMED", tone: "green", note: "A limit buy should be resting at the entry price." },
-    aside:       { label: "STAND ASIDE", tone: "amber", note: "No order should be resting right now." },
-    unavailable: { label: "SIGNAL UNAVAILABLE", tone: "dim", note: err || "The engine could not produce a signal." },
+    armed:       { label: "READY TO BUY", tone: "green", note: "A buy order should be waiting at this price." },
+    aside:       { label: "WAITING FOR A SETUP", tone: "amber", note: "No order should be waiting right now." },
+    unavailable: { label: "NO SIGNAL", tone: "dim", note: err || "The engine could not work out a signal." },
   }[state]
   const toneText = { green: "text-green", amber: "text-amber", dim: "text-dim" }[HERO.tone]
   const toneBg   = { green: "border-green/30 bg-green/5", amber: "border-amber/30 bg-amber/5", dim: "border-border bg-card" }[HERO.tone]
@@ -170,11 +170,11 @@ export default function CryptoFibPage() {
 
         {/* ── Levels ─────────────────────────────────────────────────── */}
         <div className="font-mono text-[10px] text-dim uppercase tracking-widest mb-3">
-          The plan {armed ? "in force" : "if it re-arms"}
+          The plan {armed ? "right now" : "when a setup appears"}
         </div>
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-3">
-          <StatCard label="Fib Entry — limit buy" value={fmt(signal?.fibEntry)}
-            sub={armed ? "order rests here" : "not armed"} color={armed ? "text-accent" : "text-text"} />
+          <StatCard label="Buy at (Fib level)" value={fmt(signal?.fibEntry)}
+            sub={armed ? "order waits here" : "no order yet"} color={armed ? "text-accent" : "text-text"} />
           <StatCard label="Stop" value={fmt(signal?.stopPrice)}
             sub={riskPct != null ? `${riskPct.toFixed(2)}% below entry` : undefined} color="text-red" />
           <StatCard label="Target" value={fmt(signal?.targetPrice)} sub="the swing high" color="text-green" />
@@ -198,7 +198,7 @@ export default function CryptoFibPage() {
           <div className="font-mono text-[10px] text-dim uppercase tracking-widest mb-2">Notes</div>
           <ul className="font-mono text-[11px] text-muted space-y-1.5 leading-relaxed">
             <li>· Same engine as the Nifty Fib bot — <span className="text-soft">app/lib/fib.js</span>, not a second copy.</li>
-            <li>· Entry is a resting <span className="text-soft">limit</span>, so it fills at that price or better, or not at all.</li>
+            <li>· The buy is a <span className="text-soft">waiting limit order</span>, so it fills at that price or better, or not at all.</li>
             <li>· Leverage is capped at 2× in code. A ~2% stop at 50× is the entire margin — the position
               would liquidate before reaching the stop it was given.</li>
             <li>· Perpetuals charge funding roughly every 8h; a ~30h hold pays it 3–4 times.</li>

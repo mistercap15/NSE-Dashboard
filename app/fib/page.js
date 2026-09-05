@@ -13,7 +13,7 @@ import StatCard from "../components/StatCard"
 // (app/lib/fib.js).
 //
 // The bot does not trade yet. This screen answers one question: if the executor
-// were running right now, would an order be resting, and at what price?
+// were running right now, would a buy order be waiting, and at what price?
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** How often to re-ask while the market is open. It's an hourly-bar strategy —
@@ -149,10 +149,10 @@ export default function FibBotPage() {
     : null
 
   const STATE = {
-    armed:        { label: "ORDER ARMED",       tone: "green", note: "A buy order should be resting at the entry price." },
-    aside:        { label: "STAND ASIDE",       tone: "amber", note: "No order should be resting right now." },
-    unavailable:  { label: "SIGNAL UNAVAILABLE", tone: "dim",   note: "The engine could not produce a signal." },
-    disconnected: { label: "SIGNAL UNAVAILABLE", tone: "dim",   note: "Connect Upstox to see the live signal." },
+    armed:        { label: "READY TO BUY",      tone: "green", note: "A buy order should be waiting at this price." },
+    aside:        { label: "WAITING FOR A SETUP", tone: "amber", note: "No order should be waiting right now." },
+    unavailable:  { label: "NO SIGNAL", tone: "dim",   note: "The engine could not work out a signal." },
+    disconnected: { label: "NO SIGNAL", tone: "dim",   note: "Connect Upstox to see the live signal." },
   }[state]
 
   const toneText = { green: "text-green", amber: "text-amber", dim: "text-dim" }[STATE.tone]
@@ -368,13 +368,13 @@ export default function FibBotPage() {
 
         {/* ── The levels ─────────────────────────────────────────────── */}
         <div className="font-mono text-[10px] text-dim uppercase tracking-widest mb-3">
-          The plan {armed ? "in force" : "if it re-arms"}
+          The plan {armed ? "right now" : "when a setup appears"}
         </div>
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-3">
           <StatCard
-            label="Fib Entry — limit buy"
+            label="Buy at (Fib level)"
             value={fmt(signal?.fibEntry)}
-            sub={armed ? "order rests here" : "not armed"}
+            sub={armed ? "order waits here" : "no order yet"}
             color={armed ? "text-accent" : "text-text"}
           />
           <StatCard
