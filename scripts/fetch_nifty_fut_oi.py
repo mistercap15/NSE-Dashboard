@@ -9,8 +9,22 @@ OI is the point of this script. Every fetch path below is chosen because it
 returns the 7th candle field; nothing here goes through app/lib/upstox.js's
 helpers, which map candles to 6 fields and drop it.
 
-READ THIS BEFORE TRUSTING THE OUTPUT — two things are not what the brief assumed
--------------------------------------------------------------------------------
+WHAT THE DATA ACTUALLY LOOKS LIKE (measured 2026-09-05, not assumed)
+--------------------------------------------------------------------
+  range      2024-09-30 → 2026-09-04   NOT 2022. See (3).
+  15-minute  11,525 bars over 461 trading days, 23 contracts, 22 rolls
+  hourly      3,234 bars, resampled — see (2)
+  OI         present on 99.57% of bars, median 14.7M, no intraday jumps >25%
+  known defects, all reported by the run:
+    • 2024-11-29 → 2024-12-26 MISSING — the DEC-24 contract returns zero
+      candles at every interval while its neighbours return data. Upstox hole.
+    • 2025-10-06 and 2025-10-07 have OI=0 on every bar with normal volume.
+      The field was not populated. Exclude those days.
+    • 16 bars stamped 03:30 in the APR-25 contract — before the open; artifact.
+    • From 2026-08-03 the feed carries a 26th bar at 15:30. Earlier days have 25.
+
+READ THIS BEFORE TRUSTING THE OUTPUT — three things are not what the brief assumed
+---------------------------------------------------------------------------------
 1. EXPIRED CONTRACTS NEED A DIFFERENT API, AND IT IS PAID.
    The instrument master (assets.upstox.com/.../NSE.json.gz) carries only
    LIVE contracts — 3 NIFTY futures, about a quarter of data between them.
@@ -35,6 +49,12 @@ READ THIS BEFORE TRUSTING THE OUTPUT — two things are not what the brief assum
    `--probe` diffs the resampled bars against native v3 hourly on a live
    contract so you can see for yourself that the two agree.
 
+3. THE HISTORY ONLY REACHES BACK ~2 YEARS, NOT TO 2022.
+   Upstox retains expired instruments for roughly two years — the earliest
+   expiry the API offers is 2024-10-31. The 2022 and 2023 contracts are GONE,
+   not paywalled; no subscription recovers them. If the strategy needs a longer
+   sample, futures OI from this source cannot supply it.
+
 How the continuous series is built
 ----------------------------------
 Front-month, rolled on expiry. For expiry E_i, the contract is used for dates
@@ -49,7 +69,16 @@ is flagged is_roll_day. THIS MATTERS FOR THIS STRATEGY SPECIFICALLY: open
 interest belongs to a contract, not to the underlying, so it resets at every
 roll. An OI series read across a roll shows a violent jump that is pure
 bookkeeping. Filter on is_roll_day, or difference OI only within a contract,
-or the backtest will read ~57 fake reversals.
+or the backtest will read 22 fake reversals.
+
+Two traps in the contract chain, both hit during development:
+  • The futures expiry is NOT reliably the last expiry of its month. A weekly
+    option expiry can fall after it (2025-04-30 sits after the 2025-04-24
+    futures expiry), so "max of month" silently dropped April 2025 and let the
+    MAY contract serve April — far-month OI posing as front-month. The chain
+    probes each month's expiries instead, newest first, until one resolves.
+  • The docs name expired_instrument_key as the field to use; the API returns
+    it null and puts the composite key in instrument_key.
 
 Usage
 -----
@@ -93,6 +122,17 @@ V3_EPOCH = "2022-01-01"                 # no sub-daily data before this
 # because a range under the cap but over the page size silently returns short).
 WINDOW_START_DAYS = 90
 WINDOW_MIN_DAYS = 5
+
+# NSE lists index futures three months out, so no contract has bars earlier than
+# roughly this far before its expiry. Without the clamp the FIRST contract in the
+# chain inherits a window starting at --from, and a 2022 --from against a 2024
+# contract walks ~30 pointless pages through years the contract did not exist.
+MAX_CONTRACT_LIFE_DAYS = 100
+
+# The first contract in the chain has no predecessor to roll from — the one
+# before it is outside Upstox's ~2-year retention — so its front-month start is
+# approximated as this many days before its expiry.
+FIRST_CONTRACT_DAYS = 31
 SLEEP_BETWEEN = 0.35
 MAX_RETRIES = 5
 
@@ -258,19 +298,50 @@ def expired_expiries(token):
     return sorted({date.fromisoformat(d) for d in (data or {}).get("data", []) if d})
 
 
-def monthly_expiries(expiries):
-    """Last expiry in each calendar month — the futures expiry.
+def resolve_monthly_futures(token, expiries, from_date, skip_expiries):
+    """Find, per calendar month, the expiry that actually has a FUTURE contract.
 
-    The expiries list is dominated by WEEKLY option expiries; futures are monthly
-    only. Taking the max per month gets the futures expiry without hard-coding a
-    weekday, which NSE has already changed once (Thursday → Tuesday).
+    DO NOT shortcut this to "last expiry of the month". The expiry list is
+    dominated by weekly OPTION expiries, and a weekly can fall AFTER the monthly
+    futures expiry inside the same month — April 2025 carries a 2025-04-30
+    weekly after the 2025-04-24 futures expiry. Taking the max picks the weekly,
+    future/contract returns nothing for it, and the entire month drops out of
+    the chain: April 2025 silently vanished and its dates were served by the MAY
+    contract, i.e. far-month OI standing in for front-month.
+
+    So probe instead — newest candidate first, stop at the first that resolves.
+    Costs one or two calls a month and cannot go stale the way a weekday rule
+    does (NSE has already moved expiry day once).
     """
-    by_month = {}
+    by_month = defaultdict(list)
     for e in expiries:
-        k = (e.year, e.month)
-        if k not in by_month or e > by_month[k]:
-            by_month[k] = e
-    return sorted(by_month.values())
+        by_month[(e.year, e.month)].append(e)
+
+    out, barren = [], []
+    for k in sorted(by_month):
+        cands = sorted(by_month[k], reverse=True)
+        if max(cands) < from_date or max(cands) in skip_expiries:
+            continue
+        found = None
+        for e in cands:
+            if e in skip_expiries:
+                found = "live"
+                break
+            found = expired_future_contract(token, e)
+            time.sleep(SLEEP_BETWEEN)
+            if found:
+                break
+        if found and found != "live":
+            out.append(found)
+        elif not found:
+            barren.append(k)
+
+    if barren:
+        print(f"    !!! {len(barren)} month(s) have expiries but NO future contract: "
+              + ", ".join(f"{y}-{m:02d}" for y, m in barren))
+        print("    !!! those months will be missing from the series entirely.")
+    out.sort(key=lambda c: c["expiry"])
+    return out
 
 
 def expired_future_contract(token, expiry):
@@ -285,6 +356,9 @@ def expired_future_contract(token, expiry):
     data = get_with_retry(url, token, tolerate_404=True)
     rows = (data or {}).get("data") or []
     for r in rows:
+        # The docs name expired_instrument_key as the field to use. The API
+        # actually returns it as null and puts the composite key
+        # ("NSE_FO|35089|28-11-2024") in instrument_key. Read both.
         key = r.get("expired_instrument_key") or r.get("instrument_key")
         if key:
             return {
@@ -326,21 +400,12 @@ def build_chain(token, from_date, to_date):
             "         but NO open interest and NO volume, so it cannot feed an\n"
             "         OI-reversal strategy at all.\n") from exc
 
-    monthlies = [e for e in monthly_expiries(allx) if e >= from_date]
-    print(f"  expiries API      : {len(allx)} expiries, {len(monthlies)} monthly "
-          f"in range ({monthlies[0]} → {monthlies[-1]})" if monthlies else
-          "  expiries API      : nothing in range")
+    print(f"  expiries API      : {len(allx)} expiries "
+          f"({allx[0]} → {allx[-1]}) — mostly weekly options")
 
     live_expiries = {c["expiry"] for c in live}
-    chain = []
-    for e in monthlies:
-        if e in live_expiries:
-            continue                       # still tradeable; take it from the master
-        c = expired_future_contract(token, e)
-        if c:
-            chain.append(c)
-        time.sleep(SLEEP_BETWEEN)
-
+    print("  probing each month for its futures expiry …", flush=True)
+    chain = resolve_monthly_futures(token, allx, from_date, live_expiries)
     chain.extend(c for c in live if c["expiry"] >= from_date)
     chain.sort(key=lambda c: c["expiry"])
 
@@ -348,7 +413,17 @@ def build_chain(token, from_date, to_date):
     prev_expiry = None
     scheduled = []
     for c in chain:
-        start = from_date if prev_expiry is None else max(from_date, prev_expiry + timedelta(days=1))
+        if prev_expiry is None:
+            # No predecessor inside the API's retention, so the real front-month
+            # start is unknown. Bound it to one roll period: without this the
+            # window reaches back to --from and sweeps in months when this
+            # contract was the FAR month, whose OI is a different order of
+            # magnitude (4,650 against a 14M front-month median) and would look
+            # to the strategy like an OI collapse.
+            start = max(from_date, c["expiry"] - timedelta(days=FIRST_CONTRACT_DAYS))
+        else:
+            start = max(from_date, prev_expiry + timedelta(days=1))
+        start = max(start, c["expiry"] - timedelta(days=MAX_CONTRACT_LIFE_DAYS))
         end = min(c["expiry"], to_date)
         prev_expiry = c["expiry"]
         if start > end or end < from_date:
@@ -358,7 +433,20 @@ def build_chain(token, from_date, to_date):
 
     print(f"  chain             : {len(scheduled)} contracts "
           f"({sum(1 for c in scheduled if c['live'])} live, "
-          f"{sum(1 for c in scheduled if not c['live'])} expired)\n")
+          f"{sum(1 for c in scheduled if not c['live'])} expired)")
+
+    if scheduled:
+        reach = scheduled[0]["win_from"]
+        print(f"  series covers     : {reach} → {scheduled[-1]['win_to']}")
+        if reach > from_date + timedelta(days=7):
+            missing = (reach - from_date).days
+            print(f"\n  !!! YOU ASKED FOR {from_date}, BUT THE SERIES STARTS {reach}")
+            print(f"  !!! — {missing:,} days ({missing/365.25:.1f} years) short.")
+            print("  !!! Upstox retains expired instruments for roughly two years; the")
+            print("  !!! contracts before that are gone from the API, not merely paywalled.")
+            print("  !!! No subscription recovers them. If the backtest needs a longer")
+            print("  !!! sample, futures OI from this source cannot supply it.")
+    print()
     return scheduled
 
 
@@ -479,16 +567,57 @@ def download(chain, token, part_path, restart=False):
             os.fsync(part.fileno())
 
             flag = "" if oi_nonzero == len(rows) else f"   <-- {len(rows) - oi_nonzero} ZERO-OI"
+            if not rows:
+                flag = "   <-- !!! NO DATA AT ALL — Upstox has no candles for this contract"
             print(f"  {tag} {c['win_from']} → {c['win_to']}  {len(rows):>5,} bars, "
                   f"{oi_nonzero:,} with OI{flag}", flush=True)
             time.sleep(SLEEP_BETWEEN)
     finally:
         part.close()
 
+    empty = [c["symbol"] for c in chain
+             if c["symbol"] in done and not done[c["symbol"]]["candles"]]
+    if empty:
+        print(f"\n!!! {len(empty)} contract(s) returned NO candles at any interval:")
+        for sym in empty:
+            print(f"!!!   {sym}")
+        print("!!! This is an Upstox data hole, not a request error — the same call\n"
+              "!!! shape returns data for neighbouring contracts. Those weeks are\n"
+              "!!! simply absent from the series; see CALENDAR HOLES below.")
     return [done[c["symbol"]] for c in chain if c["symbol"] in done]
 
 
 # ── Stitching ────────────────────────────────────────────────────────────────
+
+def dedupe_shifted_grid(candles):
+    """Collapse bars Upstox returns TWICE on a one-minute-shifted grid.
+
+    The 24 APR 25 contract comes back with two interleaved 15-minute grids —
+    09:15 AND 09:16, 09:30 AND 09:31, through 15:15 AND 15:16 — 51 bars for a
+    25-bar session, carrying different volumes. Both are real aggregations over
+    overlapping windows, so neither is corrupt on its own, but keeping both
+    double-counts every session and scrambles the bar sequence a backtest walks.
+
+    Bucket by (date, hour, minute // 15) and keep the bar on the canonical grid.
+    BUCKETING, NOT A `minute % 15` FILTER: the Muhurat session runs on its own
+    anchor (18:01, 18:16, 18:31, 18:46 on 2024-11-01), and a modulo test would
+    silently delete a legitimate trading session along with the duplicates.
+
+    Returns (kept, dropped_count).
+    """
+    def rank(t):
+        # Canonical grid first; earlier stamp breaks a tie.
+        return (0 if t.minute % 15 == 0 else 1, t)
+
+    best = {}
+    for c in candles:
+        ts = datetime.fromisoformat(c[0]).astimezone(IST)
+        slot = (ts.date(), ts.hour, ts.minute // 15)
+        cur = best.get(slot)
+        if cur is None or rank(ts) < rank(datetime.fromisoformat(cur[0]).astimezone(IST)):
+            best[slot] = c
+    return sorted(best.values(), key=lambda c: c[0]), len(candles) - len(best)
+
 
 def stitch(records):
     """One continuous ascending series, deduped, with contract + is_roll_day.
@@ -499,9 +628,15 @@ def stitch(records):
     """
     bars = []
     collisions = 0
+    shifted = 0
     seen = {}
     for rec in records:
-        for c in rec["candles"]:
+        candles, dropped = dedupe_shifted_grid(rec["candles"])
+        if dropped:
+            print(f"  !!! {rec['contract']}: dropped {dropped} duplicate bars on a "
+                  f"one-minute-shifted grid")
+            shifted += dropped
+        for c in candles:
             ts = datetime.fromisoformat(c[0]).astimezone(IST)
             oi = int(c[6]) if len(c) >= 7 and c[6] is not None else 0
             row = {
@@ -528,7 +663,7 @@ def stitch(records):
     for b in bars:
         b["is_roll_day"] = b["ts"].date() == first_day[b["contract"]]
 
-    return bars, collisions
+    return bars, collisions, shifted
 
 
 def hourly(bars):
@@ -618,7 +753,7 @@ def expected_grid(minutes):
     return out
 
 
-def verify(bars, label, minutes, collisions=0):
+def verify(bars, label, minutes, collisions=0, shifted=0):
     line = "─" * 78
     print("\n" + line + f"\nINTEGRITY REPORT — {label}\n" + line)
     if not bars:
@@ -641,6 +776,10 @@ def verify(bars, label, minutes, collisions=0):
     if collisions:
         print(f"    !!! {collisions} bars dropped as cross-contract timestamp collisions —")
         print("    !!! the front-month windows overlap. The chain is wrong; do not backtest.")
+    if shifted:
+        print(f"Shifted-grid bars: {shifted} dropped   (Upstox returned a second, "
+              f"1-minute-offset\n                   15-min grid for at least one contract; "
+              f"kept the canonical one)")
 
     # ── OI, the whole point ──────────────────────────────────────────────
     ois = [b["oi"] for b in bars]
@@ -658,6 +797,21 @@ def verify(bars, label, minutes, collisions=0):
               f"{int(statistics.median(nonzero)):,} / {max(nonzero):,}")
     else:
         print("    !!! NOT A SINGLE NON-ZERO OI BAR.")
+
+    # Zeros scattered through a day are one thing; a whole session with OI=0 on
+    # every bar while volume prints normally is Upstox failing to populate the
+    # field. For an OI strategy those days are unusable and must be dropped —
+    # OI=0 is not "no open interest", it is "no data".
+    per_day = defaultdict(list)
+    for b in bars:
+        per_day[b["ts"].date()].append(b["oi"])
+    dead = sorted(d for d, v in per_day.items() if v and not any(v))
+    if dead:
+        print(f"  DAYS WITH NO OI AT ALL : {len(dead)}   <-- !!!")
+        for d in dead:
+            vol = sum(b["volume"] for b in bars if b["ts"].date() == d)
+            print(f"    !!! {d}  every bar OI=0, yet volume {vol:,} — the field was")
+            print(f"    !!!            not populated. EXCLUDE this day from the backtest.")
 
     # ── Roll boundaries ──────────────────────────────────────────────────
     roll_days = sorted({b["ts"].date() for b in bars if b["is_roll_day"]})
@@ -679,18 +833,26 @@ def verify(bars, label, minutes, collisions=0):
 
     # Within a contract, OI should evolve smoothly. A big intra-contract jump is
     # the thing that would fool the strategy, so it gets its own count.
-    jumps = []
+    # Overnight and intraday are different animals. OI unwinding hard between
+    # sessions as expiry nears is the market rolling out — expected. A 25% move
+    # WITHIN a session is the one that would look like a signal and isn't.
+    overnight, intraday = [], []
     for i in range(1, len(bars)):
         p, c = bars[i - 1], bars[i]
-        if p["contract"] != c["contract"] or p["oi"] <= 0:
+        if p["contract"] != c["contract"] or p["oi"] <= 0 or c["oi"] <= 0:
             continue
-        chg = abs(c["oi"] - p["oi"]) / p["oi"] * 100
-        if chg > 25:
-            jumps.append((c["ts"], p["oi"], c["oi"], chg))
-    print(f"\n  intra-contract OI jumps >25% : {len(jumps)}"
-          + ("   <-- inspect these" if jumps else ""))
-    for ts, a, b_, chg in jumps[:10]:
+        chg = (c["oi"] - p["oi"]) / p["oi"] * 100      # SIGNED — a fall must read as one
+        if abs(chg) > 25:
+            (overnight if p["ts"].date() != c["ts"].date() else intraday).append(
+                (c["ts"], p["oi"], c["oi"], chg))
+    print(f"\n  intra-contract OI moves >25%")
+    print(f"    across sessions : {len(overnight)}   (roll-out near expiry — expected)")
+    for ts, a, b_, chg in overnight[:5]:
         print(f"      {ts:%Y-%m-%d %H:%M}  {a:,} → {b_:,}  ({chg:+.1f}%)")
+    print(f"    WITHIN a session: {len(intraday)}"
+          + ("   <-- !!! these would look like signals" if intraday else ""))
+    for ts, a, b_, chg in intraday[:10]:
+        print(f"      !!! {ts:%Y-%m-%d %H:%M}  {a:,} → {b_:,}  ({chg:+.1f}%)")
 
     # ── Bad candles ──────────────────────────────────────────────────────
     bad = []
@@ -720,7 +882,41 @@ def verify(bars, label, minutes, collisions=0):
 
     short = [(d, len(by_day[d]), [t for t in grid if t not in by_day[d]])
              for d in days if any(t not in by_day[d] for t in grid)]
-    severe = [s for s in short if len(s[2]) > max(2, len(grid) // 5)]
+    # A day holding only a handful of bars is a SPECIAL SESSION, not a hole:
+    # Muhurat ran 18:01–18:46 on 2024-11-01 and 13:45–14:30 on 2025-10-21. Both
+    # are complete sessions that happen to be an hour long. Calling them severe
+    # data loss trains you to ignore the one that eventually is.
+    special = [x for x in short if x[1] <= max(2, len(grid) // 3)]
+    partial = [x for x in short if x not in special]
+    severe = [x for x in partial if len(x[2]) > max(2, len(grid) // 5)]
+
+    # ── Calendar holes ───────────────────────────────────────────────────
+    # The grid check below only walks days present in the file, so an entire
+    # missing month scores zero complaints there. This walks the calendar.
+    holes = []
+    for i in range(1, len(days)):
+        gap = (days[i] - days[i - 1]).days
+        if gap > 4:                       # a long weekend plus a holiday or two
+            holes.append((days[i - 1], days[i], gap))
+    print(f"\nCALENDAR HOLES (>4 days with no bars at all)")
+    print(f"  count          : {len(holes)}" + ("   <-- !!!" if holes else ""))
+    for a, b, g in holes[:15]:
+        print(f"    !!! {a} → {b}   {g} days missing "
+              f"(~{g * 5 // 7} trading days)")
+
+    # A month whose contract is absent shows up as consecutive contracts more
+    # than a roll apart. Those dates get served by a FARTHER contract, so the OI
+    # is the wrong book — not merely thin.
+    spans = []
+    for i in range(1, len(contracts)):
+        a = max(b["ts"].date() for b in bars if b["contract"] == contracts[i - 1])
+        b_ = min(b["ts"].date() for b in bars if b["contract"] == contracts[i])
+        if (b_ - a).days > 45:
+            spans.append((contracts[i - 1], a, contracts[i], b_))
+    print(f"  contract gaps  : {len(spans)}" + ("   <-- !!!" if spans else ""))
+    for ca, a, cb, b_ in spans[:10]:
+        print(f"    !!! {ca} ends {a}, {cb} starts {b_} — "
+              f"{(b_ - a).days} days with no front-month contract")
 
     print(f"\nBAR ALIGNMENT")
     print(f"  expected/day   : {len(grid)}  ({grid[0]:%H:%M} … {grid[-1]:%H:%M}, "
@@ -730,17 +926,48 @@ def verify(bars, label, minutes, collisions=0):
         print("        not a full hour. Bar-count logic in the strategy must expect 7/day.")
     else:
         print("  NOTE: 15-minute divides the session exactly — 25 bars, no stub bar.")
-    print(f"  days short     : {len(short)} of {len(days)}   SEVERE: {len(severe)}"
+    print(f"  days short     : {len(short)} of {len(days)}   "
+          f"special sessions: {len(special)}   SEVERE: {len(severe)}"
           + ("   <-- !!!" if severe else ""))
+    for d, have, _m in special[:10]:
+        times = sorted(by_day[d])
+        print(f"      {d}  {have} bars {times[0]:%H:%M}–{times[-1]:%H:%M}  "
+              f"(special session — complete, just short)")
     for d, have, miss in severe[:20]:
         print(f"    !!! {d}  {have}/{len(grid)}  missing {len(miss)} "
               f"({miss[0]:%H:%M}–{miss[-1]:%H:%M})")
-    if off:
-        print(f"  bars outside session : {len(off)}  (Muhurat/special — informational)")
-        for t in off[:5]:
-            print(f"      {t:%Y-%m-%d %H:%M}")
 
-    serious = bool(bad or dupes or collisions or severe or pct_zero > 5)
+    # The feed gained an extra closing bar partway through the sample. Bar-count
+    # logic that assumes a fixed bars-per-day will break across that date.
+    extra = sorted({b["ts"].date() for b in bars if b["ts"].time() == SESSION_CLOSE})
+    if extra:
+        regular = [d for d in extra if len(by_day[d]) > len(grid) // 2]
+        print(f"\n  bars stamped exactly {SESSION_CLOSE:%H:%M} : {len(extra)} day(s)")
+        if regular:
+            print(f"      from {regular[0]} onward the feed carries a {len(grid) + 1}th bar "
+                  f"at {SESSION_CLOSE:%H:%M};")
+            print(f"      before that date it does not. Anything counting bars per day "
+                  f"must handle both.")
+    if off:
+        by_time = defaultdict(list)
+        for t in off:
+            by_time[t.time()].append(t)
+        print(f"  bars outside 09:15–15:30 : {len(off)}, grouped by time of day:")
+        for tm in sorted(by_time):
+            ds = sorted({t.date() for t in by_time[tm]})
+            note = ""
+            if tm < SESSION_OPEN:
+                note = "  <-- !!! before the open; NSE does not trade then — artifact"
+            elif tm == SESSION_CLOSE:
+                note = "  (closing bar — see BAR ALIGNMENT below)"
+            elif tm >= dtime(17, 0):
+                note = "  (Muhurat evening session — real)"
+            print(f"      {tm:%H:%M}  {len(by_time[tm]):>3} bars over {len(ds)} day(s) "
+                  f"[{ds[0]} … {ds[-1]}]{note}")
+
+    preopen = [t for t in off if t.time() < SESSION_OPEN]
+    serious = bool(bad or dupes or collisions or severe or pct_zero > 5
+                   or holes or spans or intraday or preopen or dead)
     print("\n" + line)
     print("VERDICT: !!! PROBLEMS FOUND — read the !!! lines before backtesting."
           if serious else
@@ -799,7 +1026,7 @@ def probe(token):
     if oi15:
         print(f"  OI min/median/max {min(oi15):,} / {int(statistics.median(oi15)):,} / {max(oi15):,}")
 
-    stitched, _ = stitch([{"contract": c["symbol"], "candles": list(m15.values())}])
+    stitched, _, _ = stitch([{"contract": c["symbol"], "candles": list(m15.values())}])
     resampled = {b["ts"]: b for b in hourly(stitched)}
     native = {}
     for r in h1.values():
@@ -898,7 +1125,7 @@ def main():
     if not records:
         raise SystemExit("!!! Nothing downloaded.")
 
-    bars, collisions = stitch(records)
+    bars, collisions, shifted = stitch(records)
     write_csv(bars, out15)
     print(f"\nWrote {len(bars):,} rows → {out15}")
 
@@ -907,8 +1134,8 @@ def main():
     print(f"Wrote {len(hrs):,} rows → {out1h}   (resampled from 15-minute — the")
     print("       expired-contract endpoint has no hourly interval; see --probe)")
 
-    ok = verify(bars, "15-MINUTE", 15, collisions)
-    ok = verify(hrs, "HOURLY (resampled)", 60, collisions) and ok
+    ok = verify(bars, "15-MINUTE", 15, collisions, shifted)
+    ok = verify(hrs, "HOURLY (resampled)", 60, collisions, shifted) and ok
     print(f"\nCheckpoint kept at {part_path}  (--restart to force a clean re-download)")
     sys.exit(0 if ok else 1)
 
