@@ -69,19 +69,28 @@ function istMinutes(ms) {
   return d.getUTCHours() * 60 + d.getUTCMinutes();
 }
 
+/** Bar lengths this engine is run on. The strategy is identical at both; only
+ *  the candle feed differs, so nothing below branches on which one is in use. */
+export const BAR_MS = { hourly: HOUR_MS, "5m": 5 * 60000 };
+
 /**
  * When a bar actually closes.
  *
- * Not simply open + 1h: the session ends at 15:30, so the 15:15 bar is a
- * 15-minute stub. Treating it as a full hour would have the engine waiting until
- * 16:15 for a bar that finalised 45 minutes earlier — i.e. missing the last
- * signal of every single day.
+ * Not simply open + one bar length: the session ends at 15:30, so an hourly
+ * 15:15 bar is a 15-minute stub. Treating it as a full hour would have the
+ * engine waiting until 16:15 for a bar that finalised 45 minutes earlier — i.e.
+ * missing the last signal of every single day.
+ *
+ * `barMs` defaults to an hour so every existing caller is unchanged. At 5
+ * minutes the session divides exactly (09:15…15:25, 75 bars) so the clamp never
+ * bites — but it is applied anyway rather than special-cased, because a feed
+ * that ever emits a ragged final bar should be handled by the same rule.
  */
-export function barCloseMs(bar) {
+export function barCloseMs(bar, barMs = HOUR_MS) {
   const openMs = bar?.timestamp ? new Date(bar.timestamp).getTime() : NaN;
   if (!isNum(openMs)) return NaN;
   const endOfSession = openMs + (SESSION_END_MIN - istMinutes(openMs)) * 60000;
-  return Math.min(openMs + HOUR_MS, endOfSession);
+  return Math.min(openMs + barMs, endOfSession);
 }
 
 /**
@@ -92,11 +101,11 @@ export function barCloseMs(bar) {
  * element — which would throw away a perfectly good final bar when the series
  * ends at yesterday's close — this compares each bar's real close time to `now`.
  */
-export function closedBars(candles, now = Date.now()) {
+export function closedBars(candles, now = Date.now(), barMs = HOUR_MS) {
   if (!Array.isArray(candles)) return [];
   const out = [...candles];
   while (out.length) {
-    const close = barCloseMs(out[out.length - 1]);
+    const close = barCloseMs(out[out.length - 1], barMs);
     if (isNum(close) && close <= now) break;
     out.pop();
   }
@@ -104,8 +113,8 @@ export function closedBars(candles, now = Date.now()) {
 }
 
 /** The newest bar that has definitely closed, or null. */
-export function lastClosedBar(candles, now = Date.now()) {
-  const closed = closedBars(candles, now);
+export function lastClosedBar(candles, now = Date.now(), barMs = HOUR_MS) {
+  const closed = closedBars(candles, now, barMs);
   return closed.length ? closed[closed.length - 1] : null;
 }
 

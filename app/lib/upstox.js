@@ -325,6 +325,90 @@ export async function getHourlySeries(instrumentKey, { days = 60 } = {}) {
   return [...byTs.values()].sort((a, b) => (a.timestamp < b.timestamp ? -1 : 1));
 }
 
+// ── 5-minute candles (v3) ────────────────────────────────────────────────────
+// Same endpoint family as the hourly block above, same row shape, same
+// newest-first ordering — only /minutes/5/ instead of /hours/1/.
+//
+// DELIBERATELY NOT FOLDED INTO getHourlyCandles. Generalising that function
+// would put the live hourly Fib bot's only price feed on a shared code path for
+// the sake of removing a dozen duplicated lines. The hourly bot trades real
+// money; the trade is not worth it. The pure helpers (upstoxGet, normalizeBars,
+// istYmd) are shared, the paging loop is not.
+//
+// ALIGNMENT: 09:15, 09:20 … 15:25. A 6h15m session divides exactly by five
+// minutes, so unlike hourly there is NO stub bar — 75 bars in a full day.
+//
+// WINDOW CAP: sub-hourly intervals cap at roughly one calendar month, and it is
+// a hard 400 (UDAPI1148), not a silent truncation. 28 days is inside one month
+// from ANY start date — 30 is not, because a February-spanning window is 28 days
+// long. That exact trap is documented in scripts/fetch_nifty_2min.py, which
+// probed it against the live API.
+const V3_5M_MAX_DAYS = 28;
+
+/**
+ * 5-minute candles for a range, paged and stitched. Mirrors getHourlyCandles.
+ *
+ * @returns {Promise<Array>} oldest→newest bars, same shape as the hourly feed.
+ */
+export async function get5mCandles(instrumentKey, { from, to, days = 15 } = {}) {
+  const toDate = to ? new Date(to) : new Date();
+  let fromDate = from ? new Date(from) : new Date(toDate.getTime() - days * 86400000);
+
+  const epoch = new Date(`${V3_HOURLY_EPOCH}T00:00:00Z`);
+  if (fromDate < epoch) fromDate = epoch;
+  if (fromDate > toDate) return [];
+
+  // Backwards, so a partial failure still leaves the RECENT bars — the ones a
+  // live signal needs.
+  const rows = [];
+  let windowEnd = toDate;
+  while (windowEnd >= fromDate) {
+    const windowStart = new Date(
+      Math.max(fromDate.getTime(), windowEnd.getTime() - V3_5M_MAX_DAYS * 86400000),
+    );
+    const data = await upstoxGet(
+      `/historical-candle/${encodeURIComponent(instrumentKey)}/minutes/5/${istYmd(windowEnd)}/${istYmd(windowStart)}`,
+      {},
+      BASE_URL_V3,
+    );
+    rows.push(...(data?.data?.candles || []));
+
+    if (windowStart <= fromDate) break;
+    windowEnd = new Date(windowStart.getTime() - 86400000);
+  }
+
+  return normalizeBars(rows);
+}
+
+/**
+ * Today's 5-minute bars as they form. THE LAST ROW IS THE BAR IN PROGRESS —
+ * strip it with closedBars(series, now, BAR_MS["5m"]) before signalling.
+ */
+export async function getIntraday5mCandles(instrumentKey) {
+  const data = await upstoxGet(
+    `/historical-candle/intraday/${encodeURIComponent(instrumentKey)}/minutes/5`,
+    {},
+    BASE_URL_V3,
+  );
+  return normalizeBars(data?.data?.candles || []);
+}
+
+/** Historical + today, de-duplicated. Intraday wins — it is the fresher copy. */
+export async function get5mSeries(instrumentKey, { days = 15 } = {}) {
+  const history = await get5mCandles(instrumentKey, { days });
+  let intraday = [];
+  try {
+    intraday = await getIntraday5mCandles(instrumentKey);
+  } catch {
+    // Outside market hours this legitimately returns nothing. History alone is
+    // still a valid series.
+  }
+  const byTs = new Map();
+  for (const b of history) byTs.set(b.timestamp, b);
+  for (const b of intraday) byTs.set(b.timestamp, b);
+  return [...byTs.values()].sort((a, b) => (a.timestamp < b.timestamp ? -1 : 1));
+}
+
 /**
  * Re-key a /market-quote/quotes response back to the instrument keys that were
  * requested. Pure and exported so it can be unit-tested without a token.
