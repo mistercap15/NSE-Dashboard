@@ -12,13 +12,18 @@ import StatCard from "../components/StatCard"
 // doing" is unanswerable from its own signal alone. Both signals are fetched
 // and shown together.
 //
-// HONEST ABOUT WHAT IT CAN AND CANNOT SEE. This page reads the two SIGNAL
-// routes. It does not read the droplet's state files, the exchange position or
-// the contract claim — those live on the bot's machine, and the bot decides on
-// all three. So the priority panel below says what the SIGNALS imply, which is
-// the common case and a good predictor, and labels itself as such rather than
-// pretending to be the bot's own verdict. Telegram and /status remain the
-// authority on what the bot actually did.
+// TWO SOURCES, AND THE PANEL SAYS WHICH ONE IT IS USING. /api/bot/status serves
+// what the bots on the droplet actually believe — holding, armed, paused,
+// halted, and who owns the contract claim. When that is reachable the panel
+// shows real state and is badged "live bot state". When it is not, the panel
+// falls back to what the two SIGNALS imply and is badged "derived from signals",
+// because a monitoring screen that cannot tell you which it is showing is worse
+// than one that shows less.
+//
+// The distinction is not academic. On 7 Sep the signals were entirely normal
+// while the hourly bot had adopted this bot's position and both were bracketing
+// the same lots. Only the bots' own state showed it — which is why this page now
+// also shouts if both report a position at once.
 //
 // 7 Sep 2026 is why the panel leads with priority rather than tucking it at the
 // bottom: on that day the hourly adopted this bot's position and both bracketed
@@ -41,6 +46,7 @@ function barLabel(iso) {
 export default function Fib5mPage() {
   const [data, setData] = useState(null)
   const [hourly, setHourly] = useState(null)
+  const [bots, setBots] = useState(null)
   const [loading, setLoading] = useState(true)
   const [fetchErr, setFetchErr] = useState(null)
   const [lastFetch, setLastFetch] = useState(null)
@@ -49,12 +55,16 @@ export default function Fib5mPage() {
     try {
       // Both, together. The hourly one is not decoration — it decides whether
       // this bot may trade at all.
-      const [a, b] = await Promise.all([
+      const [a, b, s] = await Promise.all([
         fetch("/api/fib-5m/signal", { cache: "no-store" }).then((r) => r.json()),
         fetch("/api/fib/signal", { cache: "no-store" }).then((r) => r.json()),
+        // What the bots actually believe, straight off the droplet. Never
+        // throws — /api/bot/status always answers with a shape.
+        fetch("/api/bot/status", { cache: "no-store" }).then((r) => r.json()).catch(() => null),
       ])
       setData(a)
       setHourly(b)
+      setBots(s)
       setFetchErr(null)
     } catch (e) {
       setFetchErr(e.message || "Could not reach the server")
@@ -85,7 +95,18 @@ export default function Fib5mPage() {
 
   // What the signals imply about priority. Not the bot's own verdict — see the
   // header note — so the wording stays conditional throughout.
-  const yielding = hourlyArmed
+  // Live bot state wins wherever it is available; the signals are the fallback.
+  const live = bots?.reachable === true
+  const hourlyBot = live ? bots?.bots?.hourly : null
+  const fiveBot   = live ? bots?.bots?.fivemin : null
+  const claim     = live ? bots?.claim : null
+  const bothHolding = Boolean(hourlyBot?.holding && fiveBot?.holding)
+
+  // The bot's own view of whether it must stand down, when we can see it.
+  const yielding = live
+    ? Boolean(hourlyBot?.holding || hourlyBot?.armed
+              || (claim && claim.owner !== "5m"))
+    : hourlyArmed
   const state = !signal ? "unavailable" : yielding ? "yield" : armed ? "armed" : "aside"
   const HERO = {
     armed:       { label: "READY TO BUY", tone: "green",
@@ -146,42 +167,95 @@ export default function Fib5mPage() {
           </div>
         )}
 
-        {/* ── Who owns the contract ──────────────────────────────────── */}
+        {/* ── Who owns the contract ──────────────────────────────────
+            REAL bot state when the droplet is reachable; the signals are only
+            the fallback. The distinction matters: on 7 Sep the signals looked
+            normal while both bots held the same lots, and only the bots' own
+            state showed it. */}
         <div className="rounded-lg border border-border bg-card p-4 mb-4">
-          <div className="font-mono text-[10px] text-dim uppercase tracking-widest mb-3">
-            Who has priority on this contract
+          <div className="flex items-center justify-between gap-3 mb-3">
+            <div className="font-mono text-[10px] text-dim uppercase tracking-widest">
+              Who has priority on this contract
+            </div>
+            <span className={`font-mono text-[9px] px-2 py-0.5 rounded uppercase tracking-widest ${
+              live ? "bg-green/15 text-green" : "bg-amber/15 text-amber"}`}>
+              {live ? "live bot state" : "derived from signals"}
+            </span>
           </div>
+
+          {bothHolding && (
+            <div className="mb-3 p-3 rounded-md border border-red/40 bg-red/10">
+              <div className="font-mono text-[11px] text-red uppercase tracking-widest mb-1">
+                ⚠ Both bots report a position
+              </div>
+              <div className="font-body text-sm text-soft">
+                Only one may ever hold this contract — Upstox nets positions. Check the account
+                now, and send <span className="font-mono text-text">/halt</span> to both bots.
+              </div>
+            </div>
+          )}
+
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div className={`rounded-md border p-3 ${
-              hourlyArmed ? "border-accent/40 bg-accent/5" : "border-border bg-surface"}`}>
-              <div className="font-mono text-[10px] text-dim uppercase tracking-widest">Hourly bot · senior</div>
-              <div className={`font-display text-lg font-bold mt-1 ${hourlyArmed ? "text-accent" : "text-soft"}`}>
-                {hourly?.signal ? (hourlyArmed ? "Has a live setup" : "Idle") : "No signal"}
-              </div>
-              <div className="font-mono text-[11px] text-muted mt-1">
-                {hourlyArmed
-                  ? `buy ${fmt(hourlySignal.fibEntry)} · stop ${fmt(hourlySignal.stopPrice)}`
-                  : "nothing armed"}
-              </div>
-            </div>
-            <div className={`rounded-md border p-3 ${
-              yielding ? "border-purple/40 bg-purple/5" : armed ? "border-green/40 bg-green/5" : "border-border bg-surface"}`}>
-              <div className="font-mono text-[10px] text-dim uppercase tracking-widest">5-min bot · junior</div>
-              <div className={`font-display text-lg font-bold mt-1 ${
-                yielding ? "text-purple" : armed ? "text-green" : "text-soft"}`}>
-                {yielding ? "Stands down" : armed ? "Free to trade" : "Waiting for a setup"}
-              </div>
-              <div className="font-mono text-[11px] text-muted mt-1">
-                {yielding ? "no new trades until the hourly clears" : "the hourly is not in the way"}
-              </div>
-            </div>
+            {[
+              { key: "hourly", name: "Hourly bot · senior", bot: hourlyBot,
+                fallback: hourlyArmed ? "Has a live setup" : "Idle" },
+              { key: "fivemin", name: "5-min bot · junior", bot: fiveBot,
+                fallback: yielding ? "Stands down" : armed ? "Free to trade" : "Waiting for a setup" },
+            ].map(({ key, name, bot, fallback }) => {
+              const holding = bot?.holding
+              const down = bot && bot.service !== "active"
+              const tone = down ? "border-red/40 bg-red/5"
+                : holding ? "border-accent/40 bg-accent/5"
+                : bot?.halted || bot?.enabled === false ? "border-amber/40 bg-amber/5"
+                : "border-border bg-surface"
+              const txt = down ? "text-red" : holding ? "text-accent"
+                : bot?.halted || bot?.enabled === false ? "text-amber" : "text-soft"
+              return (
+                <div key={key} className={`rounded-md border p-3 ${tone}`}>
+                  <div className="font-mono text-[10px] text-dim uppercase tracking-widest">{name}</div>
+                  <div className={`font-display text-lg font-bold mt-1 ${txt}`}>
+                    {!bot ? fallback
+                      : down ? `SERVICE ${String(bot.service).toUpperCase()}`
+                      : bot.halted ? "HALTED — places nothing"
+                      : bot.enabled === false ? "PAUSED — no new trades"
+                      : holding ? "Holding a position"
+                      : bot.armed ? "Order armed"
+                      : "Flat"}
+                  </div>
+                  <div className="font-mono text-[11px] text-muted mt-1">
+                    {bot ? bot.summary : "from the signal only"}
+                  </div>
+                  {bot?.holding && (
+                    <div className="font-mono text-[11px] text-soft mt-2">
+                      entry {fmt(bot.entryPrice)} · stop {fmt(bot.stop)} · target {fmt(bot.target)}
+                    </div>
+                  )}
+                  {bot?.stale && (
+                    <div className="font-mono text-[10px] text-amber mt-2">
+                      state {Math.round(bot.stateAgeSeconds)}s old — it may be down
+                    </div>
+                  )}
+                </div>
+              )
+            })}
           </div>
-          <p className="font-mono text-[10px] text-muted mt-3 leading-relaxed">
-            Derived from the two <span className="text-soft">signals</span>, not from the bot itself. The bot
-            also checks the exchange position, the order book and the contract claim on its own machine, so
-            it can stand down for reasons this page cannot see. Telegram and <span className="text-soft">/status</span>
-            {" "}are the authority.
-          </p>
+
+          <div className="mt-3 flex items-center justify-between gap-3 flex-wrap">
+            <div className="font-mono text-[11px] text-muted">
+              Contract claim:{" "}
+              {claim
+                ? <span className="text-soft">
+                    {claim.owner === "5m" ? "the 5-min bot" : "the hourly bot"}
+                    {claim.holding ? " holds a filled position" : " has an order out"}
+                  </span>
+                : <span className="text-dim">nobody holds it</span>}
+            </div>
+            {!live && (
+              <div className="font-mono text-[10px] text-amber">
+                {bots?.error || "Could not reach the droplet — showing what the signals imply."}
+              </div>
+            )}
+          </div>
         </div>
 
         {/* ── Hero ───────────────────────────────────────────────────── */}
