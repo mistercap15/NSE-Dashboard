@@ -20,11 +20,18 @@ import { useEffect, useState } from "react";
 // would overstate what is actually known.
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Fear is red and greed is green, the ordinary convention. NOTE that this is
+// the emotion, not a verdict: for this system the sample says longs opened in
+// "Extreme Greed" did BEST and ones opened in "Extreme Fear" did worst, so the
+// green end is not a warning and the red end is not an invitation. The
+// historical line under the badge carries that, which is why it is not
+// optional.
 const TONE = {
-  Healthy:    { chip: "bg-green/15 text-green", box: "border-green/25 bg-green/5", dot: "●" },
-  Caution:    { chip: "bg-amber/15 text-amber", box: "border-amber/25 bg-amber/5", dot: "●" },
-  Correction: { chip: "bg-red/15 text-red",     box: "border-red/25 bg-red/5",     dot: "●" },
-  Unknown:    { chip: "bg-border text-soft",    box: "border-border bg-card/50",   dot: "○" },
+  "Extreme Greed": { chip: "bg-green/15 text-green", box: "border-green/25 bg-green/5", dot: "●" },
+  Greed:           { chip: "bg-green/15 text-green", box: "border-green/20 bg-green/5", dot: "●" },
+  Fear:            { chip: "bg-amber/15 text-amber", box: "border-amber/25 bg-amber/5", dot: "●" },
+  "Extreme Fear":  { chip: "bg-red/15 text-red",     box: "border-red/25 bg-red/5",     dot: "●" },
+  Unknown:         { chip: "bg-border text-soft",    box: "border-border bg-card/50",   dot: "○" },
 };
 
 const num = (n, d = 0) =>

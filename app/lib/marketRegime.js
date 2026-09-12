@@ -15,10 +15,10 @@ import { sma } from "./technicals"
 //   regime.js   RISK-ON / RISK-OFF   breadth — how many stocks are above their
 //                                    own 10-month MA, from the offline snapshot
 //   sentiment   BULLISH / BEARISH    a blended score in /api/rankings
-//   THIS        Healthy / Caution /  the Nifty index price itself, versus its
-//               Correction           own trailing high and its 50/200-day MAs
+//   THIS        Extreme Fear …       the Nifty index price itself, versus its
+//               Extreme Greed        own trailing high and its 50/200-day MAs
 //
-// A market can be 12% off its high (Correction here) while breadth is still
+// A market can be 12% off its high (Extreme Fear here) while breadth is still
 // RISK-ON, because breadth is about participation and this is about drawdown.
 // The UI says "Nifty price" on this panel for exactly that reason: a reader who
 // sees two labels disagreeing should be able to tell why in one glance.
@@ -36,22 +36,45 @@ import { sma } from "./technicals"
 /** Sessions in the trailing-high window. ~1 trading year. */
 export const HIGH_WINDOW = 252
 
-/** Drawdown boundaries, in percent off the trailing high. */
-export const THRESHOLDS = { healthy: 5, caution: 10 }
+/**
+ * Drawdown boundaries, in percent off the trailing high.
+ *
+ * FOUR LABELS, THREE MEASURED BUCKETS. The 56-month study split the data three
+ * ways — under 5% off the high, 5-10%, and over 10%. The display vocabulary
+ * splits the top bucket again at 2% to separate "at the high" from "near it",
+ * because those feel different to read even though the study never measured
+ * them apart. So Extreme Greed and Greed SHARE one historical figure, and
+ * HISTORICAL_CONTEXT says so out loud rather than quietly printing the same
+ * number twice as if it had been measured twice.
+ */
+export const THRESHOLDS = { extremeGreed: 2, greed: 5, fear: 10 }
 
 /**
  * What the 56-month study found for seasonal longs opened in each regime.
  *
- * HARDCODED, AND THAT IS THE HONEST THING TO SHOW. These are not recomputed
- * live; they are a fixed finding from a study of 56 months. 56 months split
- * three ways leaves very few observations per bucket, which is why every one of
- * these ships with CAVEAT attached and why the UI is required to show it. The
- * difference between +3.0% and +0.8% is suggestive, not established.
+ * READ THIS BEFORE TRUSTING THE VOCABULARY. A fear/greed dial invites the
+ * contrarian reading — buy the fear, sell the greed — and for THIS system the
+ * sample says the opposite: seasonal longs opened while the Nifty sat near its
+ * high did better (~+3.0%/mo, 75% positive) than ones opened deep in a
+ * drawdown (~+0.8%/mo, 58% positive). That is momentum behaviour, not mean
+ * reversion.
+ *
+ * Two reasons not to over-trust it either way: 56 months split three ways
+ * leaves very few observations per bucket, and the window is mostly a rising
+ * market, which flatters "buy near the high" everywhere it is measured. Hence
+ * CAVEAT, which every consumer is required to display.
+ *
+ * HARDCODED, and that is the honest thing to show — these are a fixed finding,
+ * not something recomputed live.
  */
 export const HISTORICAL_CONTEXT = {
-  Healthy: "Seasonal longs historically averaged ~+3.0%/mo, 75% positive",
-  Caution: "Historically ~+1.5%/mo",
-  Correction: "Seasonal longs historically averaged only ~+0.8%/mo, 58% positive",
+  "Extreme Greed":
+    "Under 5% off the high, seasonal longs historically averaged ~+3.0%/mo, 75% positive",
+  Greed:
+    "Under 5% off the high, seasonal longs historically averaged ~+3.0%/mo, 75% positive",
+  Fear: "5-10% off the high, seasonal longs historically averaged ~+1.5%/mo",
+  "Extreme Fear":
+    "Over 10% off the high, seasonal longs historically averaged only ~+0.8%/mo, 58% positive",
 }
 
 export const CAVEAT =
@@ -78,17 +101,28 @@ function unknown(reason) {
 }
 
 /**
- * Label from drawdown. Boundaries are closed on the Caution side, deliberately:
- * "within 5% of the high" is Healthy, so exactly 5.0% off is NOT within 5% and
- * reads Caution. Same at the other end — exactly 10.0% is still the "5-10%"
- * band, and Correction begins beyond it. Stated here because a boundary that
- * lives only in a comparison operator is a boundary nobody can check.
+ * Label from drawdown.
+ *
+ * THE VOCABULARY IS SENTIMENT; THE MEASUREMENT IS DRAWDOWN. "Extreme Greed"
+ * here means one specific, checkable thing — the Nifty is within 2% of its own
+ * 252-session closing high — and nothing about positioning, options flow or
+ * volatility, which is what a full fear/greed index would fold in. The label is
+ * a name for a distance, not an assessment of the market's mood, and it is
+ * never an instruction: see HISTORICAL_CONTEXT above for what actually followed
+ * each one.
+ *
+ * Boundaries are closed on the fearful side, matching the earlier scheme:
+ * exactly 2.0% off is NOT "within 2%" and reads Greed; exactly 5.0% reads Fear;
+ * exactly 10.0% is still Fear, and Extreme Fear begins beyond it. Stated here
+ * because a boundary that lives only in a comparison operator is a boundary
+ * nobody can check.
  */
 export function labelFor(pctOffHigh) {
   if (!Number.isFinite(pctOffHigh)) return "Unknown"
-  if (pctOffHigh < THRESHOLDS.healthy) return "Healthy"
-  if (pctOffHigh <= THRESHOLDS.caution) return "Caution"
-  return "Correction"
+  if (pctOffHigh < THRESHOLDS.extremeGreed) return "Extreme Greed"
+  if (pctOffHigh < THRESHOLDS.greed) return "Greed"
+  if (pctOffHigh <= THRESHOLDS.fear) return "Fear"
+  return "Extreme Fear"
 }
 
 /**
