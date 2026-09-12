@@ -10,6 +10,7 @@ import { getCurrentMonth } from "../lib/date";
 import { RankingsPDFButton } from "../components/PDFDownloadButton";
 import ShortCandidatesTable from "../components/ShortCandidatesTable";
 import AISuggestionModal from "../components/AISuggestionModal";
+import MarketMoodPanel from "../components/MarketMoodPanel";
 import { getAISuggestions } from "../lib/aiSuggest";
 
 function RankingsContent() {
@@ -109,6 +110,9 @@ function RankingsContent() {
       </div>
 
       {aiResult && <AISuggestionModal result={aiResult} onClose={() => setAiResult(null)} />}
+
+      {/* Market Mood — Nifty price vs its own trailing high. Display only. */}
+      <MarketMoodPanel />
 
       {/* Market regime banner */}
       {data?.regime && data.regime.riskOn !== null && (
