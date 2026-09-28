@@ -83,3 +83,19 @@ Polling batches over 90 seconds late pause new entries. Actual receipt times are
 For separately recorded quote experiments, copy the configuration, set `execution` to `quote`, reset a distinct paper database, and ingest chronological JSON events using `ingest-events --events-json /absolute/events.json --config ... --manifest ... --calendar ... --db ...`. Candles and quote receipts must be strictly ordered, canonical ISO IST timestamps. Quote schema: `{ "kind":"quote", "at":"2026-09-28T09:40:01+05:30", "quote": { "symbol":"RELIANCE", "source_at":"2026-09-28T09:40:00+05:30", "bid":100, "ask":100.05, "bid_size":1000, "ask_size":1000 } }`. Missing/stale/crossed prices reject; full quantity fills remain hypothetical and depth violations are flagged. Do not substitute last-trade time for quote freshness. The REST probe's timestamp alone does not certify exchange-level depth freshness.
 
 No deployment was performed. A later deployment review must provide Python, persistent writable SQLite, one observer process, authentication, retention/backups and a reviewed data universe. Do not reuse or modify existing trading service units.
+
+## Dashboard and mobile viewing
+
+Open **Research → Gap Pullback · Paper** on either client. The dashboard route is `/research/gap-paper`; the native Expo route uses the same path. The historical pilot is visibly separate from the current paper account. The mobile screen is read-only; pause/reset remain on the dashboard. Viewing never starts an observer.
+
+`GET /api/research/gap-paper/pilot` exposes the committed, sanitized pilot snapshot behind the existing session gate; it needs neither Python nor an active observer. `GET /api/research/gap-paper` remains the independently refreshed current-account source. Failed account reads are shown explicitly. Mobile carries an identical dated backend snapshot as an offline/older-server fallback and labels when it is in use; it contains no strategy computation or live account state.
+
+Regenerate both presentation snapshots from the saved replay exports (no new backtest):
+
+```sh
+python3 -m research.gap_paper.publish_view --mobile-output ../nse-mobile/assets/data/gapPaperPilot.json
+```
+
+Both copies must remain byte-identical. Research assumptions, strict zero-trade results and the ex-post nature of ambiguity exclusion are included. Equity history is sampled at month end and labelled accordingly; the maximum drawdown metric still comes from the complete replay.
+
+These interface changes are local until the dashboard and mobile app updates are published through the project's normal release process. No release or persistent activation is performed by the generator or view.

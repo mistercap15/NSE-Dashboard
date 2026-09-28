@@ -36,6 +36,14 @@ try {
   const headers = { Authorization: `Bearer ${token}`, Origin: base, 'Content-Type': 'application/json' };
   const endpoint = base + '/api/research/gap-paper';
   assert.equal((await fetch(endpoint)).status, 401); passed++;
+  assert.equal((await fetch(endpoint + '/pilot')).status, 401); passed++;
+  const pilotResponse = await fetch(endpoint + '/pilot', { headers });
+  assert.equal(pilotResponse.status, 200);
+  const pilot = await pilotResponse.json();
+  assert.equal(pilot.summary.trades, pilot.trades.length);
+  assert.ok(Math.abs(pilot.trades.reduce((sum,t) => sum + t.pnl, 0) - pilot.summary.net_pnl) < 0.01);
+  assert.equal(pilot.scenarios.find(s => s.scenario === 'strict').trades, 0);
+  assert.match(pilot.warning, /No proven edge/); passed++;
   let result = await fetch(endpoint, { headers });
   assert.equal(result.status, 200); assert.equal((await result.json()).data_status, 'not_initialized'); passed++;
   result = await fetch(base + '/research/gap-paper', { headers });
