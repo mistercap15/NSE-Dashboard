@@ -40,6 +40,9 @@ class Client:
         if not any(
             path.startswith(p)
             for p in [
+                "v2/fundamentals/",
+                "v2/market/holidays",
+                "v2/market/status/NSE",
                 "v3/historical-candle/",
                 "v3/market-quote/",
                 "v3/historical-candle/intraday/",

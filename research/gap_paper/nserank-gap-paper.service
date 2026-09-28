@@ -1,0 +1,34 @@
+[Unit]
+Description=NSERank cash-equity gap pullback PAPER observer (no exchange orders)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nserank-paper
+Group=nserank-paper
+WorkingDirectory=/opt/nserank-gap-paper
+EnvironmentFile=/etc/nserank-gap-paper.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 -m research.gap_paper.service --root /var/lib/nserank-gap-paper
+Restart=on-failure
+RestartSec=15
+TimeoutStopSec=40
+StateDirectory=nserank-gap-paper
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+MemoryMax=512M
+CPUQuota=50%
+
+[Install]
+WantedBy=multi-user.target

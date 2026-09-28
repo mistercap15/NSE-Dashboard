@@ -277,7 +277,7 @@ class EngineTests(unittest.TestCase):
             b = update(db, self.c, self.m, self.cal, events=[e])
             self.assertEqual(a, b)
             with self.assertRaises(ValueError):
-                update(db, self.c, self.m, self.cal, events=[evt([bar("09:20")]), e])
+                update(db, self.c, self.m, self.cal, events=[evt([bar("09:20")]), evt([bar("09:15", c=102.5)])])
             self.assertEqual(read(db), b)
             c = update(db, self.c, self.m, self.cal, action="reset")
             self.assertNotEqual(c["account_id"], a["account_id"])
