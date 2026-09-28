@@ -43,6 +43,7 @@ const navGroups = [
     label: "Research",
     Icon: Layers,
     children: [
+      { href: "/research/gap-paper", label: "Gap Pullback · Paper", Icon: LineChart },
       { href: "/analysis", label: "Stock Analysis", Icon: Search },
       { href: "/screener", label: "Screener",       Icon: SlidersHorizontal },
     ],

@@ -17,7 +17,9 @@
     "test:inside-bar": "node scripts/test-inside-bar.mjs",
     "test:seasonality": "node scripts/test-seasonality.mjs",
     "test:market-regime": "node scripts/test-market-regime.mjs",
-    "build-promoter": "node scripts/build-promoter.mjs"
+    "build-promoter": "node scripts/build-promoter.mjs",
+    "test:gap-paper": "python3 -m unittest discover -s research/gap_paper -t . -v",
+    "test:gap-paper-ui": "node research/gap_paper/test_dashboard.mjs"
   },
   "dependencies": {
     "@react-pdf/renderer": "^4.5.1",
