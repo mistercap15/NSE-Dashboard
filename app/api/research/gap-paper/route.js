@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
+import { paperRemote } from '../../../lib/gapPaperRemote';
 const run = promisify(execFile);
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -17,8 +18,11 @@ async function invoke(command, reset = false) {
   const { stdout } = await run(process.env.GAP_PAPER_PYTHON || 'python3', args, { cwd: process.cwd(), timeout: 30000, maxBuffer: 4 * 1024 * 1024 });
   return JSON.parse(stdout);
 }
-export async function GET() {
-  try { return NextResponse.json(await invoke('status'), { headers: { 'Cache-Control': 'no-store' } }); }
+export async function GET(request) {
+  try {
+    const day = request ? new URL(request.url).searchParams.get('day') : null;
+    const result = process.env.GAP_PAPER_URL ? await paperRemote('status', { day }) : await invoke('status');
+    return NextResponse.json(result, { headers: { 'Cache-Control': 'no-store' } }); }
   catch { return NextResponse.json({ error: 'Paper storage unavailable. Check local configuration and research CLI.' }, { status: 503 }); }
 }
 export async function POST(request) {
@@ -30,11 +34,11 @@ export async function POST(request) {
     sameOrigin = origin === source.origin && source.host === request.headers.get('host') && source.protocol === new URL(request.url).protocol;
   } catch {}
   if (!sameOrigin) return NextResponse.json({ error: 'Same-origin request required' }, { status: 403 });
-  if (process.env.GAP_PAPER_LOCAL !== '1') return NextResponse.json({ error: 'Local paper mode disabled' }, { status: 409 });
+  if (!process.env.GAP_PAPER_URL && process.env.GAP_PAPER_LOCAL !== '1') return NextResponse.json({ error: 'Local paper mode disabled' }, { status: 409 });
   try {
     const body = await request.json();
     if (!['pause', 'resume', 'reset'].includes(body.action)) return NextResponse.json({ error: 'Invalid paper action' }, { status: 400 });
     if (body.action === 'reset' && body.confirm !== 'RESET PAPER ACCOUNT') return NextResponse.json({ error: 'Explicit reset confirmation required' }, { status: 400 });
-    return NextResponse.json(await invoke(body.action, body.action === 'reset'));
+    return NextResponse.json(process.env.GAP_PAPER_URL ? await paperRemote('control', { body }) : await invoke(body.action, body.action === 'reset'));
   } catch { return NextResponse.json({ error: 'Paper operation failed; account was not partially updated. Check CLI configuration.' }, { status: 409 }); }
 }

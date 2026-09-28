@@ -264,6 +264,8 @@ def proposal(s, x, fill, cfg, day):
     eq = equity(s)
     if risk <= 0:
         return 0, "invalid_risk"
+    if s.get("operational_halt"):
+        return 0, "data_health_halt"
     if s["paused"]:
         return 0, "paper_paused"
     if s["halted"]:
@@ -455,7 +457,10 @@ def process(s, event, cfg, manifest, cal):
     at = event["at"]
     if at != stamp(at).isoformat():
         raise ValueError("Event timestamp must be canonical ISO Asia/Kolkata")
-    if event.get("received_at") and stamp(event["received_at"]) < stamp(at):
+    closed_at = event.get("closed_at", at)
+    if stamp(closed_at) > stamp(at):
+        raise ValueError("Candle closes after receipt")
+    if event.get("received_at") and stamp(event["received_at"]) < stamp(closed_at):
         raise ValueError("Observation predates completed candle")
     eh = digest(event)
     if s["last_event"]:
@@ -468,8 +473,29 @@ def process(s, event, cfg, manifest, cal):
     day = stamp(at).date().isoformat()
     if day != s["session"]:
         start_day(s, day, cal)
-    if event.get("kind") == "quote":
-        process_quote(s, event, cfg)
+    if event.get("kind") in ("quote", "quotes"):
+        quotes = event.get("quotes", [event.get("quote")])
+        if not quotes or any(not isinstance(q, dict) for q in quotes):
+            raise ValueError("Missing quote observations")
+        if len({q["symbol"] for q in quotes}) != len(quotes):
+            raise ValueError("Duplicate quote symbol")
+        quotes = sorted(
+            quotes,
+            key=lambda q: (
+                s["stocks"].get(q["symbol"], {}).get("rank", 999),
+                q["symbol"],
+            ),
+        )
+        # Mark all fresh bids before risk checks; process exits before new intents.
+        for q in quotes:
+            if valid_quote(q, at) and q["symbol"] in s["positions"]:
+                s["positions"][q["symbol"]].update(mark=q["bid"], mark_at=at)
+        mark(s, at, cfg)
+        for q in quotes:
+            process_quote(s, {"at": at, "quote": q}, cfg, allow_entry=False)
+        for q in quotes:
+            if valid_quote(q, at):
+                process_quote(s, {"at": at, "quote": q}, cfg, exits=False)
         s["last_event"] = at
         s["last_hash"] = eh
         s["data_status"] = "quote-modeled"
@@ -489,9 +515,12 @@ def process(s, event, cfg, manifest, cal):
     if len({b["symbol"] for b in bs}) != len(bs):
         raise ValueError("Duplicate symbol in batch")
     for b in bs:
-        if (stamp(b["ts"]) + timedelta(minutes=5)).isoformat() != at:
+        if (stamp(b["ts"]) + timedelta(minutes=5)).isoformat() != closed_at:
             raise ValueError("Only completed, same-close candles accepted")
         normalize(b["symbol"], [b["ts"], b["o"], b["h"], b["l"], b["c"], b["v"]])
+    if s.get("last_candle") and closed_at <= s["last_candle"]:
+        raise ValueError("Candle was already processed or is out of order")
+    s["last_candle"] = closed_at
     regular = cal.get(day) == "regular"
     new_entries = {}
     for b in bs:
@@ -521,7 +550,7 @@ def process(s, event, cfg, manifest, cal):
                 "vwap": None,
             },
         )
-        if sym in s["positions"]:
+        if cfg["execution"] == "candle" and sym in s["positions"]:
             s["positions"][sym]["mark"] = b["o"]
             s["positions"][sym]["mark_at"] = b["ts"]
     mark(s, at, cfg)  # conservative opening mark before admitting entries
@@ -649,7 +678,7 @@ def process(s, event, cfg, manifest, cal):
         sym = b["symbol"]
         if cfg["execution"] == "candle" and sym in s["positions"]:
             candle_exit(s, sym, b, cfg, entry_inside=new_entries.get(sym, False))
-    if not s["ranked"] and minute(at) >= 560:
+    if not s["ranked"] and minute(closed_at) >= 560:
         s["ranked"] = True
         candidates = []
         for sym, x in s["stocks"].items():
@@ -693,7 +722,7 @@ def process(s, event, cfg, manifest, cal):
             transition(s, x, b, cfg, day, event.get("received_at"))
         x["prev_close"] = b["c"]
         x["last_volume"] = b["v"]
-        if b["symbol"] in s["positions"]:
+        if cfg["execution"] == "candle" and b["symbol"] in s["positions"]:
             s["positions"][b["symbol"]]["mark"] = b["c"]
             s["positions"][b["symbol"]]["mark_at"] = at
     for sym, x in s["stocks"].items():
@@ -719,7 +748,9 @@ def process(s, event, cfg, manifest, cal):
     mark(s, at, cfg)
     s["last_event"] = at
     s["last_hash"] = eh
-    s["data_status"] = "candle-modeled"
+    s["data_status"] = (
+        "quote-modeled" if cfg["execution"] == "quote" else "candle-modeled"
+    )
     s["equity_curve"].append(
         {
             "at": at,
@@ -734,24 +765,30 @@ def process(s, event, cfg, manifest, cal):
     return s
 
 
-def process_quote(s, event, cfg):
+def valid_quote(q, at):
+    try:
+        return (
+            0 <= (stamp(at) - stamp(q["source_at"])).total_seconds() <= 5
+            and all(math.isfinite(q[k]) and q[k] > 0 for k in ["bid", "ask"])
+            and q["bid"] <= q["ask"]
+        )
+    except (KeyError, ValueError, TypeError):
+        return False
+
+
+def process_quote(s, event, cfg, allow_entry=True, exits=True):
     if cfg["execution"] != "quote":
         raise ValueError("Quote event in candle account")
     q = event["quote"]
     sym = q["symbol"]
     at = event["at"]
-    source = stamp(q["source_at"])
-    age = (stamp(at) - source).total_seconds()
-    if (
-        not 0 <= age <= 5
-        or not all(math.isfinite(q[k]) and q[k] > 0 for k in ["bid", "ask"])
-        or q["bid"] > q["ask"]
-    ):
+    if not valid_quote(q, at):
         reject(s, sym, at, "stale_or_crossed_quote")
         return
+    source = stamp(q["source_at"])
     x = s["stocks"].get(sym)
     slip = cfg["slippage_bps"] / 10000
-    if sym in s["positions"]:
+    if exits and sym in s["positions"]:
         p = s["positions"][sym]
         p["mark"] = q["bid"]
         p["mark_at"] = at
@@ -788,6 +825,16 @@ def process_quote(s, event, cfg):
     if (
         x
         and x.get("pending")
+        and stamp(at)
+        >= stamp(x["pending"].get("original_created", x["pending"]["created"]))
+        + timedelta(minutes=5 * cfg["pending_bars"])
+    ):
+        invalidate(x, "pending_expired")
+    if (
+        allow_entry
+        and not s.get("operational_halt")
+        and x
+        and x.get("pending")
         and source > stamp(x["pending"].get("observed_at", x["pending"]["created"]))
         and stamp(at) > stamp(x["pending"]["created"])
         and minute(at) < cfg["entry_cutoff"]
@@ -803,5 +850,6 @@ def process_quote(s, event, cfg):
             "depth_exceeded": q.get("ask_size") is not None and size > q["ask_size"],
             "full_fill_not_proven": True,
         }
-        enter(s, sym, x, q["ask"] * (1 + slip), at, cfg, details)
+        if enter(s, sym, x, q["ask"] * (1 + slip), at, cfg, details):
+            s["positions"][sym].update(mark=q["bid"], mark_at=at)
     mark(s, at, cfg)

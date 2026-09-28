@@ -2,21 +2,24 @@
 import { useEffect, useState } from 'react';
 import Sidebar from '../../components/Sidebar';
 import pilot from '../../lib/gapPaperPilot.json';
+import DailyPaperPanel from './DailyPaperPanel';
 function Table({ rows, columns }) {
   if (!rows?.length) return <p className="text-dim py-3">No records yet.</p>;
   const value = v => v == null ? '—' : typeof v === 'object' ? JSON.stringify(v) : typeof v === 'number' ? Number(v.toFixed(3)).toLocaleString('en-IN') : String(v);
   return <div className="overflow-x-auto"><table className="w-full text-sm text-left"><thead><tr>{columns.map(c => <th className="p-2 border-b border-border" key={c}>{c.replaceAll('_',' ')}</th>)}</tr></thead><tbody>{rows.map((r,i) => <tr key={i}>{columns.map(c => <td className="p-2 border-b border-border" key={c}>{value(r[c])}</td>)}</tr>)}</tbody></table></div>;
 }
 export default function GapPaperPage() {
+  const [day,setDay]=useState(()=>new Date(Date.now()+19800000).toISOString().slice(0,10));
   const [data,setData]=useState(null),[error,setError]=useState(''),[busy,setBusy]=useState(false),[confirmation,setConfirmation]=useState('');
-  async function refresh(){try{const r=await fetch('/api/research/gap-paper',{cache:'no-store'});const j=await r.json();if(!r.ok)throw Error(j.error);setData(j);setError('');}catch(e){setError(e.message);}}
-  useEffect(()=>{refresh();const timer=setInterval(refresh,15000);return()=>clearInterval(timer);},[]);
-  async function act(action){setBusy(true);try{const r=await fetch('/api/research/gap-paper',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,confirm:confirmation})});const j=await r.json();if(!r.ok)throw Error(j.error);setData(j);setConfirmation('');setError('');}catch(e){setError(e.message);}finally{setBusy(false);}}
+  async function refresh(){try{const r=await fetch(`/api/research/gap-paper?day=${encodeURIComponent(day)}`,{cache:'no-store'});const j=await r.json();if(!r.ok)throw Error(j.error);setData(j);setError('');}catch(e){setError(e.message);}}
+  useEffect(()=>{refresh();const timer=setInterval(refresh,15000);return()=>clearInterval(timer);},[day]);
+  async function act(action){setBusy(true);try{const r=await fetch('/api/research/gap-paper',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,confirm:confirmation})});const j=await r.json();if(!r.ok)throw Error(j.error);await refresh();setConfirmation('');setError('');}catch(e){setError(e.message);}finally{setBusy(false);}}
   const stocks=Object.entries(data?.stocks||{}).map(([symbol,x])=>({symbol,...x,trigger:x.pending?.trigger,stop:x.pending?.stop,proposed_quantity:x.proposed_quantity}));
   const positions=Object.values(data?.positions||{});
   return <><Sidebar /><main className="md:ml-[200px] pt-20 md:pt-8 min-h-screen bg-bg text-text p-6 space-y-7">
     <a href="/" className="text-sky-400">← NSERank</a>
     <header><p className="font-bold text-amber-300">PAPER — NO LIVE ORDERS</p><h1 className="text-3xl font-bold mt-2">Gap & first pullback</h1><p className="text-dim mt-2">Mechanical research adaptation · V1 · No proven edge</p></header>
+    <DailyPaperPanel data={data} day={day} setDay={setDay} error={error}/>
     <section className="rounded border border-border p-4 space-y-4">
       <h2 className="text-xl font-bold">Historical pilot · through {pilot.as_of}</h2>
       <p>{pilot.label}</p><p className="text-amber-600 dark:text-amber-300">{pilot.warning}</p>
