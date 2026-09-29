@@ -768,7 +768,7 @@ def process(s, event, cfg, manifest, cal):
 def valid_quote(q, at):
     try:
         return (
-            0 <= (stamp(at) - stamp(q["source_at"])).total_seconds() <= 5
+            -2 <= (stamp(at) - stamp(q["source_at"])).total_seconds() <= 5
             and all(math.isfinite(q[k]) and q[k] > 0 for k in ["bid", "ask"])
             and q["bid"] <= q["ask"]
         )
@@ -814,6 +814,10 @@ def process_quote(s, event, cfg, allow_entry=True, exits=True):
             s["trades"][-1]["exit_details"] = {
                 "quote_received": at,
                 "quote_source": q["source_at"],
+                "request_started": q.get("requested_at"),
+                "source_clock_ahead_seconds": max(
+                    0, (source - stamp(at)).total_seconds()
+                ),
                 "intent_at": at,
                 "spread": q["ask"] - q["bid"],
                 "slippage_bps": cfg["slippage_bps"],
@@ -836,6 +840,8 @@ def process_quote(s, event, cfg, allow_entry=True, exits=True):
         and x
         and x.get("pending")
         and source > stamp(x["pending"].get("observed_at", x["pending"]["created"]))
+        and stamp(q.get("requested_at", q["source_at"]))
+        > stamp(x["pending"].get("observed_at", x["pending"]["created"]))
         and stamp(at) > stamp(x["pending"]["created"])
         and minute(at) < cfg["entry_cutoff"]
         and q["ask"] >= x["pending"]["trigger"]
@@ -844,6 +850,8 @@ def process_quote(s, event, cfg, allow_entry=True, exits=True):
         details = {
             "quote_received": at,
             "quote_source": q["source_at"],
+            "request_started": q.get("requested_at"),
+            "source_clock_ahead_seconds": max(0, (source - stamp(at)).total_seconds()),
             "intent_at": at,
             "spread": q["ask"] - q["bid"],
             "slippage_bps": cfg["slippage_bps"],

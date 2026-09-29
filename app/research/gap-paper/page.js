@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import Sidebar from '../../components/Sidebar';
 import pilot from '../../lib/gapPaperPilot.json';
 import DailyPaperPanel from './DailyPaperPanel';
+import MarketScanner from './MarketScanner';
 function Table({ rows, columns }) {
   if (!rows?.length) return <p className="text-dim py-3">No records yet.</p>;
   const value = v => v == null ? '—' : typeof v === 'object' ? JSON.stringify(v) : typeof v === 'number' ? Number(v.toFixed(3)).toLocaleString('en-IN') : String(v);
@@ -19,9 +20,10 @@ export default function GapPaperPage() {
   return <><Sidebar /><main className="md:ml-[200px] pt-20 md:pt-8 min-h-screen bg-bg text-text p-6 space-y-7">
     <a href="/" className="text-sky-400">← NSERank</a>
     <header><p className="font-bold text-amber-300">PAPER — NO LIVE ORDERS</p><h1 className="text-3xl font-bold mt-2">Gap & first pullback</h1><p className="text-dim mt-2">Mechanical research adaptation · V1 · No proven edge</p></header>
+    <MarketScanner data={data}/>
     <DailyPaperPanel data={data} day={day} setDay={setDay} error={error}/>
-    <section className="rounded border border-border p-4 space-y-4">
-      <h2 className="text-xl font-bold">Historical pilot · through {pilot.as_of}</h2>
+    <details className="rounded border border-border p-4 space-y-4">
+      <summary className="text-xl font-bold cursor-pointer">Historical five-stock pilot · separate research</summary>
       <p>{pilot.label}</p><p className="text-amber-600 dark:text-amber-300">{pilot.warning}</p>
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">{[['Trades',pilot.summary.trades],['Net P&L',`₹${pilot.summary.net_pnl.toFixed(2)}`],['Account return',`${(pilot.summary.account_return*100).toFixed(3)}%`],['Maximum drawdown',`₹${pilot.summary.max_marked_drawdown_rupees.toFixed(2)}`]].map(([label,value])=><div key={label} className="rounded bg-surface p-3"><p className="text-sm text-dim">{label}</p><p className="text-xl font-bold">{value}</p></div>)}</div>
       <p>These are saved research results, not current paper activity. No observer starts when you open this page.</p>
@@ -30,7 +32,7 @@ export default function GapPaperPage() {
       <details><summary className="cursor-pointer font-bold">Cost and data sensitivity</summary><Table rows={pilot.scenarios.map(r=>({...r,return_percent:r.account_return*100}))} columns={['scenario','trades','net_pnl','return_percent','profit_factor']}/><p className="text-sm text-amber-600 dark:text-amber-300">{pilot.ambiguity_warning}</p></details>
       <details><summary className="cursor-pointer font-bold">Pilot trades and itemized costs</summary><Table rows={pilot.trades} columns={['symbol','qty','entry_at','exit_at','entry','exit','pnl','reason','entry_costs','exit_costs']}/></details>
       <details><summary className="cursor-pointer font-bold">Pilot equity and data coverage</summary><p>{pilot.equity_sampling}</p><Table rows={pilot.equity_curve} columns={['at','equity']}/><Table rows={pilot.coverage} columns={['symbol','earliest','latest','valid_unique_rows','invalid_rows','zero_volume_bars']}/></details>
-    </section>
+    </details>
     {error&&<p role="alert" className="text-red-300">{error}</p>}
     <section className="rounded border border-border p-4 space-y-2"><h2 className="font-bold">Current paper account</h2><p>{data?.data_status||'Loading…'} · Last completed event: {data?.last_event||'none'}</p><p>{data?.message}</p><p>Fill model: {data?.execution||'candle-modeled'} · Universe observed: {data?.universe_size||0} · Excluded: {data?.excluded_stocks||0} · Daily risk halt: {String(data?.halted||false)}</p><p>Account: {data?.account_id||'not initialized'}</p><p>Cash ₹{data?.cash?.toLocaleString('en-IN')||'—'} · Marked equity ₹{data?.equity?.toLocaleString('en-IN')||'—'} · Maximum drawdown ₹{data?.drawdown?.toLocaleString('en-IN')||'—'}</p>
       <button disabled={busy||!data?.account_id} onClick={()=>act(data?.paused?'resume':'pause')} className="bg-sky-800 p-2 rounded disabled:opacity-40">{data?.paused?'Resume paper entries':'Pause new paper entries'}</button><p className="text-sm text-dim">Pause leaves paper exits active. This control never touches live executors. Data polling on this page does not start an observer.</p>
