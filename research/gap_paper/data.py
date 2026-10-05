@@ -3,6 +3,7 @@
 import gzip, json, os, time, urllib.request, urllib.error, urllib.parse, hashlib, threading, tempfile
 from pathlib import Path
 from datetime import date, timedelta, datetime, timezone
+from collections import defaultdict, deque
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -32,7 +33,33 @@ def token():
 
 class Client:
     _gate = threading.Lock()
-    _last_request = 0
+    _requests = defaultdict(deque)
+
+    @staticmethod
+    def request_delay(history, at):
+        # Below published per-API limits, including the longer rolling windows.
+        return max([0] + [history[-limit] + window - at
+                          for limit, window in [(5, 1), (450, 60), (1800, 1800)]
+                          if len(history) >= limit])
+
+    @classmethod
+    def wait_for_request(cls, path):
+        # Isolate API budgets so bulk history cannot starve executable quotes.
+        group = ('intraday' if '/intraday/' in path else
+                 'history' if '/historical-candle/' in path else
+                 'quotes' if '/market-quote/' in path else
+                 'fundamentals' if '/fundamentals/' in path else path)
+        while True:
+            with cls._gate:
+                at = time.monotonic()
+                history = cls._requests[group]
+                while history and at - history[0] >= 1800:
+                    history.popleft()
+                delay = cls.request_delay(history, at)
+                if delay <= 0:
+                    history.append(at)
+                    return
+            time.sleep(min(delay, 1))
 
     def __init__(self, cache):
         self.cache = Path(cache)
@@ -57,10 +84,7 @@ class Client:
             return json.loads(f.read_text())["response"]
         secret = token()
         for attempt in range(5):
-            # Shared across scanner, candle, quote and warmup clients: <=1 request/sec.
-            with Client._gate:
-                time.sleep(max(0, 1 - (time.monotonic() - Client._last_request)))
-                Client._last_request = time.monotonic()
+            Client.wait_for_request(path)
             req = urllib.request.Request(
                 "https://api.upstox.com/" + path,
                 headers={

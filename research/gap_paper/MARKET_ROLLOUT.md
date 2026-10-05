@@ -24,3 +24,13 @@ Visual checks at 390×844 used the actual recorded 14:45 API snapshot in an isol
 Only the already-authorized `nserank-gap-paper.service` was updated. Nifty hourly, Nifty five-minute and crypto trading service MainPIDs and active states remained unchanged across paper deployments. No exchange order endpoint was used. The paper service remains quote-sampled simulation, not tick-perfect or guaranteed exchange fills; see OPERATIONS.md for execution and coverage limits.
 
 Raw responses, references, profiles and opening snapshots remain under `/var/lib/nserank-gap-paper` on the separate paper service. The local sanitized UI snapshot is under `data/exports/gap_paper/market_setup/paper-ui-snapshot.json`. Data and credentials are excluded from the source release.
+
+## Release continuation — 5 October 2026
+
+The interrupted GitHub push was retried successfully after approval review became available. Dashboard PR: https://github.com/mistercap15/NSE-Dashboard/pull/7. Mobile PR: https://github.com/mistercap15/nse-mobile/pull/1. Android OTA published to preview/runtime 1.0.0: https://expo.dev/accounts/khilanpatel15/projects/nse-mobile/updates/92d532a4-3420-472c-b610-12408deee3db (mobile commit 6ca258c).
+
+Read-only operational check at 16:58 IST: paper service active; October 5 snapshot quoted 2,565 shares, with 1,648 gap-ups and 130 eligible candidates. Preparation through October 1 reported 2,301 checked, 1,350 with sufficient complete history, zero failed API checks; insufficient histories remain excluded. The latest selected watchlist was October 1, no positions were open, and no timely selection occurred October 5. These are dated observations, not a readiness guarantee for the following day.
+
+A real throughput defect explained October 5's missed opening: the 09:20 scan contained 155 eligible candidates, but serial one-per-second first-candle validation could not meet the unchanged 90-second deadline. Eight concurrent workers now check all candidates under separate rolling per-API budgets (5/second, 450/minute, 1,800/30 minutes). Bulk historical requests cannot consume the quote budget. Tests additionally cover all rolling windows and concurrent first-candle-only validation; 56 Python checks pass.
+
+An after-close read-only probe fetched actual current-day candles for all 155 candidates in 30.13 seconds; all 155 contained the 09:15 candle. This verifies available throughput, not live opening latency or hypothetical trades. No missed trades were reconstructed. Tomorrow's selection still depends on fresh complete history, real quotes, and a timely successful opening scan. Evidence: `data/exports/gap_paper/verification/opening-throughput-oct5.json`.

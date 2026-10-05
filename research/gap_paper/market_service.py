@@ -1,6 +1,7 @@
 """Whole-NSE discovery; V1 monitors only the top five verified opening gaps."""
 
 import argparse, copy, json, os, signal, threading, time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from pathlib import Path
 from http.server import ThreadingHTTPServer
@@ -116,15 +117,22 @@ class MarketService(PaperService):
             "members": [],
             "comparable": {},
         }
-        for m in members:
+        def fetch(m):
             p = read_profile(self.root, m, prior)
             if not p:
-                missing.append(m["symbol"])
-                continue
+                return m, None, None
             raw = client.intraday(m["key"])
             batch, _ = events({m["symbol"]: raw})
             first = next((e for e in batch if e["at"] == day + "T09:20:00+05:30"), None)
-            if not first:
+            return m, p, first
+
+        # Check every eligible candidate before ranking, concurrently within the
+        # shared per-API limiter. Serial one-per-second fetches cannot meet the
+        # unchanged 90-second deadline on broad gap days.
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            checked = list(pool.map(fetch, members))
+        for m, p, first in checked:
+            if not p or not first:
                 missing.append(m["symbol"])
                 continue
             profiles.append(p)
@@ -260,6 +268,14 @@ class MarketService(PaperService):
             result = f.result()
             received = now()
             closed = day + "T09:20:00+05:30"
+            selection_check = {
+                "day": day,
+                "received_at": received.isoformat(),
+                "delay_seconds": (received - stamp(closed)).total_seconds(),
+                "checked_candidates": len(result["profiles"]),
+                "missing": result["missing"],
+            }
+            metadata(self.db, "selection_check:" + day, selection_check)
             s = read(self.db)
             if (
                 result["missing"]
@@ -311,7 +327,8 @@ class MarketService(PaperService):
                     self.health["last_candle_received"] = received.isoformat()
                     self.requested_slot = closed
         s = read(self.db)
-        if minute >= 562 and active and self.selected_day != day:
+        if (minute >= 562 and active and self.selected_day != day
+                and self.gap_day != day):
             self.halt("No timely full-market opening selection for this session")
         halt = self.selected_day != day or self.gap_day == day
         update(

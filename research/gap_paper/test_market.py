@@ -1,4 +1,5 @@
 import copy, json, tempfile, unittest
+import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
@@ -6,9 +7,37 @@ from .market import resolve_catalog, classify, build_profile, member_manifest, r
 from .storage import update, read, seed_session, dashboard
 from .engine import IST, process, fresh, valid_quote
 from . import test_engine as fixtures
+from .data import Client
+from .market_service import MarketService
 
 
 class MarketTests(unittest.TestCase):
+    def test_rate_limiter_enforces_all_rolling_windows(self):
+        self.assertEqual(Client.request_delay([0]*5, .5), .5)
+        self.assertEqual(Client.request_delay([0]*450, 10), 50)
+        self.assertEqual(Client.request_delay([0]*1800, 70), 1730)
+        self.assertEqual(Client.request_delay([0]*1800, 1800), 0)
+
+    def test_opening_checks_all_candidates_concurrently_and_only_first_bar(self):
+        members = [{"symbol":str(i),"key":str(i),"isin":str(i),
+                    "entry_eligible":True,"tick_size":.05} for i in range(8)]
+        cat = {"members":members,"calendar":{"2026-10-01":"regular","2026-10-05":"regular"}}
+        snapshot = {"day":"2026-10-05","rows":[{"symbol":m['symbol'],"eligibility":"eligible"} for m in members]}
+        barrier = threading.Barrier(8)
+        def response(key):
+            barrier.wait(timeout=3)
+            return [[f"2026-10-05T{t}:00+05:30",100,101,99,100,10000,0]
+                    for t in ['09:15','09:20']]
+        with tempfile.TemporaryDirectory() as d, patch('research.gap_paper.market_service.Client') as C, patch('research.gap_paper.market_service.read_profile',return_value={"complete":True}):
+            service = object.__new__(MarketService)
+            service.root = Path(d)
+            C.return_value.intraday.side_effect = response
+            result = service.opening_bars(snapshot,cat)
+            self.assertEqual(len(result['profiles']),8)
+            self.assertEqual(len(result['bars']),8)
+            self.assertFalse(result['missing'])
+            self.assertTrue(all(b['ts'].endswith('09:15:00+05:30') for b in result['bars']))
+
     def test_after_close_combines_actual_intraday_with_prior_history(self):
         end = datetime(2026, 9, 29, 16, tzinfo=IST)
         days = [(end - timedelta(days=n)).date().isoformat()
