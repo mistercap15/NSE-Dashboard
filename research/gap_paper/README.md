@@ -1,3 +1,5 @@
+> Forward paper service rollout: see [OPERATIONS.md](OPERATIONS.md) and [LIVE_ROLLOUT.md](LIVE_ROLLOUT.md). These document the subsequently authorized isolated activation and daily web/mobile views. Original pilot instructions below describe the initial offline implementation.
+
 # Gap and first pullback — local paper research
 
 This is a mechanical adaptation, not a reproduction of Ross Cameron's discretionary trading or a demonstrated edge. **PAPER — NO LIVE ORDERS.** No order client, executor import, service control, Telegram delivery, deployment, or background recorder is included. Existing live systems are independent.

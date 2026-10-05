@@ -10,7 +10,7 @@ Group=nserank-paper
 WorkingDirectory=/opt/nserank-gap-paper
 EnvironmentFile=/etc/nserank-gap-paper.env
 Environment=PYTHONDONTWRITEBYTECODE=1
-ExecStart=/usr/bin/python3 -m research.gap_paper.service --root /var/lib/nserank-gap-paper
+ExecStart=/usr/bin/python3 -m research.gap_paper.market_service --root /var/lib/nserank-gap-paper
 Restart=on-failure
 RestartSec=15
 TimeoutStopSec=40

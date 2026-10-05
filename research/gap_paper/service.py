@@ -36,6 +36,7 @@ def quote_batch(response, members, received):
             q = {
                 "symbol": sym,
                 "source_at": stamp(row["timestamp"]).isoformat(),
+                "requested_at": response.get("_request_started_at", received),
                 "bid": float(buy["price"]),
                 "ask": float(sell["price"]),
                 "bid_size": float(buy["quantity"]),

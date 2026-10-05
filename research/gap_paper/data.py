@@ -1,8 +1,9 @@
 """Read-only Upstox market data. No POST, account or order APIs exist here."""
 
-import gzip, json, os, time, urllib.request, urllib.error, urllib.parse, hashlib
+import gzip, json, os, time, urllib.request, urllib.error, urllib.parse, hashlib, threading, tempfile
 from pathlib import Path
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime, timezone
+from collections import defaultdict, deque
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -31,6 +32,35 @@ def token():
 
 
 class Client:
+    _gate = threading.Lock()
+    _requests = defaultdict(deque)
+
+    @staticmethod
+    def request_delay(history, at):
+        # Below published per-API limits, including the longer rolling windows.
+        return max([0] + [history[-limit] + window - at
+                          for limit, window in [(5, 1), (450, 60), (1800, 1800)]
+                          if len(history) >= limit])
+
+    @classmethod
+    def wait_for_request(cls, path):
+        # Isolate API budgets so bulk history cannot starve executable quotes.
+        group = ('intraday' if '/intraday/' in path else
+                 'history' if '/historical-candle/' in path else
+                 'quotes' if '/market-quote/' in path else
+                 'fundamentals' if '/fundamentals/' in path else path)
+        while True:
+            with cls._gate:
+                at = time.monotonic()
+                history = cls._requests[group]
+                while history and at - history[0] >= 1800:
+                    history.popleft()
+                delay = cls.request_delay(history, at)
+                if delay <= 0:
+                    history.append(at)
+                    return
+            time.sleep(min(delay, 1))
+
     def __init__(self, cache):
         self.cache = Path(cache)
         self.cache.mkdir(parents=True, exist_ok=True)
@@ -54,8 +84,7 @@ class Client:
             return json.loads(f.read_text())["response"]
         secret = token()
         for attempt in range(5):
-            time.sleep(max(0, 1 - (time.monotonic() - self.last)))
-            self.last = time.monotonic()
+            Client.wait_for_request(path)
             req = urllib.request.Request(
                 "https://api.upstox.com/" + path,
                 headers={
@@ -70,12 +99,18 @@ class Client:
                     data = json.load(r)
                 if data.get("status") != "success":
                     raise DataError("Market data returned unsuccessful status")
-                tmp = f.with_suffix(".tmp")
-                tmp.write_text(
-                    json.dumps(
-                        {"path": path, "retrieved_at": time.time(), "response": data}
+                with tempfile.NamedTemporaryFile(
+                    mode="w",
+                    dir=f.parent,
+                    prefix=f.stem + "-",
+                    suffix=".tmp",
+                    delete=False,
+                ) as out:
+                    json.dump(
+                        {"path": path, "retrieved_at": time.time(), "response": data},
+                        out,
                     )
-                )
+                    tmp = Path(out.name)
                 tmp.replace(f)
                 return data
             except urllib.error.HTTPError as e:
@@ -91,23 +126,27 @@ class Client:
                 time.sleep(min(2**attempt, 16))
         raise DataError("Upstox retries exhausted")
 
-    def history(self, key, start, end):
+    def history(self, key, start, end, ttl=None):
         return self.get(
-            f'v3/historical-candle/{urllib.parse.quote(key,safe="")}/minutes/5/{end}/{start}'
+            f'v3/historical-candle/{urllib.parse.quote(key,safe="")}/minutes/5/{end}/{start}',
+            ttl=ttl,
         )["data"]["candles"]
 
-    def intraday(self, key):
+    def intraday(self, key, ttl=15):
         return self.get(
             f'v3/historical-candle/intraday/{urllib.parse.quote(key,safe="")}/minutes/5',
-            ttl=15,
+            ttl=ttl,
         )["data"]["candles"]
 
     def quotes(self, keys):
-        return self.get(
+        started = datetime.now(timezone.utc).isoformat()
+        response = self.get(
             "v3/market-quote/quotes?instrument_key="
             + urllib.parse.quote(",".join(keys), safe=""),
-            ttl=1,
+            ttl=0,
         )
+        response["_request_started_at"] = started
+        return response
 
 
 def master():

@@ -217,6 +217,13 @@ def dashboard(path, day=None):
     result = trimmed(s)
     result["service"] = metadata(path, "health") or {"status": "not_running"}
     result["universe"] = metadata(path, "universe") or {}
+    selected_day = day or (s.get("session") if s else None)
+    result["scanner"] = metadata(path, "scanner:" + str(selected_day))
+    result["preparation"] = metadata(path, "market_preparation")
+    result["selection"] = {
+        "day": metadata(path, "market_selected_day"),
+        "scope": "whole_nse",
+    }
     if not s:
         return result
     c = connect(path)
@@ -250,5 +257,60 @@ def dashboard(path, day=None):
             ]
         }
         return result
+    finally:
+        c.close()
+
+
+def seed_session(path, cfg, manifest, calendar, profiles, day, at):
+    """Install only prior-session indicators; preserve the existing cash account."""
+    from .engine import start_day, stamp
+    import copy
+
+    c = connect(path)
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        row = c.execute("SELECT id,state FROM accounts WHERE active=1").fetchone()
+        if not row:
+            raise ValueError("Initialize account first")
+        aid, state = row
+        s = json.loads(state)
+        if s["positions"] or (
+            s["session"] == day and (s["ranked"] or s["day_entries"])
+        ):
+            raise ValueError("Cannot reseed an active or already selected session")
+        if s.get("strategy_hash") != digest(cfg):
+            raise ValueError("Strategy changed")
+        prior = max(d for d, k in calendar.items() if d < day and k == "regular")
+        if any(
+            p["as_of"] != prior or stamp(p["checked_at"]) > stamp(at) for p in profiles
+        ):
+            raise ValueError("Warmup must predate selection and end at prior session")
+        temp = fresh(cfg, manifest, calendar)
+        temp["session"] = prior
+        temp["stocks"] = {p["symbol"]: copy.deepcopy(p["stock"]) for p in profiles}
+        start_day(temp, day, calendar)
+        if s["session"] != day:
+            start_day(s, day, calendar)
+        s["stocks"] = temp["stocks"]
+        s["shortlist"] = []
+        s["ranked"] = False
+        s["hash"] = digest([cfg, manifest, calendar])
+        audit = {
+            "at": at,
+            "as_of": prior,
+            "config": cfg,
+            "manifest": manifest,
+            "calendar": calendar,
+            "stocks": temp["stocks"],
+        }
+        c.execute(
+            "INSERT INTO records(account_id,kind,day,payload) VALUES(?,?,?,?)",
+            (aid, "session_seed", day, json.dumps(audit)),
+        )
+        c.execute("UPDATE accounts SET state=? WHERE id=?", (json.dumps(s), aid))
+        c.commit()
+    except Exception:
+        c.rollback()
+        raise
     finally:
         c.close()
