@@ -54,6 +54,14 @@ def unrealized(s):
     )
 
 
+def setup_status(shortlist, stocks):
+    return [
+        {**pick, **{k: stocks.get(pick["symbol"], {}).get(k)
+                    for k in ["phase", "reason", "pending"]}}
+        for pick in shortlist
+    ]
+
+
 def metadata(path, key, value=None):
     c = connect(path)
     try:
@@ -185,6 +193,11 @@ def update(
                 d["max_drawdown"] = max(d["max_drawdown"], d["peak_equity"] - equity(s))
                 d["last_event"] = event["at"]
                 d["open_positions"] = len(s["positions"])
+                d["setup_status"] = setup_status(s["shortlist"], s["stocks"])
+                d["selection_completed"] = s["ranked"]
+                d["entry_halted"] = bool(s.get("operational_halt"))
+                d["paused"] = s["paused"]
+                d["risk_halted"] = s["halted"]
                 if (
                     abs(d["realized_pnl"] + d["unrealized_change"] - d["net_pnl"])
                     > 0.01
@@ -255,6 +268,31 @@ def dashboard(path, day=None):
                 "events",
                 "equity_curve",
             ]
+        }
+        d = result["daily"] or {}
+        current = selected == s["session"]
+        archived = next((r for r in reversed(s["daily_scans"]) if r["day"] == selected), {})
+        setups = (setup_status(s["shortlist"], s["stocks"]) if current else
+                  d.get("setup_status", setup_status(archived.get("shortlist", []), archived.get("states", {}))))
+        completed = bool(setups) or d.get("selection_completed", False)
+        entries = d.get("entries", 0)
+        signals = len(result["day_records"]["signals"])
+        entry_halted = bool(s.get("operational_halt")) if current else d.get("entry_halted")
+        why = ("Paper entries recorded" if entries else
+               "No session observations recorded" if not d else
+               "Opening selection was not completed" if not completed else
+               "No eligible opening candidates" if not setups else
+               "No entry signals: every watched setup failed the fixed rules" if not signals and all(x["phase"] == "invalid" for x in setups) else
+               "Signals recorded; no executable paper entry" if signals else
+               "Watching selected stocks; no entry signal yet")
+        result["session_diagnostics"] = {
+            "day": selected, "summary": why, "setups": setups,
+            "signals": signals, "entries": entries,
+            "entry_halted": entry_halted,
+            "halt_reason": result["service"].get("entry_halt_reason") if current and entry_halted else None,
+            "selection": metadata(path, "selection_check:" + str(selected)),
+            "quote_issues": result["service"].get("quote_issues", []) if current else [],
+            "last_observation": d.get("last_event"),
         }
         return result
     finally:

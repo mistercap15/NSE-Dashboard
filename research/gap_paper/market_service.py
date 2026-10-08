@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from pathlib import Path
 from http.server import ThreadingHTTPServer
-from .service import PaperService, handler, now, closed_slot, quote_batch
+from .service import PaperService, handler, now, closed_slot, quote_batch, missing_feed_symbols
 from .market import (
     catalog,
     scan,
@@ -158,6 +158,9 @@ class MarketService(PaperService):
             m for m in bundle["manifest"]["members"] if m["symbol"] in wanted
         ]
         return super().fetch_candles(subset, target)
+
+    def candle_symbols(self, state):
+        return set(state["positions"]) | {r["symbol"] for r in state["shortlist"]}
 
     def halt(self, reason):
         self.gap_day = now().date().isoformat()
@@ -366,7 +369,7 @@ class MarketService(PaperService):
             response = self.client.quotes([m["key"] for m in members])
             received = now()
             quotes, issues = quote_batch(response, members, received.isoformat())
-            missing = wanted - {q["symbol"] for q in quotes}
+            missing = missing_feed_symbols(wanted, quotes, issues)
             interrupted = (
                 self.last_quote
                 and self.last_quote[:10] == day
