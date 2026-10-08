@@ -488,7 +488,7 @@ def process(s, event, cfg, manifest, cal):
         )
         # Mark all fresh bids before risk checks; process exits before new intents.
         for q in quotes:
-            if valid_quote(q, at) and q["symbol"] in s["positions"]:
+            if valid_quote(q, at, side="bid") and q["symbol"] in s["positions"]:
                 s["positions"][q["symbol"]].update(mark=q["bid"], mark_at=at)
         mark(s, at, cfg)
         for q in quotes:
@@ -765,12 +765,14 @@ def process(s, event, cfg, manifest, cal):
     return s
 
 
-def valid_quote(q, at):
+def valid_quote(q, at, side="both"):
     try:
         return (
             -2 <= (stamp(at) - stamp(q["source_at"])).total_seconds() <= 5
-            and all(math.isfinite(q[k]) and q[k] > 0 for k in ["bid", "ask"])
-            and q["bid"] <= q["ask"]
+            and all(math.isfinite(q[k]) and q[k] > 0 for k in (["bid"] if side == "bid" else ["bid", "ask"]))
+            and (q.get("bid_size") is None or q["bid_size"] > 0)
+            and (side == "bid" or q.get("ask_size") is None or q["ask_size"] > 0)
+            and (side == "bid" and q.get("ask") == 0 or q["bid"] <= q["ask"])
         )
     except (KeyError, ValueError, TypeError):
         return False
@@ -782,7 +784,7 @@ def process_quote(s, event, cfg, allow_entry=True, exits=True):
     q = event["quote"]
     sym = q["symbol"]
     at = event["at"]
-    if not valid_quote(q, at):
+    if not valid_quote(q, at, side="bid"):
         reject(s, sym, at, "stale_or_crossed_quote")
         return
     source = stamp(q["source_at"])
@@ -819,7 +821,7 @@ def process_quote(s, event, cfg, allow_entry=True, exits=True):
                     0, (source - stamp(at)).total_seconds()
                 ),
                 "intent_at": at,
-                "spread": q["ask"] - q["bid"],
+                "spread": q["ask"] - q["bid"] if q["ask"] > 0 else None,
                 "slippage_bps": cfg["slippage_bps"],
                 "depth_exceeded": q.get("bid_size") is not None
                 and p["qty"] > q["bid_size"],
@@ -836,6 +838,7 @@ def process_quote(s, event, cfg, allow_entry=True, exits=True):
         invalidate(x, "pending_expired")
     if (
         allow_entry
+        and valid_quote(q, at)
         and not s.get("operational_halt")
         and x
         and x.get("pending")

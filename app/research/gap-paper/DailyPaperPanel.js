@@ -1,4 +1,5 @@
 'use client';
+import SessionStatus from './SessionStatus';
 const money = value => value == null ? '—' : `₹${Number(value).toLocaleString('en-IN', {maximumFractionDigits: 2})}`;
 export default function DailyPaperPanel({ data, day, setDay, error }) {
   const d = data?.selected_day === day ? data?.daily : null, service = data?.service;
@@ -10,6 +11,7 @@ export default function DailyPaperPanel({ data, day, setDay, error }) {
     {service && <p className="text-xs text-dim">Service heartbeat: {service.heartbeat_at || 'none'} · Last quote received: {service.last_quote_received || 'none'} · Last completed candle: {service.last_completed_candle || 'none'}</p>}
     {data?.universe?.label && <p className="text-sm">{data.universe.label} · {data.universe.members} admitted stocks before liquidity/setup filters</p>}
     {(data?.operational_halt || service?.entry_halt) && <p className="text-amber-600 dark:text-amber-300">New entries blocked by data-health checks. Existing paper positions still exit on the next valid quote. A manual resume does not override data-health or daily-loss limits.</p>}
+    <SessionStatus diagnostics={data?.session_diagnostics} day={day}/>
     {!d ? <p className="text-dim">No forward paper observations recorded for {day}. No historical trades have been invented for this date.</p> : <>
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">{[['Net P&L for day',d.net_pnl],['Realized P&L',d.realized_pnl],['Open P&L change',d.unrealized_change],['Fees paid (included)',d.fees],['Marked equity',d.equity],['Available cash',d.cash],['Open P&L now',d.open_unrealized_pnl],['Day max drawdown',d.max_drawdown]].map(([label,value])=><div key={label} className="bg-bg rounded p-3"><p className="text-xs text-dim">{label}</p><p className="font-bold text-lg">{money(value)}</p></div>)}</div>
       <p>{d.entries} entries · {d.closed_trades} closed trades · {d.open_positions} open positions at the last observation</p>

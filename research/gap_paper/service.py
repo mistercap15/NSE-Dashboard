@@ -1,6 +1,6 @@
 """Standalone read-only-market-data paper service. No broker order API exists here."""
 
-import argparse, copy, hmac, json, os, signal, threading, time
+import argparse, copy, hmac, json, math, os, signal, threading, time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -42,12 +42,32 @@ def quote_batch(response, members, received):
                 "bid_size": float(buy["quantity"]),
                 "ask_size": float(sell["quantity"]),
             }
-            if q["bid_size"] <= 0 or q["ask_size"] <= 0 or not valid_quote(q, received):
+            if not -2 <= (stamp(received) - stamp(q["source_at"])).total_seconds() <= 5:
                 raise ValueError("stale")
-            quotes.append(q)
+            if any(not math.isfinite(q[k]) or q[k] < 0 for k in ["bid", "ask", "bid_size", "ask_size"]):
+                raise ValueError("invalid depth")
+            if any((q[side] == 0) != (q[side + "_size"] == 0) for side in ["bid", "ask"]):
+                raise ValueError("inconsistent depth")
+            if q["bid"] == 0 or q["ask"] == 0:
+                reason = "empty_book" if q["bid"] == q["ask"] == 0 else "no_ask" if q["ask"] == 0 else "no_bid"
+                issues.append({"symbol": sym, "reason": reason, "source_at": q["source_at"]})
+                if valid_quote(q, received, side="bid"):
+                    quotes.append(q)  # A real bid can close a long; absent ask cannot buy.
+            elif valid_quote(q, received):
+                quotes.append(q)
+            else:
+                raise ValueError("crossed")
         except (KeyError, IndexError, TypeError, ValueError):
             issues.append({"symbol": sym, "reason": "unusable_quote"})
     return quotes, issues
+
+
+def missing_feed_symbols(wanted, quotes, issues):
+    # Fresh zero-sided depth is an observed market state, not missing feed data.
+    observed = {q["symbol"] for q in quotes} | {
+        x["symbol"] for x in issues if x["reason"] in {"no_ask", "no_bid", "empty_book"}
+    }
+    return wanted - observed
 
 
 class PaperService:
@@ -176,11 +196,14 @@ class PaperService:
             issues + invalid,
         )
 
+    def candle_symbols(self, state):
+        return {m["symbol"] for m in self.bundle["manifest"]["members"]}
+
     def apply_candles(self, result):
         target, batches, issues = result
         s = read(self.db)
         last = s.get("last_candle")
-        members = {m["symbol"] for m in self.bundle["manifest"]["members"]}
+        members = self.candle_symbols(s)
         applied = 0
         for e in batches:
             if last and e["at"] <= last:
