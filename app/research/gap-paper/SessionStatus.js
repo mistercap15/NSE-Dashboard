@@ -1,7 +1,7 @@
 'use client';
 
 const reasons = {
-  advance_timeout: 'Did not close 0.5% above the open by 10:00',
+  advance_timeout: 'Required closing advance not reached by 10:00',
   first_pullback_ended_early: 'First pullback ended before two lower-close candles',
   pullback_below_open: 'Pullback touched or fell below the session open',
   first_pullback_proximity_failed: 'Pullback was too far from EMA9 and VWAP',
