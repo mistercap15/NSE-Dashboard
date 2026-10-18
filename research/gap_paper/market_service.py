@@ -24,6 +24,7 @@ from .data import Client, DataError
 class MarketService(PaperService):
     def __init__(self, root, cfg):
         super().__init__(root, cfg)
+        self.initialize_variants()
         self.cat = None
         self.catalog_future = None
         self.scan_future = None
@@ -36,6 +37,21 @@ class MarketService(PaperService):
             target=self.prepare_profiles, daemon=True
         )
         self.profile_thread.start()
+
+    def initialize_variants(self):
+        pass
+
+    def seed_variants(self, result, received):
+        pass
+
+    def finish_variants(self):
+        pass
+
+    def feed_state(self, state):
+        return {**state, "shortlist": state["shortlist"] if self.selected_day == now().date().isoformat() else []}
+
+    def feed_bundle(self):
+        return self.bundle
 
     def prepare_profiles(self):
         while not self.stop.is_set():
@@ -151,7 +167,7 @@ class MarketService(PaperService):
         }
 
     def fetch_candles(self, bundle, target):
-        s = read(self.db)
+        s = self.feed_state(read(self.db))
         wanted = set(s["positions"]) | {r["symbol"] for r in s["shortlist"]}
         subset = copy.deepcopy(bundle)
         subset["manifest"]["members"] = [
@@ -283,56 +299,66 @@ class MarketService(PaperService):
             if (
                 result["missing"]
                 or (received - stamp(closed)).total_seconds() > 90
-                or s["positions"]
             ):
                 self.halt(
-                    "Opening candles late, incomplete, or carried position; no retrospective entries"
+                    "Opening candles late or incomplete; no retrospective entries"
                 )
             else:
-                with self.lock:
-                    seed_session(
-                        self.db,
-                        self.cfg,
-                        result["manifest"],
-                        result["calendar"],
-                        result["profiles"],
-                        day,
-                        received.isoformat(),
-                    )
-                    self.bundle = {
-                        "manifest": result["manifest"],
-                        "calendar": result["calendar"],
-                        "day": day,
-                    }
-                    metadata(self.db, "references", self.bundle)
-                    if self.gap_day != day:
-                        self.gap_day = None
-                        self.health.pop("entry_halt_reason", None)
-                    update(
-                        self.db,
-                        self.cfg,
-                        self.bundle["manifest"],
-                        self.bundle["calendar"],
-                        operational_halt=self.gap_day == day,
-                    )
-                    self.ingest(
-                        {
-                            "kind": "candles",
-                            "at": received.isoformat(),
-                            "received_at": received.isoformat(),
-                            "closed_at": closed,
-                            "bars": result["bars"],
-                        }
-                    )
-                    self.selected_day = day
-                    metadata(self.db, "market_selected_day", day)
-                    self.health["last_completed_candle"] = closed
-                    self.health["last_candle_received"] = received.isoformat()
-                    self.requested_slot = closed
+                self.seed_variants(result, received)
+                if s["positions"]:
+                    self.health["entry_halt_reason"] = "Carried V1 position; opening selection skipped"
+                else:
+                    self.select_opening(result, received, closed, day)
+                self.finish_variants()
+        self.observe_market(t, day, minute, active)
+
+    def select_opening(self, result, received, closed, day):
+        with self.lock:
+            seed_session(
+                self.db,
+                self.cfg,
+                result["manifest"],
+                result["calendar"],
+                result["profiles"],
+                day,
+                received.isoformat(),
+            )
+            self.bundle = {
+                "manifest": result["manifest"],
+                "calendar": result["calendar"],
+                "day": day,
+            }
+            metadata(self.db, "references", self.bundle)
+            if self.gap_day != day:
+                self.gap_day = None
+                self.health.pop("entry_halt_reason", None)
+            update(
+                self.db,
+                self.cfg,
+                self.bundle["manifest"],
+                self.bundle["calendar"],
+                operational_halt=self.gap_day == day,
+            )
+            self.ingest(
+                {
+                    "kind": "candles",
+                    "at": received.isoformat(),
+                    "received_at": received.isoformat(),
+                    "closed_at": closed,
+                    "bars": result["bars"],
+                }
+            )
+            self.selected_day = day
+            metadata(self.db, "market_selected_day", day)
+            self.health["last_completed_candle"] = closed
+            self.health["last_candle_received"] = received.isoformat()
+            self.requested_slot = closed
+
+    def observe_market(self, t, day, minute, active):
         s = read(self.db)
         if (minute >= 562 and active and self.selected_day != day
                 and self.gap_day != day):
-            self.halt("No timely full-market opening selection for this session")
+            self.health["entry_halt_reason"] = "No timely full-market opening selection for this session"
         halt = self.selected_day != day or self.gap_day == day
         update(
             self.db,
@@ -346,13 +372,11 @@ class MarketService(PaperService):
             self.candle_future = None
             self.apply_candles(f.result())
             s = read(self.db)
-        wanted = set(s["positions"]) | (
-            {r["symbol"] for r in s["shortlist"]} if self.selected_day == day else set()
-        )
+        feed = self.feed_state(s)
+        wanted = set(feed["positions"]) | {r["symbol"] for r in feed["shortlist"]}
         target = closed_slot(t).isoformat()
         if (
             active
-            and self.selected_day == day
             and wanted
             and minute >= 565
             and self.requested_slot != target
@@ -360,11 +384,11 @@ class MarketService(PaperService):
         ):
             self.requested_slot = target
             self.candle_future = self.pool.submit(
-                self.fetch_candles, copy.deepcopy(self.bundle), target
+                self.fetch_candles, copy.deepcopy(self.feed_bundle()), target
             )
         if active and wanted:
             members = [
-                m for m in self.bundle["manifest"]["members"] if m["symbol"] in wanted
+                m for m in self.feed_bundle()["manifest"]["members"] if m["symbol"] in wanted
             ]
             response = self.client.quotes([m["key"] for m in members])
             received = now()
@@ -414,7 +438,8 @@ def main():
     secret = os.environ.get("GAP_PAPER_HTTP_SECRET", "")
     if len(secret) < 32:
         raise SystemExit("Dedicated paper secret required")
-    service = MarketService(args.root, json.loads(Path(args.config).read_text()))
+    from .comparison import ComparisonService
+    service = ComparisonService(args.root, json.loads(Path(args.config).read_text()))
     server = ThreadingHTTPServer(("127.0.0.1", args.port), handler(service, secret))
     threading.Thread(target=server.serve_forever, daemon=True).start()
     signal.signal(signal.SIGTERM, lambda *_: service.stop.set())

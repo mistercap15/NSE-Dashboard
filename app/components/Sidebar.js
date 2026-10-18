@@ -30,6 +30,7 @@ const navGroups = [
     label: "Trade Setups",
     Icon: Zap,
     children: [
+      { href: "/protection", label: "Futures Protection", Icon: Scale },
       { href: "/playbook",    label: "Playbook",    Icon: Target },
       { href: "/early-entry", label: "Early Entry", Icon: Zap },
       { href: "/swing-low",   label: "Swing Low",   Icon: TrendingDown },

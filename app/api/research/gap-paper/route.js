@@ -37,6 +37,8 @@ export async function POST(request) {
   if (!process.env.GAP_PAPER_URL && process.env.GAP_PAPER_LOCAL !== '1') return NextResponse.json({ error: 'Local paper mode disabled' }, { status: 409 });
   try {
     const body = await request.json();
+    if (body.variant && !['v1','v2'].includes(body.variant)) return NextResponse.json({error:'Unknown paper variant'}, {status:400});
+    if (body.variant==='v2' && !process.env.GAP_PAPER_URL) return NextResponse.json({error:'V2 requires the comparison service'}, {status:409});
     if (!['pause', 'resume', 'reset'].includes(body.action)) return NextResponse.json({ error: 'Invalid paper action' }, { status: 400 });
     if (body.action === 'reset' && body.confirm !== 'RESET PAPER ACCOUNT') return NextResponse.json({ error: 'Explicit reset confirmation required' }, { status: 400 });
     return NextResponse.json(process.env.GAP_PAPER_URL ? await paperRemote('control', { body }) : await invoke(body.action, body.action === 'reset'));

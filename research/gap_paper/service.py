@@ -127,6 +127,14 @@ class PaperService:
                 events=[event],
             )
 
+    def snapshot(self, day):
+        return dashboard(self.db, day)
+
+    def control_variant(self, action, variant="v1"):
+        if variant != "v1":
+            raise ValueError("Unknown paper variant")
+        return self.control(action)
+
     def control(self, action):
         with self.lock:
             if not self.bundle:
@@ -199,10 +207,13 @@ class PaperService:
     def candle_symbols(self, state):
         return {m["symbol"] for m in self.bundle["manifest"]["members"]}
 
+    def observed_candle(self, state):
+        return state.get("last_candle")
+
     def apply_candles(self, result):
         target, batches, issues = result
         s = read(self.db)
-        last = s.get("last_candle")
+        last = self.observed_candle(s)
         members = self.candle_symbols(s)
         applied = 0
         for e in batches:
@@ -211,7 +222,7 @@ class PaperService:
             received = now()
             late = (received - stamp(e["at"])).total_seconds() > 90
             missing = members - {b["symbol"] for b in e["bars"]}
-            selected = {r["symbol"] for r in s.get("shortlist", [])}
+            selected = members
             first = stamp(e["at"]).hour == 9 and stamp(e["at"]).minute == 20
             if received.hour < 11 and (
                 late or (missing and (first or selected & missing))
@@ -230,7 +241,7 @@ class PaperService:
                 received_at=received.isoformat(),
             )
             s = self.ingest(e)
-            last = s.get("last_candle")
+            last = self.observed_candle(s)
             applied += 1
             issues.extend(
                 {
@@ -500,7 +511,7 @@ def handler(service, secret):
             except ValueError:
                 return self.send(400, {"error": "Invalid day"})
             try:
-                result = dashboard(service.db, day)
+                result = service.snapshot(day)
                 health = result["service"]
                 heartbeat = health.get("heartbeat_at")
                 quote = health.get("last_quote_received")
@@ -529,8 +540,8 @@ def handler(service, secret):
                     raise ValueError("Paper controls only")
                 if action == "reset" and body.get("confirm") != "RESET PAPER ACCOUNT":
                     raise ValueError("Explicit reset confirmation required")
-                service.control(action)
-                return self.send(200, dashboard(service.db, now().date().isoformat()))
+                service.control_variant(action, body.get("variant", "v1"))
+                return self.send(200, service.snapshot(now().date().isoformat()))
             except (ValueError, TypeError):
                 return self.send(
                     409,

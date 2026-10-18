@@ -11,15 +11,24 @@ function Table({ rows, columns }) {
 }
 export default function GapPaperPage() {
   const [day,setDay]=useState(()=>new Date(Date.now()+19800000).toISOString().slice(0,10));
-  const [data,setData]=useState(null),[error,setError]=useState(''),[busy,setBusy]=useState(false),[confirmation,setConfirmation]=useState('');
+  const [payload,setData]=useState(null),[error,setError]=useState(''),[busy,setBusy]=useState(false),[confirmation,setConfirmation]=useState('');
+  const [variant,setVariant]=useState('v1');
+  const data=variant==='v2'?(payload?.variants?.v2?{...payload.variants.v2,scanner:payload.scanner,universe:payload.universe,preparation:payload.preparation}:null):payload;
   async function refresh(){try{const r=await fetch(`/api/research/gap-paper?day=${encodeURIComponent(day)}`,{cache:'no-store'});const j=await r.json();if(!r.ok)throw Error(j.error);setData(j);setError('');}catch(e){setError(e.message);}}
   useEffect(()=>{refresh();const timer=setInterval(refresh,15000);return()=>clearInterval(timer);},[day]);
-  async function act(action){setBusy(true);try{const r=await fetch('/api/research/gap-paper',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,confirm:confirmation})});const j=await r.json();if(!r.ok)throw Error(j.error);await refresh();setConfirmation('');setError('');}catch(e){setError(e.message);}finally{setBusy(false);}}
+  async function act(action){setBusy(true);try{const r=await fetch('/api/research/gap-paper',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,confirm:confirmation,variant})});const j=await r.json();if(!r.ok)throw Error(j.error);await refresh();setConfirmation('');setError('');}catch(e){setError(e.message);}finally{setBusy(false);}}
   const stocks=Object.entries(data?.stocks||{}).map(([symbol,x])=>({symbol,...x,trigger:x.pending?.trigger,stop:x.pending?.stop,proposed_quantity:x.proposed_quantity}));
   const positions=Object.values(data?.positions||{});
   return <><Sidebar /><main className="md:ml-[200px] pt-20 md:pt-8 min-h-screen bg-bg text-text p-6 space-y-7">
     <a href="/" className="text-sky-400">← NSERank</a>
-    <header><p className="font-bold text-amber-300">PAPER — NO LIVE ORDERS</p><h1 className="text-3xl font-bold mt-2">Gap & first pullback</h1><p className="text-dim mt-2">Mechanical research adaptation · V1 · No proven edge</p></header>
+    <header><p className="font-bold text-amber-300">PAPER — NO LIVE ORDERS</p><h1 className="text-3xl font-bold mt-2">Gap & first pullback</h1><p className="text-dim mt-2">Mechanical research adaptation · V1 / V2 comparison · No proven edge</p></header>
+    {payload?.comparison?.day===day && <section className="rounded-xl border border-border bg-surface p-5 space-y-3">
+      <h2 className="text-xl font-bold">Compare paper strategies</h2>
+      <p className="text-sm text-dim">Only the required closing advance changes. V1: 0.5%; V2: 0.25%. Both keep the 10:00 deadline and all other entry, exit and risk rules. Separate ₹2 lakh starting accounts; shared market observations.</p>
+      <div className="grid sm:grid-cols-2 gap-3">{payload.comparison.accounts.map(a=><button key={a.variant} aria-pressed={variant===a.variant} onClick={()=>setVariant(a.variant)} className={`text-left rounded-xl border p-4 ${variant===a.variant?'border-sky-500 bg-sky-500/10':'border-border'}`}><strong>{a.label}</strong><p className="text-xl font-bold mt-2">{a.net_pnl==null?'Awaiting forward session':`₹${a.net_pnl.toFixed(2)}`}</p><p className="text-sm text-dim">{a.observed?`${a.entries} entries · ${a.closed_trades} closed trades · ${(a.return_fraction*100).toFixed(3)}% day return`:'No reconstructed trades'}</p><p className="text-sm text-dim">{a.max_drawdown==null?'':`Day drawdown ₹${a.max_drawdown.toFixed(2)}`}</p></button>)}</div>
+      <p className="text-xs text-dim">{day} · {payload.comparison.paired_day?'Both accounts have observations. Compare fees-inclusive daily P&L; more trades alone do not establish an edge.':'Not a paired comparison day. V2 starts at its next timely opening selection.'}</p>
+    </section>}
+    <p className="font-bold">Viewing {variant.toUpperCase()} · required advance {variant==='v2'?'0.25':'0.5'}%</p>
     <MarketScanner data={data}/>
     <DailyPaperPanel data={data} day={day} setDay={setDay} error={error}/>
     <details className="rounded border border-border p-4 space-y-4">
@@ -44,6 +53,6 @@ export default function GapPaperPage() {
     <section><h2 className="text-xl">Closed trades (latest 100)</h2><Table rows={data?.trades} columns={['symbol','qty','entry','exit','pnl','reason','entry_costs','exit_costs','ambiguous','delayed']}/></section>
     <section><h2 className="text-xl">Rejected signals</h2><Table rows={data?.rejections} columns={['at','symbol','reason']}/></section>
     <section><h2 className="text-xl">Marked equity (latest observations)</h2><Table rows={data?.equity_curve?.slice(-12)} columns={['at','equity','exposure','drawdown','stale_marks']}/></section>
-    <section className="border border-red-900 rounded p-4"><h2 className="text-xl">Reset paper account</h2><p>Archives this paper account and starts a new ₹200,000 account. No broker funds or positions are affected.</p><label className="block mt-3">Type RESET PAPER ACCOUNT<input value={confirmation} onChange={e=>setConfirmation(e.target.value)} className="block bg-slate-800 border border-slate-600 p-2 my-2" /></label><button disabled={busy||confirmation!=='RESET PAPER ACCOUNT'||!data?.account_id} onClick={()=>act('reset')} className="bg-red-900 rounded p-2 disabled:opacity-40">Reset paper account</button></section>
+    {variant==='v1' && <section className="border border-red-900 rounded p-4"><h2 className="text-xl">Reset paper account</h2><p>Archives this paper account and starts a new ₹200,000 account. No broker funds or positions are affected.</p><label className="block mt-3">Type RESET PAPER ACCOUNT<input value={confirmation} onChange={e=>setConfirmation(e.target.value)} className="block bg-slate-800 border border-slate-600 p-2 my-2" /></label><button disabled={busy||confirmation!=='RESET PAPER ACCOUNT'||!data?.account_id} onClick={()=>act('reset')} className="bg-red-900 rounded p-2 disabled:opacity-40">Reset paper account</button></section>}
   </main></>;
 }

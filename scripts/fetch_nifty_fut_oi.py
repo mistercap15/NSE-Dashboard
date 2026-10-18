@@ -999,11 +999,12 @@ def probe(token):
         print("  !!! account: expired contracts are the only source, and they are")
         print("  !!! gated. See the module docstring for the three options.")
         return False
-    monthlies = monthly_expiries(exps)
-    print(f"  OK — {len(exps)} expiries, {len(monthlies)} monthly, "
-          f"{monthlies[0]} → {monthlies[-1]}")
-    print(f"  earliest monthly expiry is {monthlies[0]}; anything before that is "
-          f"out of reach\n  regardless of subscription.")
+    if not exps:
+        print("  Access succeeded but no expiry dates were returned.")
+        return False
+    print(f"  OK — {len(exps)} listed expiries, {exps[0]} → {exps[-1]}")
+    print("  Expiry dates include options; actual futures require contract resolution.")
+    print("  Earliest listed expiry does not by itself prove candle coverage.")
 
     if not live:
         return False
