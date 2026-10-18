@@ -1,5 +1,5 @@
 // Shared server calculation: pure, deterministic, no order/account endpoints.
-export const VERSION = 'protection-1';
+export const VERSION = 'protection-2';
 const med = a => { const s=[...a].sort((a,b)=>a-b); return s.length ? (s[Math.floor((s.length-1)/2)]+s[Math.floor(s.length/2)])/2 : null; };
 export function recommendTarget({points=[],candles=[],spot,expiryDate,today,mode="seasonal"}) {
   const [year,month]=expiryDate.split('-').map(Number);
@@ -59,4 +59,18 @@ export function buildProtection({position,options,quotes,target,now=Date.now()})
   const selected=[];
   for(const [label,p] of [['Strong protection',strong],['Balanced reward / risk',balanced],['Lower premium',cheap]]) if(p&&!selected.some(s=>s.instrumentKey===p.instrumentKey)) selected.push({...p,label});
   return {choices:valid.length?selected:[],comparisons:selected.map(p=>({...p,label:valid.length?p.label:`Indicative · ${p.label}`})),candidates,unhedgedTarget:target.price?payoff(target.price,position):null,unhedgedZero:payoff(0,position),note:!valid.length?'No executable protection suggestion: refresh during market hours or reduce quantity. Indicative quotes below are not recommendations.':'Choices compare only the inspected same-expiry strikes. No claim of portfolio affordability.'};
+}
+
+export function resolveEntry({source,originalEntry,quote,qty,now=Date.now()}) {
+  if(source!=='market') return {price:originalEntry>0?originalEntry:null,basis:'Your actual existing futures fill',issues:[]};
+  const q=quoteState(quote,now); const last=Number(quote?.last_price)||0;
+  const price=q.ask>0?q.ask:last>0?last:null;
+  const issues=[];
+  if(!q.ask) issues.push('Ask unavailable; last trade used only as an indicative scenario');
+  if(!q.fresh) issues.push('Stale or missing quote timestamp');
+  if(q.askQty<qty) issues.push('Displayed futures ask depth does not cover your quantity');
+  if(q.bid>q.ask && q.ask>0) issues.push('Crossed futures quote');
+  const ist=new Date(now+19800000),minute=ist.getUTCHours()*60+ist.getUTCMinutes();
+  if([0,6].includes(ist.getUTCDay())||minute<555||minute>=930) issues.push('Outside regular NSE session');
+  return {price,basis:q.ask>0?'Upstox best ask snapshot':'Upstox last trade — indicative only',issues};
 }

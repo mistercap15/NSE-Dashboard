@@ -33,3 +33,13 @@ Local web visual QA covers contract selection, indicative card warnings, negativ
 https://upstox.com/developer/api-documentation/get-full-market-quote/
 https://upstox.com/developer/api-documentation/instruments/
 https://www.optionseducation.org/videolibrary/protective-put-example-breakeven-and-maximum-loss
+
+## Release 2 — actual contract and quote selection
+
+The discovery response now supplies Upstox-listed futures, their LTP/bid/ask snapshots, all listed PE contracts and actual PE expiry dates. Web and mobile allow independent futures, PE expiry and exact PE strike selection. Selecting a future defaults the PE expiry to match; changing PE expiry clears the prior strike. Automatic comparisons remain an optional selection, not a replacement for the exact contract chooser.
+
+New plans use a refreshed futures best ask; if unavailable, an LTP fallback is explicitly indicative. Existing positions retain the user's actual fill. Both futures and selected put expose feed time and best-ask quantity. Missing quotes show unavailable, not a fabricated price. Market-source entry freshness/depth failures make the whole package indicative, even if the option alone passes its checks.
+
+Mismatched expiries remain inspectable, but no combined protected terminal payoff is produced. Non-divisible lot quantities also block combined protection. This avoids claiming a floor across an expired hedge or assigning a fabricated time value to a later-dated put.
+
+Validation: existing pure tests plus entry-source checks; authenticated read-only API checked HINDUNILVR October/November/December futures and 82 PE contracts, exact October 1900 PE and November-versus-October mismatch. Local web UI verified the selector lists and actual quoted prices. Prices observed after hours are not executable recommendations. No account orders or service changes.
