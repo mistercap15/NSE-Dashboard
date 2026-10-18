@@ -74,3 +74,12 @@ export function resolveEntry({source,originalEntry,quote,qty,now=Date.now()}) {
   if([0,6].includes(ist.getUTCDay())||minute<555||minute>=930) issues.push('Outside regular NSE session');
   return {price,basis:q.ask>0?'Upstox best ask snapshot':'Upstox last trade — indicative only',issues};
 }
+
+// Simple planner: no account sizing or hidden fee allowance. Prefer a liquid,
+// two-sided quote nearest to spot; never recommend a distant cheap put as full protection.
+export function simpleRecommendation(candidates,spot) {
+  const quoted=candidates.filter(p=>Math.abs(p.strike-spot)/spot<=0.05&&p.premium>0&&p.quote.bid>0&&p.premium>=p.quote.bid);
+  const executable=quoted.filter(p=>p.eligible);
+  const pool=executable.length?executable:quoted;
+  return [...pool].sort((a,b)=>Math.abs(a.strike-spot)-Math.abs(b.strike-spot)||a.premium-b.premium)[0]||null;
+}

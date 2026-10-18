@@ -32,3 +32,10 @@ assert.ok(resolveEntry({source:'market',quote:{timestamp:now,last_price:18},qty:
 assert.equal(resolveEntry({source:'market',quote:{},qty:100,now}).price,null);
 assert.ok(resolveEntry({source:'market',quote,qty:200,now}).issues.some(x=>x.includes('depth')));
 console.log('Entry-source checks passed: actual fill preserved, ask preferred, LTP indicative, missing data and insufficient depth flagged.');
+const {simpleRecommendation}=await import('../app/lib/protection.mjs');
+const near={strike:1000,premium:20,quote:{bid:19},eligible:false};
+assert.equal(simpleRecommendation([near,{...near,strike:980,eligible:true}],1000).strike,980);
+assert.equal(simpleRecommendation([near,{...near,strike:1040}],1000).strike,1000);
+assert.equal(simpleRecommendation([{...near,strike:800}],1000),null);
+assert.equal(simpleRecommendation([{...near,quote:{bid:0}}],1000),null);
+console.log('Simple suggestion checks passed: nearest strike, usable quotes preferred, distant and missing quotes rejected.');
