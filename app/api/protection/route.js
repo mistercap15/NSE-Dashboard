@@ -1,8 +1,10 @@
 import { NextResponse } from 'next/server';
 import { ensureInstrumentMap, futuresChain, putChain, keyFor, masterAgeMs } from '@/app/lib/instrumentMaster';
-import { getBatchQuotes, getDailyCandles } from '@/app/lib/upstox';
+import { getBatchQuotes, getDailyCandles, getHourlyCandles } from '@/app/lib/upstox';
 import { loadUniverse } from '@/app/lib/dataset';
 import { recommendTarget, buildProtection, quoteState, resolveEntry, simpleRecommendation, VERSION } from '@/app/lib/protection.mjs';
+import { hedgeAdvice } from '@/app/lib/hedgeAdvice.mjs';
+import { filingsFor, snapshotMeta } from '@/app/lib/promoter';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 const today = () => new Date(Date.now() + 19800000).toISOString().slice(0, 10);
@@ -37,7 +39,7 @@ export async function GET(request) {
     const qty = lots * contract.lotSize;
     const options = allPuts.filter(p => p.expiryDate === putExpiry);
     const spotKey = keyFor(symbol);
-    const [base, history] = await Promise.allSettled([getBatchQuotes([spotKey, contract.instrumentKey]), getDailyCandles(spotKey, 400)]);
+    const [base, history, market, oi] = await Promise.allSettled([getBatchQuotes([spotKey, contract.instrumentKey]), getDailyCandles(spotKey, 400), getDailyCandles("NSE_INDEX|Nifty 50", 120), getHourlyCandles(contract.instrumentKey, {days:14})]);
     if (base.status !== 'fulfilled') throw Error('QUOTES_UNAVAILABLE');
     const candles = history.status === 'fulfilled' ? history.value : [];
     const spot = Number(base.value[spotKey]?.last_price);
@@ -59,7 +61,9 @@ export async function GET(request) {
     const warning = !matchedExpiry ? 'Expiry mismatch: there is no single combined terminal payoff or guaranteed loss floor. An earlier put leaves later futures exposure unprotected; a later put retains unknown time value when the future expires. Choose matching expiries for the combined graph.' : selectedPut && !selectedPut.quantityMatched ? 'Lot sizes do not match the futures share quantity. No whole-lot combined protection is calculated.' : null;
     if (warning) result.note = warning;
     const evidence = [target.weak ? 'Stock below its completed-day SMA20: weakness warrants reviewing protection.' : 'Trend evidence does not establish safety without protection.', 'OI level alone cannot establish long/short sentiment. Historical OI changes and verified news feed are not connected; no timing recommendation is fabricated.'];
+    const advice = hedgeAdvice({candles, market:market.status==='fulfilled'?market.value:[], futures:oi.status==='fulfilled'?oi.value:[], today:today(), expiryDate:contract.expiryDate});
+    advice.filings = {asOf:snapshotMeta().generatedAt, items:(filingsFor(symbol)?.announcements||[]).filter(a=>a.date<=today()&&Date.parse(today())-Date.parse(a.date)<=30*86400000).slice(0,5).map(a=>({date:a.date,text:String(a.text||a.category||'Announcement').slice(0,500)}))};
     const fmark = Number(fq?.last_price) || null;
-    return reply({ version: VERSION, simple: simple ? {recommendation: simpleRecommendation(result.candidates, spot), feesIncluded:false, method:'Nearest-to-spot listed put with a valid two-sided quote; fresh, sufficiently deep quotes preferred. Same underlying, expiry and share quantity. Not a guaranteed best-return strike.'} : null, asOf: new Date().toISOString(), position, spot, spotQuote: quoteView(base.value[spotKey]), futuresMark: fmark, futuresQuote: quoteView(fq), futuresOi: Number(fq?.oi) || null, selectedPut, putExpiry, matchedExpiry, mismatchWarning: warning, target, ...result, evidence, coverage: { sampled: sample.length, available: options.length, range: manualPut ? 'Your selected listed PE contract' : '85–105% of spot; nearest 40 listed strikes' }, stress: { unhedged10pct: qty*(spot*.9-position.entry)-costs, grossMtm10pct: fmark ? qty*fmark*.1 : null }, warnings: ['Payoffs are at matched expiry, not a pre-expiry liquidation estimate.', 'Cost allowance is user-specified, not verified brokerage/taxes. Margin and delivery obligations are unverified.', 'Saved plans are local to this device; no orders, automatic hedge or background alerts.', 'Targets use spot history; futures basis converges only at matched expiry. Seasonal returns are not a probability forecast.'] });
+    return reply({ advice, version: VERSION, simple: simple ? {recommendation: simpleRecommendation(result.candidates, spot), feesIncluded:false, method:'Nearest-to-spot listed put with a valid two-sided quote; fresh, sufficiently deep quotes preferred. Same underlying, expiry and share quantity. Not a guaranteed best-return strike.'} : null, asOf: new Date().toISOString(), position, spot, spotQuote: quoteView(base.value[spotKey]), futuresMark: fmark, futuresQuote: quoteView(fq), futuresOi: Number(fq?.oi) || null, selectedPut, putExpiry, matchedExpiry, mismatchWarning: warning, target, ...result, evidence, coverage: { sampled: sample.length, available: options.length, range: manualPut ? 'Your selected listed PE contract' : '85–105% of spot; nearest 40 listed strikes' }, stress: { unhedged10pct: qty*(spot*.9-position.entry)-costs, grossMtm10pct: fmark ? qty*fmark*.1 : null }, warnings: ['Payoffs are at matched expiry, not a pre-expiry liquidation estimate.', 'Cost allowance is user-specified, not verified brokerage/taxes. Margin and delivery obligations are unverified.', 'Saved plans are local to this device; no orders, automatic hedge or background alerts.', 'Targets use spot history; futures basis converges only at matched expiry. Seasonal returns are not a probability forecast.'] });
   } catch { return reply({ error: 'Market data unavailable. Check the configured Upstox analytics connection and retry; no synthetic quotes were substituted.' }, 503); }
 }
