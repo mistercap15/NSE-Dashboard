@@ -23,7 +23,7 @@ export async function GET(request) {
       let quotes = {}, quoteError = null;
       try { if (contracts.length) quotes = await getBatchQuotes(contracts.map(c => c.instrumentKey)); }
       catch { quoteError = 'Upstox quotes unavailable. Listed contracts are shown without prices.'; }
-      return reply({ symbol, asOf: new Date().toISOString(), contracts: contracts.map(c => ({ ...c, quote: quoteView(quotes[c.instrumentKey]) })), putContracts: allPuts, putExpiries: [...new Set(allPuts.map(p => p.expiryDate))], quoteError });
+      return reply({ symbol, simpleAvailable: true, asOf: new Date().toISOString(), contracts: contracts.map(c => ({ ...c, quote: quoteView(quotes[c.instrumentKey]) })), putContracts: allPuts, putExpiries: [...new Set(allPuts.map(p => p.expiryDate))], quoteError });
     }
     const contract = contracts.find(c => c.instrumentKey === s.get('contract'));
     const simple = s.get('simple') === '1';
