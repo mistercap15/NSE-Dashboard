@@ -32,6 +32,7 @@ const TTL_MS = 12 * 60 * 60 * 1000; // refresh twice a day
 
 let _map = null;       // Map<UPPER trading_symbol, instrument_key>
 let _futures = null;   // Map<UPPER underlying_symbol, contract[]> (expiry ascending)
+let _puts = new Map();
 let _loadedAt = 0;
 let _loading = null;   // in-flight promise, so concurrent callers share one fetch
 
@@ -69,8 +70,16 @@ async function fetchMaster() {
 
   const equities = new Map();
   const futures = new Map();
+  const puts = new Map();
 
   for (const it of json) {
+    if (it.segment === "NSE_FO" && it.instrument_type === "PE") {
+      const under = (it.underlying_symbol || it.asset_symbol || "").toUpperCase();
+      if (under && it.instrument_key && it.expiry && it.strike_price > 0) {
+        if (!puts.has(under)) puts.set(under, []);
+        puts.get(under).push({...toContract(it), strike: it.strike_price});
+      }
+    }
     // NSE cash equities (indices live in NSE_INDEX and are addressed directly).
     if (it.segment === "NSE_EQ" && it.instrument_type === "EQ") {
       const sym = (it.trading_symbol || it.tradingsymbol || "").toUpperCase();
@@ -92,7 +101,7 @@ async function fetchMaster() {
   // Sort each chain once, here, so every read is a scan of an ordered list.
   for (const chain of futures.values()) chain.sort((a, b) => a.expiry - b.expiry);
 
-  return { equities, futures };
+  return { equities, futures, puts };
 }
 
 // Ensure the master is loaded and reasonably fresh. Never throws — on failure it
@@ -102,7 +111,8 @@ export async function ensureInstrumentMap() {
   if (_map && now - _loadedAt < TTL_MS) return _map;
   if (_loading) return _loading;
   _loading = fetchMaster()
-    .then(({ equities, futures }) => {
+    .then(({ equities, futures, puts }) => {
+      _puts = puts;
       _map = equities;
       _futures = futures;
       _loadedAt = Date.now();
@@ -167,3 +177,6 @@ export function pickContracts(chain, now = Date.now()) {
     ? { current: null, next: null }
     : { current: sorted[i], next: sorted[i + 1] || null };
 }
+
+export function putChain(symbol) { return _puts.get(String(symbol).toUpperCase()) || []; }
+export function masterAgeMs() { return _loadedAt ? Date.now() - _loadedAt : Infinity; }
