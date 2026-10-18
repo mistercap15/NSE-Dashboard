@@ -43,3 +43,15 @@ New plans use a refreshed futures best ask; if unavailable, an LTP fallback is e
 Mismatched expiries remain inspectable, but no combined protected terminal payoff is produced. Non-divisible lot quantities also block combined protection. This avoids claiming a floor across an expired hedge or assigning a fabricated time value to a later-dated put.
 
 Validation: existing pure tests plus entry-source checks; authenticated read-only API checked HINDUNILVR October/November/December futures and 82 PE contracts, exact October 1900 PE and November-versus-October mismatch. Local web UI verified the selector lists and actual quoted prices. Prices observed after hours are not executable recommendations. No account orders or service changes.
+
+## Release 3 — four-input workflow
+
+The default web/mobile flow now asks only for stock, actual listed futures contract month, lots and the existing purchase price. Contracts load automatically on stock selection. PE expiry and share quantity are matched automatically. Capital, fee allowance, target mode and option-chain choices are removed from this flow.
+
+`simple=1` preserves the entered fill, ignores any supplied market-entry or mismatched-option parameters, and applies no extra cost allowance. The UI labels all payoff numbers before brokerage, taxes and funding, with put premium included. Internal account percentage fields are not used to select the put and are not displayed. No sizing recommendation is made.
+
+One suggestion: nearest-to-spot put within 5%, with a positive uncrossed bid/ask; executable-quality quotes are preferred over indicative ones. This is a transparent near-ATM protection heuristic, not an optimized-return claim. When no nearby valid quote exists, show unavailable. After-hours/insufficient-depth suggestions are visibly indicative. Supporting target/quote methodology lives in a collapsed details panel rather than the primary flow.
+
+The web layout places four controls above a single put summary and payoff graph. Mobile uses the same hierarchy with tappable month chips and scenario buttons. Existing device-local saved-plan records are not deleted, although the saved-plan management UI is removed from the simplified flow.
+
+Validated pure recommendation selection and fee-free simple API integration: HUL 5 lots × 300 shares, actual entry ₹1,900 retained, 1900 PE, quoted debit ₹40,050 and matched-expiry loss ₹40,050 before fees. This was after-hours indicative data. Web screenshots inspected, Next build, mobile TypeScript and Android export passed. Native-device visual QA remains separate.

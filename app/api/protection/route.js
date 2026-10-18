@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { ensureInstrumentMap, futuresChain, putChain, keyFor, masterAgeMs } from '@/app/lib/instrumentMaster';
 import { getBatchQuotes, getDailyCandles } from '@/app/lib/upstox';
 import { loadUniverse } from '@/app/lib/dataset';
-import { recommendTarget, buildProtection, quoteState, resolveEntry, VERSION } from '@/app/lib/protection.mjs';
+import { recommendTarget, buildProtection, quoteState, resolveEntry, simpleRecommendation, VERSION } from '@/app/lib/protection.mjs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 const today = () => new Date(Date.now() + 19800000).toISOString().slice(0, 10);
@@ -23,16 +23,17 @@ export async function GET(request) {
       let quotes = {}, quoteError = null;
       try { if (contracts.length) quotes = await getBatchQuotes(contracts.map(c => c.instrumentKey)); }
       catch { quoteError = 'Upstox quotes unavailable. Listed contracts are shown without prices.'; }
-      return reply({ symbol, asOf: new Date().toISOString(), contracts: contracts.map(c => ({ ...c, quote: quoteView(quotes[c.instrumentKey]) })), putContracts: allPuts, putExpiries: [...new Set(allPuts.map(p => p.expiryDate))], quoteError });
+      return reply({ symbol, simpleAvailable: true, asOf: new Date().toISOString(), contracts: contracts.map(c => ({ ...c, quote: quoteView(quotes[c.instrumentKey]) })), putContracts: allPuts, putExpiries: [...new Set(allPuts.map(p => p.expiryDate))], quoteError });
     }
     const contract = contracts.find(c => c.instrumentKey === s.get('contract'));
-    const lots = Number(s.get('lots')), capital = Number(s.get('capital')), costs = Number(s.get('costs'));
-    const entrySource = s.get('entrySource') === 'market' ? 'market' : 'existing';
+    const simple = s.get('simple') === '1';
+    const lots = Number(s.get('lots')), capital = simple ? 2000000 : Number(s.get('capital')), costs = simple ? 0 : Number(s.get('costs'));
+    const entrySource = !simple && s.get('entrySource') === 'market' ? 'market' : 'existing';
     const originalEntry = Number(s.get('entry'));
     if (!contract || !Number.isInteger(lots) || lots < 1 || lots > 100 || !(capital > 0 && capital <= 1e10) || !Number.isFinite(costs) || costs < 0 || costs > 1e8 || (entrySource === 'existing' && !(originalEntry > 0 && originalEntry < 1e7))) return reply({ error: 'Select a listed contract and valid entry, whole lots, capital and cost allowance.' }, 400);
-    const putExpiry = s.get('putExpiry') || contract.expiryDate;
-    const manualPut = s.get('putContract') ? allPuts.find(p => p.instrumentKey === s.get('putContract') && p.expiryDate === putExpiry) : null;
-    if ((s.get('putContract') && !manualPut) || !allPuts.some(p => p.expiryDate === putExpiry)) return reply({ error: 'Select a listed PE expiry and contract for this stock.' }, 400);
+    const putExpiry = simple ? contract.expiryDate : s.get('putExpiry') || contract.expiryDate;
+    const manualPut = !simple && s.get('putContract') ? allPuts.find(p => p.instrumentKey === s.get('putContract') && p.expiryDate === putExpiry) : null;
+    if ((!simple && s.get('putContract') && !manualPut) || !allPuts.some(p => p.expiryDate === putExpiry)) return reply({ error: 'Select a listed PE expiry and contract for this stock.' }, 400);
     const qty = lots * contract.lotSize;
     const options = allPuts.filter(p => p.expiryDate === putExpiry);
     const spotKey = keyFor(symbol);
@@ -59,6 +60,6 @@ export async function GET(request) {
     if (warning) result.note = warning;
     const evidence = [target.weak ? 'Stock below its completed-day SMA20: weakness warrants reviewing protection.' : 'Trend evidence does not establish safety without protection.', 'OI level alone cannot establish long/short sentiment. Historical OI changes and verified news feed are not connected; no timing recommendation is fabricated.'];
     const fmark = Number(fq?.last_price) || null;
-    return reply({ version: VERSION, asOf: new Date().toISOString(), position, spot, spotQuote: quoteView(base.value[spotKey]), futuresMark: fmark, futuresQuote: quoteView(fq), futuresOi: Number(fq?.oi) || null, selectedPut, putExpiry, matchedExpiry, mismatchWarning: warning, target, ...result, evidence, coverage: { sampled: sample.length, available: options.length, range: manualPut ? 'Your selected listed PE contract' : '85–105% of spot; nearest 40 listed strikes' }, stress: { unhedged10pct: qty*(spot*.9-position.entry)-costs, grossMtm10pct: fmark ? qty*fmark*.1 : null }, warnings: ['Payoffs are at matched expiry, not a pre-expiry liquidation estimate.', 'Cost allowance is user-specified, not verified brokerage/taxes. Margin and delivery obligations are unverified.', 'Saved plans are local to this device; no orders, automatic hedge or background alerts.', 'Targets use spot history; futures basis converges only at matched expiry. Seasonal returns are not a probability forecast.'] });
+    return reply({ version: VERSION, simple: simple ? {recommendation: simpleRecommendation(result.candidates, spot), feesIncluded:false, method:'Nearest-to-spot listed put with a valid two-sided quote; fresh, sufficiently deep quotes preferred. Same underlying, expiry and share quantity. Not a guaranteed best-return strike.'} : null, asOf: new Date().toISOString(), position, spot, spotQuote: quoteView(base.value[spotKey]), futuresMark: fmark, futuresQuote: quoteView(fq), futuresOi: Number(fq?.oi) || null, selectedPut, putExpiry, matchedExpiry, mismatchWarning: warning, target, ...result, evidence, coverage: { sampled: sample.length, available: options.length, range: manualPut ? 'Your selected listed PE contract' : '85–105% of spot; nearest 40 listed strikes' }, stress: { unhedged10pct: qty*(spot*.9-position.entry)-costs, grossMtm10pct: fmark ? qty*fmark*.1 : null }, warnings: ['Payoffs are at matched expiry, not a pre-expiry liquidation estimate.', 'Cost allowance is user-specified, not verified brokerage/taxes. Margin and delivery obligations are unverified.', 'Saved plans are local to this device; no orders, automatic hedge or background alerts.', 'Targets use spot history; futures basis converges only at matched expiry. Seasonal returns are not a probability forecast.'] });
   } catch { return reply({ error: 'Market data unavailable. Check the configured Upstox analytics connection and retry; no synthetic quotes were substituted.' }, 503); }
 }
