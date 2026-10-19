@@ -1,0 +1,28 @@
+[Unit]
+Description=NSERank advisory hedge inbox (no orders or messages)
+After=network-online.target
+[Service]
+User=nserank-hedge
+Group=nserank-hedge
+WorkingDirectory=/opt/nserank-hedge-inbox
+EnvironmentFile=/etc/nserank-hedge-inbox.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 /opt/nserank-hedge-inbox/service.py
+Restart=on-failure
+RestartSec=15
+StateDirectory=nserank-hedge-inbox
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+CapabilityBoundingSet=
+MemoryMax=256M
+CPUQuota=25%
+[Install]
+WantedBy=multi-user.target
