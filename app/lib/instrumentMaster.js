@@ -30,6 +30,7 @@ import { toInstrumentKey } from "./instruments";
 const MASTER_URL = "https://assets.upstox.com/market-quote/instruments/exchange/NSE.json.gz";
 const TTL_MS = 12 * 60 * 60 * 1000; // refresh twice a day
 
+let _names = new Map();
 let _map = null;       // Map<UPPER trading_symbol, instrument_key>
 let _futures = null;   // Map<UPPER underlying_symbol, contract[]> (expiry ascending)
 let _puts = new Map();
@@ -69,6 +70,7 @@ async function fetchMaster() {
   const json = JSON.parse(zlib.gunzipSync(gz).toString("utf8"));
 
   const equities = new Map();
+  const names = new Map();
   const futures = new Map();
   const puts = new Map();
 
@@ -83,7 +85,7 @@ async function fetchMaster() {
     // NSE cash equities (indices live in NSE_INDEX and are addressed directly).
     if (it.segment === "NSE_EQ" && it.instrument_type === "EQ") {
       const sym = (it.trading_symbol || it.tradingsymbol || "").toUpperCase();
-      if (sym && it.instrument_key) equities.set(sym, it.instrument_key);
+      if (sym && it.instrument_key) { equities.set(sym, it.instrument_key); names.set(sym,it.name || sym); }
       continue;
     }
     // Futures only — CE/PE strikes are the overwhelming bulk of NSE_FO and are
@@ -101,7 +103,7 @@ async function fetchMaster() {
   // Sort each chain once, here, so every read is a scan of an ordered list.
   for (const chain of futures.values()) chain.sort((a, b) => a.expiry - b.expiry);
 
-  return { equities, futures, puts };
+  return { equities, futures, puts, names };
 }
 
 // Ensure the master is loaded and reasonably fresh. Never throws — on failure it
@@ -111,7 +113,8 @@ export async function ensureInstrumentMap() {
   if (_map && now - _loadedAt < TTL_MS) return _map;
   if (_loading) return _loading;
   _loading = fetchMaster()
-    .then(({ equities, futures, puts }) => {
+    .then(({ equities, futures, puts, names }) => {
+      _names = names;
       _puts = puts;
       _map = equities;
       _futures = futures;
@@ -180,3 +183,5 @@ export function pickContracts(chain, now = Date.now()) {
 
 export function putChain(symbol) { return _puts.get(String(symbol).toUpperCase()) || []; }
 export function masterAgeMs() { return _loadedAt ? Date.now() - _loadedAt : Infinity; }
+
+export function companyNameFor(symbol) { return _names.get(String(symbol).toUpperCase()) || null; }

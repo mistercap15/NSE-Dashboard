@@ -1,0 +1,16 @@
+import assert from 'node:assert/strict';
+import {parseHeadlines,sectorBreadth} from '../app/lib/hedgeContext.mjs';
+const now=Date.parse('2026-10-18T12:00:00Z');
+const item=(title,url='https://news.google.com/rss/articles/test',date='Sun, 18 Oct 2026 10:00:00 GMT')=>`<item><title>${title}</title><link>${url}</link><pubDate>${date}</pubDate><source>Publisher</source></item>`;
+const rss=s=>`<rss><channel>${s}</channel></rss>`;
+assert.equal(parseHeadlines(rss(item('Hindustan Unilever earnings update')),'HINDUSTAN UNILEVER LTD',now)[0].eventReview,true);
+assert.equal(parseHeadlines(rss(item('Other company earnings')),'HINDUSTAN UNILEVER LTD',now).length,0);
+assert.equal(parseHeadlines(rss(item('Hindustan Unilever earnings','javascript:alert(1)')),'Hindustan Unilever',now).length,0);
+assert.equal(parseHeadlines(rss(item('Hindustan Unilever earnings',undefined,'Mon, 19 Oct 2026 10:00:00 GMT')),'Hindustan Unilever',now).length,0);
+assert.throws(()=>parseHeadlines('<!DOCTYPE test><rss/>','HUL',now));
+assert.equal(parseHeadlines(rss(item('Hindustan Unilever earnings')+item('Hindustan Unilever earnings')),'Hindustan Unilever',now).length,1);
+assert.equal(sectorBreadth([],'2026-10-18').status,'unavailable');
+const candles=Array.from({length:60},(_,i)=>({date:new Date(Date.parse('2026-08-18')+i*86400000).toISOString().slice(0,10),close:200-i}));
+assert.equal(sectorBreadth(['A','B','C'].map(symbol=>({symbol,candles})),'2026-10-18').weak,true);
+assert.equal(sectorBreadth([{symbol:'A',candles}],'2026-10-18').status,'unavailable');
+console.log('Headline identity, timestamps, safe links, duplicates, XML safety and sector breadth tests passed');

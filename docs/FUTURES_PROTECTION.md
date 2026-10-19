@@ -67,3 +67,7 @@ All available quoted strikes can be selected; the selected one and three nearest
 Optional actual put fill is stored per contract/strike/full quantity on device. Hedge P&L uses fresh two-sided bid and combined mark needs fresh futures quote. Depth/fees remain unverified. Partial hedge records, cross-device sync, position list, live news integration and background monitoring are not implemented in this release. Clearing the saved fill removes tracking; it never sends an order.
 
 Validation: `node scripts/test-hedge-advice.mjs`, existing protection tests, dashboard production build, mobile typecheck/Android export. Tests cover incomplete-candle exclusion, stale/insufficient data, missing market/OI and expiry handling.
+
+## Live context and persistent inbox (v2)
+
+Supersedes the v1 missing-context note: source-linked company headlines and sampled same-sector price breadth now load with the plan. An explicitly opted-in futures watch is monitored by a separate droplet service; alerts are inbox-only. Device-local PE fill tracking remains separate. See `research/hedge_inbox/README.md` for exact feed semantics, conservative handling, access controls, retention, activation dependencies and the frozen forward-validation protocol. This does not establish predictive profitability or turn expiry scenarios into expected returns.

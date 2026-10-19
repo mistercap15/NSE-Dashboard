@@ -2,6 +2,7 @@
 import {useEffect,useState} from 'react';
 import {ShieldCheck,ArrowRight,ChevronDown,RefreshCw} from 'lucide-react';
 import {ResponsiveContainer,LineChart,Line,XAxis,YAxis,Tooltip,ReferenceLine} from 'recharts';
+import Inbox from './Inbox';
 import HedgePanel from './HedgePanel';
 import Sidebar from '../components/Sidebar';
 const money=n=>n==null?'—':Number(n).toLocaleString('en-IN',{style:'currency',currency:'INR',maximumFractionDigits:2});
@@ -27,6 +28,7 @@ export default function Protection(){
  <label className="text-sm text-soft">Lots<input disabled={busy} type="number" min="1" step="1" className={input} value={lots} onChange={e=>change(setLots,e.target.value)}/></label>
  <label className="text-sm text-soft">Your purchase price ₹<input disabled={busy} type="number" min="0.01" step="0.05" className={input} value={entry} onChange={e=>change(setEntry,e.target.value)}/></label></div>
  <div className="mt-5 flex flex-wrap items-center justify-between gap-4"><p className="text-xs text-dim">{contracts.find(c=>c.instrumentKey===contract)?.tradingSymbol||'Select your position'} · Long futures only</p><button disabled={busy||loading||!contract} onClick={calculate} className="inline-flex items-center justify-center gap-3 rounded-xl bg-accent text-white px-6 py-3 font-semibold disabled:opacity-40">{busy?<RefreshCw size={17} className="animate-spin"/>:<ShieldCheck size={17}/>} {busy?'Finding your put…':'Find my protection'} {!busy&&<ArrowRight size={16}/>}</button></div></section>
+ {<Inbox data={data}/>}
  {error&&<p role="alert" className="mt-5 rounded-xl bg-red/10 text-red p-4 text-sm">{error}</p>}
  {!data&&!busy&&!error&&<div className="mt-12 text-center py-10 text-dim"><ShieldCheck size={40} className="mx-auto opacity-30"/><p className="mt-4 text-sm">Hedge guidance. Compare puts. See your payoff.</p><p className="text-xs mt-2">Real Upstox quotes · No orders placed</p></div>}
  {data&&<HedgePanel data={data} put={put}/>}

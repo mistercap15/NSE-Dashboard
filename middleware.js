@@ -46,6 +46,14 @@ const PUBLIC_PATHS = new Set([
 export async function middleware(request) {
   const { pathname, search } = request.nextUrl;
 
+  // Dedicated read-only worker credential cannot authorize other routes or mutations.
+  if(pathname==='/api/protection'&&request.method==='GET'&&process.env.HEDGE_WORKER_SECRET?.length>=32){
+    const supplied=request.headers.get('x-hedge-worker')||'';
+    const expected=process.env.HEDGE_WORKER_SECRET;
+    let diff=supplied.length^expected.length;
+    for(let i=0;i<expected.length;i++)diff|=expected.charCodeAt(i)^(supplied.charCodeAt(i)||0);
+    if(diff===0)return NextResponse.next();
+  }
   if (PUBLIC_PATHS.has(pathname)) return NextResponse.next();
 
   const session = await verifySession(sessionToken(request));
