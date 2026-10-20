@@ -67,7 +67,7 @@ export default function Sidebar() {
 
   // Auto-expand whichever group holds the active route.
   useEffect(() => {
-    const g = navGroups.find((grp) => grp.children.some((c) => c.href === pathname));
+    const g = navGroups.find((grp) => grp.children.some((c) => (c.href === pathname || pathname.startsWith(c.href + "/"))));
     if (g) setOpenGroups((prev) => ({ ...prev, [g.label]: true }));
   }, [pathname]);
 
@@ -177,7 +177,7 @@ export default function Sidebar() {
           {/* Collapsible groups */}
           {navGroups.map(({ label, Icon: GroupIcon, children }) => {
             const open = !!openGroups[label];
-            const hasActive = children.some((c) => c.href === pathname);
+            const hasActive = children.some((c) => (c.href === pathname || pathname.startsWith(c.href + "/")));
             return (
               <div key={label} className="pt-1">
                 <button

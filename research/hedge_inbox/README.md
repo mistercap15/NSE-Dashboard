@@ -29,3 +29,23 @@ Review after at least60 trading sessions and30 independent hedge episodes, exten
 Start/stop only `nserank-hedge-inbox.service`. Environment file `/etc/nserank-hedge-inbox.env` is root-owned0600. Dashboard Production variables: `HEDGE_INBOX_URL`, `HEDGE_INBOX_SECRET`, `HEDGE_WORKER_SECRET`. Deploy the app through the PR merge workflow; environment additions alone do not update an existing Vercel deployment. No Preview environment access was added. The service is enabled to survive reboot. Disable public listener with `tailscale funnel --https=10000 off` if retiring it; leave ports443/8443 untouched.
 
 Tests: `python3 research/hedge_inbox/test_service.py`, `node scripts/test-hedge-context.mjs`, `node scripts/test-hedge-advice.mjs`, existing protection tests, Next build, mobile typecheck and Android export. Production authenticated and unauthenticated endpoint checks contain no secrets in their output. At activation all three trading-service PIDs and the gap-paper service PID were unchanged. No watches were seeded on the user's behalf.
+
+## Simplified tracker UI
+
+The add screen has four fields (stock, listed futures expiry, lots, actual fill).
+It calculates after a short pause and preselects a quoted, quantity-matched PE.
+Saving is explicit. A separate tracked list leads with a short action and a trend
+label; detail retains 1–4% expiry scenarios, alternative strikes, source evidence,
+and device-local actual-PE-fill inputs behind disclosures. Trend and hedge action
+are separate: bullish does not mean buy; bearish does not automatically mean hedge.
+
+Selected PE keys persist in an additive SQLite column. A changed selection resets
+its assessment until checked again; old evidence and watches survive migration.
+The worker passes `preferredPut` and requires trackingVersion 2 before accepting a
+response for a saved selection. An unavailable contract is an error, never a silent
+replacement. No automatic expiry roll. The list downgrades assessments older than
+ten minutes; failed requests cannot display a current action. Monitoring remains
+about five-minute polling, with completed-daily-candle rules, not intraday alerts.
+
+This UX change does not validate or retune the hedge rules. The chosen PE is a plan,
+not proof of purchase. No trade execution or broker account changes are included.

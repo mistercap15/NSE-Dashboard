@@ -1,0 +1,13 @@
+import assert from 'node:assert/strict';
+import {hedgeSummary} from '../app/lib/hedgeSummary.mjs';
+const now=Date.now();const data={asOf:new Date(now).toISOString(),advice:{status:'Monitor',direction:'bullish',support:1900,missing:[],asOf:'2026-10-19'}};
+assert.equal(hedgeSummary(data,{now}).code,'wait');
+assert.equal(hedgeSummary(data,{now}).direction,'bullish');
+assert.equal(hedgeSummary(data,{now:now+11*60000}).code,'unknown');
+assert.equal(hedgeSummary(null,{now}).direction,'unknown');
+assert.equal(hedgeSummary({...data,advice:{...data.advice,status:'Protection warranted'}},{now}).code,'protect');
+assert.match(hedgeSummary({...data,advice:{...data.advice,status:'Protection warranted'}},{now}).quoteNote,/Refresh/);
+assert.equal(hedgeSummary({...data,advice:{...data.advice,status:'Review event risk'}},{now}).direction,'bullish');
+assert.equal(hedgeSummary({...data,advice:{status:'Data unavailable'}},{now}).code,'unknown');
+assert.equal(hedgeSummary({...data,advice:{status:'Contract expired — monitoring stopped'}},{now}).code,'expired');
+console.log('Summary checks: direction/action separation, stale, absent, failed, event and expired states passed.');
