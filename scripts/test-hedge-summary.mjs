@@ -11,3 +11,11 @@ assert.equal(hedgeSummary({...data,advice:{...data.advice,status:'Review event r
 assert.equal(hedgeSummary({...data,advice:{status:'Data unavailable'}},{now}).code,'unknown');
 assert.equal(hedgeSummary({...data,advice:{status:'Contract expired — monitoring stopped'}},{now}).code,'expired');
 console.log('Summary checks: direction/action separation, stale, absent, failed, event and expired states passed.');
+
+const protectedData={...data,advice:{...data.advice,status:'Protection warranted'},simple:{recommendation:{eligible:true,quote:{at:new Date(now).toISOString()}}}};
+assert.equal(hedgeSummary(protectedData,{now}).action,'Buy a put for protection');
+assert.equal(hedgeSummary({...protectedData,simple:null},{now}).action,'Wait for a fresh put price');
+assert.equal(hedgeSummary({...data,advice:{...data.advice,status:'Prepare protection'}},{now}).action,'Wait before buying a put');
+assert.equal(hedgeSummary(data,{now}).action,'Avoid buying a put for now');
+assert.equal(hedgeSummary({...data,asOf:null},{now}).action,'Unable to advise');
+assert.equal(hedgeSummary(protectedData,{now:now+3*60000}).action,'Wait for a fresh put price');

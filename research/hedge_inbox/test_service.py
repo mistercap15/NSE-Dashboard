@@ -14,6 +14,8 @@ class InboxTests(unittest.TestCase):
   s.action({'action':'read','id':1});self.assertEqual(s.state()['alerts'][0]['unread'],0)
   s.record(a['id'],{'advice':{'status':'Protection warranted'}});self.assertEqual(len(s.state()['alerts']),2)
   s.action({'action':'unwatch','id':a['id']});s.record(a['id'],{'advice':{'status':'Monitor'}});self.assertEqual(len(s.state()['alerts']),2)
+  self.assertEqual([w for w in s.state()['watches'] if w['enabled']],[])
+  self.assertEqual(len(s.state()['watches']),1)  # History remains recoverable.
  def test_selected_put_persists_and_reset_hides_old_assessment(self):
   ident=s.action({'action':'watch','position':self.pos,'selectedPut':'NSE_FO|456'})['id']
   s.record(ident,{'advice':{'status':'Monitor'},'simple':{'recommendation':{'instrumentKey':'NSE_FO|456'}}})
