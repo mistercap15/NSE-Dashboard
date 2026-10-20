@@ -4,6 +4,7 @@ import { getBatchQuotes, getDailyCandles, getHourlyCandles } from '@/app/lib/ups
 import { loadUniverse } from '@/app/lib/dataset';
 import { recommendTarget, buildProtection, quoteState, resolveEntry, simpleRecommendation, VERSION } from '@/app/lib/protection.mjs';
 import {companyNews, sectorBreadth} from '@/app/lib/hedgeContext.mjs';
+import { hedgeSummary } from '@/app/lib/hedgeSummary.mjs';
 import { hedgeAdvice } from '@/app/lib/hedgeAdvice.mjs';
 import { filingsFor, snapshotMeta } from '@/app/lib/promoter';
 export const dynamic = 'force-dynamic';
@@ -37,6 +38,9 @@ export async function GET(request) {
     const putExpiry = simple ? contract.expiryDate : s.get('putExpiry') || contract.expiryDate;
     const manualPut = !simple && s.get('putContract') ? allPuts.find(p => p.instrumentKey === s.get('putContract') && p.expiryDate === putExpiry) : null;
     if ((!simple && s.get('putContract') && !manualPut) || !allPuts.some(p => p.expiryDate === putExpiry)) return reply({ error: 'Select a listed PE expiry and contract for this stock.' }, 400);
+    const preferredKey = simple ? s.get('preferredPut') : null;
+    const preferred = preferredKey ? allPuts.find(p=>p.instrumentKey===preferredKey&&p.expiryDate===putExpiry) : null;
+    if(preferredKey&&!preferred)return reply({error:'Your selected put is no longer available for this expiry. Review the position before selecting a replacement.'},400);
     const qty = lots * contract.lotSize;
     const options = allPuts.filter(p => p.expiryDate === putExpiry);
     const spotKey = keyFor(symbol);
@@ -52,6 +56,7 @@ export async function GET(request) {
     const entryInfo = resolveEntry({ source: entrySource, originalEntry, quote: fq, qty });
     if (!entryInfo.price) return reply({ error: 'Selected futures contract has no usable Upstox ask or last price. Refresh, or enter the actual fill price for an existing position.' }, 503);
     const sample = manualPut ? [manualPut] : options.filter(p => p.strike >= spot*.85 && p.strike <= spot*1.05).sort((a,b) => Math.abs(a.strike-spot)-Math.abs(b.strike-spot)).slice(0,40);
+    if(preferred&&!sample.some(p=>p.instrumentKey===preferredKey))sample.push(preferred);
     const quotes = sample.length ? await getBatchQuotes(sample.map(p => p.instrumentKey)) : {};
     const target = recommendTarget({ points: loadUniverse().series[symbol]?.points || [], candles, spot, expiryDate: contract.expiryDate, today: today(), mode: s.get('mode') === 'rebound' ? 'rebound' : 'seasonal' });
     const position = { symbol, contractKey: contract.instrumentKey, entry: entryInfo.price, entrySource, entryBasis: entryInfo.basis, entryIssues: entryInfo.issues, lots, qty, capital, costs, expiryDate: contract.expiryDate, contract: contract.tradingSymbol, lotSize: contract.lotSize };
@@ -79,6 +84,8 @@ export async function GET(request) {
     advice.version='daily-hedge-v2';
     advice.filings = {asOf:snapshotMeta().generatedAt, items:(filingsFor(symbol)?.announcements||[]).filter(a=>a.date<=today()&&Date.parse(today())-Date.parse(a.date)<=30*86400000).slice(0,5).map(a=>({date:a.date,text:String(a.text||a.category||'Announcement').slice(0,500)}))};
     const fmark = Number(fq?.last_price) || null;
-    return reply({ advice, version: VERSION, simple: simple ? {recommendation: simpleRecommendation(result.candidates, spot), feesIncluded:false, method:'Nearest-to-spot listed put with a valid two-sided quote; fresh, sufficiently deep quotes preferred. Same underlying, expiry and share quantity. Not a guaranteed best-return strike.'} : null, asOf: new Date().toISOString(), position, spot, spotQuote: quoteView(base.value[spotKey]), futuresMark: fmark, futuresQuote: quoteView(fq), futuresOi: Number(fq?.oi) || null, selectedPut, putExpiry, matchedExpiry, mismatchWarning: warning, target, ...result, evidence, coverage: { sampled: sample.length, available: options.length, range: manualPut ? 'Your selected listed PE contract' : '85–105% of spot; nearest 40 listed strikes' }, stress: { unhedged10pct: qty*(spot*.9-position.entry)-costs, grossMtm10pct: fmark ? qty*fmark*.1 : null }, warnings: ['Payoffs are at matched expiry, not a pre-expiry liquidation estimate.', 'Cost allowance is user-specified, not verified brokerage/taxes. Margin and delivery obligations are unverified.', 'Actual put fills are device-local. Only explicitly saved futures watches receive background inbox updates; no orders or automatic hedges.', 'Targets use spot history; futures basis converges only at matched expiry. Seasonal returns are not a probability forecast.'] });
+    const payload = { advice, version: VERSION, simple: simple ? {recommendation: preferredKey ? result.candidates.find(p=>p.instrumentKey===preferredKey)||null : simpleRecommendation(result.candidates, spot), feesIncluded:false, method:'Nearest-to-spot listed put with a valid two-sided quote; fresh, sufficiently deep quotes preferred. Same underlying, expiry and share quantity. Not a guaranteed best-return strike.'} : null, asOf: new Date().toISOString(), position, spot, spotQuote: quoteView(base.value[spotKey]), futuresMark: fmark, futuresQuote: quoteView(fq), futuresOi: Number(fq?.oi) || null, selectedPut, putExpiry, matchedExpiry, mismatchWarning: warning, target, ...result, evidence, coverage: { sampled: sample.length, available: options.length, range: manualPut ? 'Your selected listed PE contract' : '85–105% of spot; nearest 40 listed strikes' }, stress: { unhedged10pct: qty*(spot*.9-position.entry)-costs, grossMtm10pct: fmark ? qty*fmark*.1 : null }, warnings: ['Payoffs are at matched expiry, not a pre-expiry liquidation estimate.', 'Cost allowance is user-specified, not verified brokerage/taxes. Margin and delivery obligations are unverified.', 'Actual put fills are device-local. Only explicitly saved futures watches receive background inbox updates; no orders or automatic hedges.', 'Targets use spot history; futures basis converges only at matched expiry. Seasonal returns are not a probability forecast.'] };
+    payload.trackingVersion=2;payload.summary=hedgeSummary(payload);
+    return reply(payload);
   } catch { return reply({ error: 'Market data unavailable. Check the configured Upstox analytics connection and retry; no synthetic quotes were substituted.' }, 503); }
 }

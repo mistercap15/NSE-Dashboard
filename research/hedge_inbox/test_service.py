@@ -14,6 +14,23 @@ class InboxTests(unittest.TestCase):
   s.action({'action':'read','id':1});self.assertEqual(s.state()['alerts'][0]['unread'],0)
   s.record(a['id'],{'advice':{'status':'Protection warranted'}});self.assertEqual(len(s.state()['alerts']),2)
   s.action({'action':'unwatch','id':a['id']});s.record(a['id'],{'advice':{'status':'Monitor'}});self.assertEqual(len(s.state()['alerts']),2)
+ def test_selected_put_persists_and_reset_hides_old_assessment(self):
+  ident=s.action({'action':'watch','position':self.pos,'selectedPut':'NSE_FO|456'})['id']
+  s.record(ident,{'advice':{'status':'Monitor'},'simple':{'recommendation':{'instrumentKey':'NSE_FO|456'}}})
+  s.init()
+  self.assertEqual(s.state()['watches'][0]['selected_put'],'NSE_FO|456')
+  self.assertIsNotNone(s.state()['watches'][0]['latest'])
+  s.action({'action':'watch','position':self.pos,'selectedPut':'NSE_FO|789'})
+  self.assertIsNone(s.state()['watches'][0]['latest'])
+  self.assertEqual(len(s.state()['alerts']),1)
+ def test_selected_put_requires_matching_api(self):
+  s.action({'action':'watch','position':self.pos,'selectedPut':'NSE_FO|456'})
+  response=MagicMock();response.__enter__.return_value=response
+  response.read.return_value=json.dumps({'advice':{'version':'daily-hedge-v2','status':'Monitor'}}).encode()
+  opener=MagicMock();opener.open.return_value=response
+  with patch.object(s.urllib.request,'build_opener',return_value=opener),patch.object(s.time,'sleep'):s.cycle()
+  self.assertIn('preferredPut=NSE_FO%7C456',opener.open.call_args.args[0].full_url)
+  self.assertIn('Data unavailable',s.state()['alerts'][0]['title'])
  def test_validation(self):
   for key,value in [('contract','https://evil.test'),('lots',1.5),('entry',float('nan')),('expiryDate','2020-01-01')]:
    with self.assertRaises(ValueError):s.validate({'position':{**self.pos,key:value}})
