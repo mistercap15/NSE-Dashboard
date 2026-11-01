@@ -1,0 +1,736 @@
+#!/usr/bin/env python3
+"""
+Crypto swing-Fib executor — Delta Exchange, TESTNET.
+
+The SAME strategy as the live Nifty Fib bot. The signal is computed by the same
+function (app/lib/fib.js, computeFibSignal) served over /api/crypto-fib/signal;
+only the candles differ. Nothing about the strategy is reimplemented here.
+
+COMPLETELY SEPARATE from the Nifty bots: its own process, systemd unit, Telegram
+bot, state file, exchange, API keys and account. It cannot see or affect their
+positions, and stopping or crashing it does nothing to them. The Nifty Fib bot is
+live with real money; this one is on testnet.
+
+WHAT IS DIFFERENT FROM THE NIFTY VERSION, and why:
+
+  24/7. No market-hours gate, no session boundaries, no expiry and no roll. The
+  bar-close rule is simply "an hour after it opened", which is far simpler than
+  NSE's 15:15 stub.
+
+  LEVERAGE IS CAPPED AT 2x IN CODE. The previous crypto bot ran 50x and the
+  backtest of this strategy at 50x liquidated on trades 3-9: the stop sits ~2%
+  below entry, and at 50x a 2% adverse move is the whole margin, so the position
+  dies before reaching the stop it was given. delta_api refuses to load above 2x.
+
+  FUNDING. Perpetuals charge funding every 8 hours and this strategy holds ~30h,
+  so a trade pays it three or four times. The backtest included it; a testnet P&L
+  that ignored it would flatter every result. Funding is read at exit and
+  reported with the trade.
+
+  LONG ONLY, matching the backtested edge (BTC PF 2.02, ETH PF 1.89).
+"""
+
+import json
+import logging
+import os
+import sys
+import threading
+import time
+import urllib.error
+import urllib.request
+from datetime import datetime, timedelta, timezone
+
+import delta_api as dx
+
+# ── CONFIG ───────────────────────────────────────────────────────────────────
+
+# Real orders on Delta TESTNET. Off by default: it logs intentions and places
+# nothing until deliberately switched on.
+LIVE = os.environ.get("CRYPTO_LIVE", "").strip().lower() in ("1", "true", "yes", "on")
+
+SYMBOL = os.environ.get("CRYPTO_SYMBOL", "BTCUSD").upper()
+SIZE_LOTS = int(os.environ.get("CRYPTO_LOTS", "1"))     # 1 BTCUSD lot = 0.001 BTC
+LEVERAGE = int(os.environ.get("CRYPTO_LEVERAGE", "2"))  # delta_api refuses >2
+
+POLL_SECONDS = 15
+
+SIGNAL_URL = os.environ.get(
+    "CRYPTO_SIGNAL_URL", "https://nse-dashboard-gamma.vercel.app/api/crypto-fib/signal")
+DASHBOARD_URL = SIGNAL_URL.split("/api/")[0]
+APP_PIN = os.environ.get("APP_PIN", "")
+
+TELEGRAM_TOKEN = os.environ.get("CRYPTO_TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT = os.environ.get("CRYPTO_TELEGRAM_CHAT_ID", "")
+PREFIX = "[CRYPTO] "
+
+STATE_PATH = os.environ.get("CRYPTO_STATE", "/root/fib-bot/crypto_state.json")
+
+TIMEOUT_BARS = 30          # matches FIB_CONFIG.timeoutBars — 30h on hourly
+EXIT_CROSS_PCT = 0.10      # timeout exit crosses this far through the market
+EXIT_CROSS_MAX_PCT = 0.50
+
+IST = timezone(timedelta(hours=5, minutes=30))
+TAG_NOTE = "cryptofib"
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
+                    stream=sys.stdout)
+log = logging.getLogger("crypto-executor")
+
+_lock = threading.Lock()
+_enabled = True
+_last = {}
+_notified: dict[str, str] = {}
+
+
+# ── Telegram ─────────────────────────────────────────────────────────────────
+
+def tg(text: str) -> None:
+    net = dx.network().upper()
+    body = PREFIX + f"({net}) " + ("" if LIVE else "🧪 ") + text
+    log.info("TG %s", body.replace("\n", " | "))
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT:
+        return
+    try:
+        payload = json.dumps({"chat_id": TELEGRAM_CHAT, "text": body}).encode()
+        req = urllib.request.Request(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            data=payload, headers={"Content-Type": "application/json", "User-Agent": dx.USER_AGENT})
+        urllib.request.urlopen(req, timeout=10).read()
+    except Exception as exc:                                    # noqa: BLE001
+        log.warning("telegram send failed: %s", exc)
+
+
+def tg_once(key: str, text: str) -> None:
+    """Notify on a CHANGE of condition. At 15s polling a standing problem would
+    otherwise send thousands of identical messages a day.
+
+    THE TEXT IS THE KEY. Suppression compares the whole string, so any value that
+    moves between polls — a live price, a quote, a countdown — defeats it
+    completely and restores the every-poll spam this exists to prevent. On 2 Sep
+    2026 an interpolated live price sent one message every 15 seconds until the
+    bot was stopped by hand. Interpolate only what is stable for the life of the
+    condition; put moving values in the log and in /status.
+    """
+    if _notified.get(key) == text:
+        return
+    _notified[key] = text
+    tg(text)
+
+
+# Conditions whose lifting is worth announcing: the ones that make you wonder
+# whether the bot is still working at all. A warning followed by silence reads
+# exactly the same whether the fault cleared or is still standing and suppressed
+# by tg_once — and the only way to tell them apart was to send /status, which you
+# have to know to do.
+#
+# Deliberately NOT every key. "rolled" and "expiry" are running commentary rather
+# than faults, the position closing is already reported by the exit message, and
+# "act:" keys are dry-run intent dedupes. Announcing those would add exactly the
+# noise tg_once exists to cut. Anything absent from here clears silently, as before.
+RECOVERED = {
+    "signal": "The signal feed is back to normal",
+    "delta": "Delta connection is back to normal",
+    "auth": "Delta keys are working again",
+    "loop": "The bot is back to normal",
+    "cooldown": "New hour — free to place another order",
+    "nostop": "The trade has a stop-loss again",
+    "stopgap": "The stop-loss is a market order again",
+}
+
+
+def tg_clear(key: str) -> None:
+    """Forget a condition, so its return is announced rather than swallowed.
+
+    If the condition was actually alerting, say that it lifted. Only the first
+    clear speaks — the key is gone afterwards, so the every-poll clear loop stays
+    silent. tg() swallows its own send failures, so this cannot disturb the poll
+    that called it.
+    """
+    if _notified.pop(key, None) is None:
+        return                                  # was not alerting; nothing to report
+    if key in RECOVERED:
+        tg(f"\u2705 {RECOVERED[key]}.")
+
+
+def telegram_listener() -> None:
+    if not TELEGRAM_TOKEN:
+        log.warning("no CRYPTO_TELEGRAM_BOT_TOKEN — kill switch unavailable")
+        return
+    offset = None
+    while True:
+        try:
+            url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates?timeout=30"
+            if offset:
+                url += f"&offset={offset}"
+            req = urllib.request.Request(url, headers={"User-Agent": dx.USER_AGENT})
+            with urllib.request.urlopen(req, timeout=40) as res:
+                updates = json.loads(res.read().decode()).get("result", [])
+            for u in updates:
+                offset = u["update_id"] + 1
+                text = ((u.get("message") or {}).get("text") or "").strip().lower()
+                if text.startswith("/stop"):
+                    _set_enabled(False)
+                    tg("⛔ STOPPED. No new orders.\nOrders already placed stay live.")
+                elif text.startswith("/start"):
+                    _set_enabled(True)
+                    tg("▶️ STARTED.")
+                elif text.startswith("/status"):
+                    tg(status_text())
+                elif text.startswith("/orders"):
+                    tg(orders_text())
+        except Exception as exc:                                # noqa: BLE001
+            log.warning("telegram poll failed: %s", exc)
+            time.sleep(5)
+
+
+# ── The kill switch, on disk ─────────────────────────────────────────────────
+#
+# /stop used to set a module global and nothing else. The units are
+# Restart=always, so a crash, a deploy, a reboot or a plain systemctl restart
+# cleared it and the bot came back TRADING — silently, because the only signal
+# was the ordinary "online" message, which looked identical either way. That
+# happened on 31 Aug: a restart re-enabled a bot that had been deliberately
+# stopped, and nothing said so.
+#
+# Deliberately NOT stored in the trade state file. That file is wiped by
+# state.clear() every time a position closes, which would re-enable a stopped
+# bot on the next exit — the same bug wearing a different hat. This sibling file
+# is written only by /stop and /start.
+SWITCH_PATH = os.path.splitext(STATE_PATH)[0] + ".switch.json"
+
+
+def load_switch() -> bool:
+    """Enabled state from disk.
+
+    A missing or unreadable file means ENABLED — the bot has never been stopped,
+    or the file was lost. Refusing to trade because a status file will not parse
+    would be its own kind of failure, and the startup message says which state
+    was adopted either way.
+    """
+    try:
+        with open(SWITCH_PATH) as fh:
+            return bool(json.load(fh).get("enabled", True))
+    except (OSError, ValueError):
+        return True
+
+
+def save_switch(value: bool) -> None:
+    """Write to a temp file and rename, so a crash mid-write cannot leave a
+    truncated file that happens to read as enabled."""
+    tmp = SWITCH_PATH + ".tmp"
+    try:
+        with open(tmp, "w") as fh:
+            json.dump({"enabled": value,
+                       "at": datetime.now(tz=IST).strftime("%d %b %Y %H:%M IST")}, fh)
+        os.replace(tmp, SWITCH_PATH)
+    except OSError as exc:                                      # noqa: BLE001
+        log.error("could not persist the kill switch: %s", exc)
+
+
+def _set_enabled(v: bool) -> None:
+    """Flip the switch and persist it, so a restart cannot quietly undo it."""
+    global _enabled
+    with _lock:
+        _enabled = v
+    save_switch(v)
+
+
+def is_enabled() -> bool:
+    with _lock:
+        return _enabled
+
+
+def status_text() -> str:
+    with _lock:
+        s = dict(_last)
+    lines = [
+        "Crypto Fib bot",
+        f"Network: {dx.network().upper()}",
+        f"Mode: {'🔴 LIVE — REAL MONEY' if LIVE else 'TEST MODE — places no real orders'}",
+        f"Switch: {'✅ running' if _enabled else '⛔ PAUSED — stays paused even after a restart'}",
+        f"Symbol: {SYMBOL}  ·  {SIZE_LOTS} lot ({SIZE_LOTS * dx.LOT_SIZE.get(SYMBOL, 0)} coin)  ·  {LEVERAGE}x",
+    ]
+    if not s:
+        lines.append("No poll has completed yet.")
+        return "\n".join(lines)
+    lines += [
+        f"Open trade: {s.get('position_lots', 0)} lots at {s.get('entry_price') or '—'}",
+        f"New trades: {'ready when the price comes' if s.get('entry_valid') else 'waiting for a setup'}"
+        f"  ·  buy at {s.get('fib_entry') or '—'}  ·  stop-loss {s.get('stop') or '—'}  ·  target {s.get('target') or '—'}",
+        f"Order numbers: buy={s.get('entry_order') or '—'} stop={s.get('stop_order') or '—'} "
+        f"target={s.get('target_order') or '—'}",
+        f"Last poll: {s.get('at') or '—'}",
+    ]
+    if s.get("bars_held") is not None:
+        lines.append(f"Open for: {s['bars_held']} of {TIMEOUT_BARS} hours")
+    if s.get("funding_paid") is not None:
+        lines.append(f"Funding so far: {s['funding_paid']}")
+    return "\n".join(lines)
+
+
+# ── State ────────────────────────────────────────────────────────────────────
+
+def orders_text() -> str:
+    """Live orders straight from Delta, with the fields that matter.
+
+    Exists because of what Upstox did on the Nifty bots: we sent SL-M and the
+    exchange quietly turned it into a limit priced by its own protection band,
+    sometimes ₹2.60 through the trigger and sometimes ₹115. The code said one
+    thing and the book said another, and the only way anyone found out was by
+    reading the book.
+
+    Delta accepts genuine market orders, so place_stop_market sends order_type
+    MARKET with a stop_price and NO limit price — there is no band to be
+    surprised by. This prints what is actually resting so that claim can be
+    checked rather than trusted.
+    """
+    try:
+        pid = dx.product_id(SYMBOL)
+        orders = dx.open_orders(pid) or []
+        held = dx.get_position(pid)
+    except Exception as exc:                                    # noqa: BLE001
+        return f"Could not read the order book: {exc}"
+
+    lines = [f"Live on Delta {dx.network().upper()} — {SYMBOL}",
+             f"Position: {held} lot"]
+    if not orders:
+        lines.append("No resting orders.")
+        return "\n".join(lines)
+    for o in orders:
+        bits = [f"  {(o.get('side') or '?'):<4}",
+                f"{o.get('size')} lot",
+                (o.get("order_type") or "?")]
+        if o.get("stop_price"):
+            bits.append(f"trig {o['stop_price']}")
+        if o.get("limit_price"):
+            bits.append(f"lim {o['limit_price']}")
+        bits.append(f"· {o.get('state')}")
+        lines.append(" ".join(bits))
+        lines.append(stop_gap_warning(o) or "")
+    return "\n".join(l for l in lines if l)
+
+
+def stop_gap_warning(o: dict) -> str | None:
+    """Our stops are sent as MARKET with no limit. If one comes back carrying a
+    limit price, the exchange has done to us what Upstox did — say so, with the
+    gap spelled out, rather than leaving it to be spotted."""
+    stop_px, lim = o.get("stop_price"), o.get("limit_price")
+    if not stop_px or not lim:
+        return None
+    try:
+        gap = abs(float(stop_px) - float(lim))
+    except (TypeError, ValueError):
+        return None
+    return (f"      ⚠️ this stop came back as a LIMIT at {lim}, {gap:.2f} from its "
+            f"trigger {stop_px}. We sent a stop-MARKET with no limit.")
+
+
+def load_state() -> dict:
+    try:
+        with open(STATE_PATH) as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return {}
+
+
+def save_state(state: dict) -> None:
+    tmp = STATE_PATH + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(state, fh)
+    os.replace(tmp, STATE_PATH)
+
+
+# ── Signal ───────────────────────────────────────────────────────────────────
+
+_session = {"token": None}
+
+
+def dashboard_login() -> str | None:
+    if not APP_PIN:
+        log.error("APP_PIN is not set — cannot read the signal")
+        return None
+    try:
+        body = json.dumps({"pin": APP_PIN}).encode()
+        req = urllib.request.Request(f"{DASHBOARD_URL}/api/auth/login", data=body, method="POST",
+                                     headers={"Content-Type": "application/json",
+                                              "User-Agent": dx.USER_AGENT})
+        with urllib.request.urlopen(req, timeout=20) as res:
+            _session["token"] = json.loads(res.read().decode()).get("token")
+        return _session["token"]
+    except Exception as exc:                                    # noqa: BLE001
+        log.error("dashboard login failed: %s", exc)
+        return None
+
+
+def fetch_signal() -> dict | None:
+    for attempt in (1, 2):
+        token = _session["token"] or dashboard_login()
+        if not token:
+            return None
+        try:
+            url = f"{SIGNAL_URL}?symbol={SYMBOL}"
+            req = urllib.request.Request(url, headers={
+                "Authorization": f"Bearer {token}", "Accept": "application/json",
+                "User-Agent": dx.USER_AGENT})
+            with urllib.request.urlopen(req, timeout=30) as res:
+                return json.loads(res.read().decode())
+        except urllib.error.HTTPError as exc:
+            if exc.code == 401 and attempt == 1:
+                _session["token"] = None
+                continue
+            log.error("signal fetch HTTP %s", exc.code)
+            return None
+        except Exception as exc:                                # noqa: BLE001
+            log.error("signal fetch failed: %s", exc)
+            return None
+    return None
+
+
+# ── Funding ──────────────────────────────────────────────────────────────────
+
+def position_entry_price(pid: int) -> float | None:
+    """What we ACTUALLY got filled at, from the exchange.
+
+    state["entry_price"] used to be signal["lastClose"] — the close of the bar
+    the position was noticed on, which is not the fill and can be some way from
+    it. The exchange knows; ask it.
+    """
+    try:
+        pos = dx.client().get_position(pid) or {}
+        for k in ("entry_price", "avg_price", "average_price"):
+            if pos.get(k):
+                return float(pos[k])
+    except Exception as exc:                                    # noqa: BLE001
+        log.warning("entry price read failed: %s", exc)
+    return None
+
+
+def funding_paid(pid: int) -> float | None:
+    """Funding charged on the open position so far.
+
+    Perps settle funding every 8 hours; a ~30h hold pays it three or four times.
+    The backtest included that cost, so a testnet P&L that ignored it would
+    flatter every result. Best-effort — a missing field must never stop trading.
+    """
+    try:
+        pos = dx.client().get_position(pid) or {}
+        for k in ("funding_realized", "realized_funding", "funding"):
+            if pos.get(k) is not None:
+                return float(pos[k])
+    except Exception as exc:                                    # noqa: BLE001
+        log.warning("funding read failed: %s", exc)
+    return None
+
+
+# ── Orders our bot placed, from the exchange ─────────────────────────────────
+
+def classify_orders(orders: list, entry_px, stop_px, target_px) -> dict:
+    """Delta has no tag field, so ours are identified by side and price.
+
+    A BUY is the entry; a stop-market SELL is the stop; a limit SELL is the
+    target. The exchange remains the source of truth — this only labels what it
+    reports.
+    """
+    found = {"entry": None, "stop": None, "target": None}
+    for o in orders or []:
+        side = (o.get("side") or "").lower()
+        otype = (o.get("order_type") or "").lower()
+        if side == "buy" and found["entry"] is None:
+            found["entry"] = o
+        elif side == "sell":
+            if (o.get("stop_price") or otype.startswith("stop")) and found["stop"] is None:
+                found["stop"] = o
+            elif found["target"] is None:
+                found["target"] = o
+    return found
+
+
+# ── The state machine ────────────────────────────────────────────────────────
+
+def act(key: str, what: str, fn, *args, **kwargs):
+    """Every order-placing call goes through here so dry mode cannot leak one."""
+    if not LIVE:
+        tg_once(f"act:{key}", f"WOULD {what}")
+        return None
+    tg(what)
+    return fn(*args, **kwargs)
+
+
+def reconcile(pid: int, payload: dict, state: dict,
+              protect_only: bool = False) -> dict:
+    signal = payload.get("signal") or {}
+    lots = SIZE_LOTS
+
+    held = dx.get_position(pid)
+    orders = dx.open_orders(pid)
+    fib_entry = signal.get("fibEntry")
+    stop = signal.get("stopPrice")
+    target = signal.get("targetPrice")
+    entry_valid = bool(signal.get("entryValid"))
+    resting = classify_orders(orders, fib_entry, stop, target)
+
+    snapshot = {
+        "at": datetime.now(tz=IST).strftime("%d %b %H:%M IST"),
+        "position_lots": held, "entry_price": state.get("entry_price"),
+        "entry_valid": entry_valid, "fib_entry": fib_entry, "stop": stop, "target": target,
+        "entry_order": (resting["entry"] or {}).get("id"),
+        "stop_order": (resting["stop"] or {}).get("id"),
+        "target_order": (resting["target"] or {}).get("id"),
+        "bars_held": None, "funding_paid": None,
+    }
+
+    # ── IN A POSITION ────────────────────────────────────────────────────────
+    if held > 0:
+        as_of = signal.get("asOf")
+        if not state.get("entry_bar"):
+            state["entry_bar"] = as_of
+            state["bars"] = 0
+            state["entry_price"] = position_entry_price(pid) or signal.get("lastClose")
+            # The bracket belongs to the trade that was entered. A later bar
+            # moves the signal's levels; moving a live stop with them would
+            # silently re-risk an open trade.
+            #
+            # Prefer the levels the ENTRY WAS RESTING ON over the live signal.
+            # "First sight" is not necessarily the fill: after a restart or any
+            # downtime the position is noticed some bars later, by which time
+            # the signal has moved, and freezing those levels would bracket the
+            # trade at prices it was never entered on.
+            armed = state.get("armed") or {}
+            state["stop"] = armed.get("stop") or stop
+            state["target"] = armed.get("target") or target
+            tg(f"📈 TRADE OPEN — bought {held} lots ({held * dx.LOT_SIZE.get(SYMBOL, 0)} {SYMBOL[:3]}) "
+               f"at {state['entry_price']} — stop-loss {state['stop']}, target {state['target']}")
+        elif as_of and as_of != state.get("last_bar"):
+            state["bars"] = int(state.get("bars", 0)) + 1
+        state["last_bar"] = as_of
+        snapshot["bars_held"] = state.get("bars", 0)
+
+        fund = funding_paid(pid)
+        if fund is not None:
+            state["funding"] = fund
+            snapshot["funding_paid"] = fund
+
+        held_stop, held_target = state.get("stop"), state.get("target")
+
+        # No stop level at all: nothing is placed below, so the position is NAKED
+        # and stays that way. This branch used to do nothing, which looks exactly
+        # like a healthy bracketed trade.
+        if not held_stop:
+            tg_once("nostop", f"‼️ {held} lot open on {SYMBOL} with NO STOP-LOSS and none "
+                              f"derivable. This trade is UNPROTECTED — set a stop in the app "
+                              f"or flatten it.")
+        else:
+            tg_clear("nostop")
+
+        # Do not wait to be asked: if the resting stop has acquired a limit
+        # price, that is the Upstox failure repeating on a different exchange.
+        warn = stop_gap_warning(resting["stop"] or {})
+        if warn:
+            tg_once("stopgap", "‼️ THE STOP-LOSS IS NOT A MARKET ORDER.\n" + warn.strip())
+        else:
+            tg_clear("stopgap")
+
+        if not resting["stop"] and held_stop:
+            act("stop", f"place STOP-LOSS for {held} at {held_stop}",
+                dx.place_stop_market, pid, held, held_stop, "sell")
+        if not resting["target"] and held_target:
+            act("target", f"place TARGET for {held} at {held_target}",
+                dx.place_limit_sell, pid, held, held_target, True)
+
+        if state.get("bars", 0) >= TIMEOUT_BARS:
+            # Market-equivalent, anchored to the CURRENT price — matching the
+            # backtest, which closed a timed-out trade at that bar's price. Not
+            # anchored to entry, which would be wrong in both directions.
+            ref = dx.last_price(SYMBOL) or signal.get("lastClose")
+            attempts = int(state.get("exit_attempts", 0))
+            cross = min(EXIT_CROSS_PCT * (attempts + 1), EXIT_CROSS_MAX_PCT)
+            px = round(ref * (1 - cross / 100), 1) if ref else None
+            if px:
+                act("timeout", f"TIME LIMIT after {state['bars']} hours — "
+                               f"closing {held} at {px} (market is {ref}, selling {cross:.2f}% below it)",
+                    dx.place_limit_sell, pid, held, px, True)
+                state["exit_attempts"] = attempts + 1
+                for role in ("stop", "target"):
+                    if resting[role]:
+                        act(f"cancel-{role}", f"cancel {role} {resting[role].get('id')} (time-limit exit)",
+                            dx.cancel_order, pid, resting[role].get("id"))
+        return snapshot
+
+    # ── FLAT ─────────────────────────────────────────────────────────────────
+    if state.get("entry_bar"):
+        fund = state.get("funding")
+        msg = f"✅ TRADE CLOSED after {state.get('bars', 0)} hours."
+        if fund is not None:
+            msg += f" Funding paid: {fund}."
+        tg(msg)
+        # Remember the bar we closed on, and carry it THROUGH the clear — it is
+        # the one thing about the finished trade that still governs the next.
+        closed_on = signal.get("asOf")
+        state.clear()
+        if closed_on:
+            state["traded_bar"] = closed_on
+        for k in [k for k in _notified if k.startswith("act:")]:
+            tg_clear(k)
+
+    # reduce_only orders cannot open a position, but a stale one still clutters
+    # the book and would close a FUTURE trade at the wrong level.
+    for role in ("stop", "target"):
+        if resting[role]:
+            act(f"orphan-{role}", f"cancel leftover {role} order — no trade is open",
+                dx.cancel_order, pid, resting[role].get("id"))
+
+    # Kill switch: everything above protects a position that already exists —
+    # brackets, orphan cleanup, the timeout exit. Everything below can OPEN one.
+    # /stop draws the line here rather than skipping the poll wholesale, which
+    # used to mean "stopped" also stopped managing an open trade.
+    if protect_only:
+        snapshot["note"] = "stopped — protecting only, opening nothing"
+        return snapshot
+
+    if not entry_valid or not fib_entry:
+        if resting["entry"]:
+            act("stale", f"cancel the buy order — the signal is no longer valid",
+                dx.cancel_order, pid, resting["entry"].get("id"))
+        return snapshot
+
+    # ── ONE TRADE PER BAR ────────────────────────────────────────────────────
+    # The signal stays ARMED after a trade closes, and the fib entry is still
+    # sitting right there, so nothing stopped this from re-entering the SAME
+    # setup the instant it went flat. On Delta's testnet — whose synthetic feed
+    # sweeps the same ~2.5% band every hour — that produced 52 round trips in a
+    # few hours on 29 Aug 2026, 48 of them closing in under a bar.
+    #
+    # The backtest this bot implements (PF 2.02 BTC / 1.89 ETH) takes ONE trade
+    # per setup and holds it up to TIMEOUT_BARS. Re-entering the same bar is a
+    # different strategy with different economics — every extra round trip pays
+    # fees and slippage the backtest never modelled.
+    #
+    # So: having traded a bar, wait for the next one. Nothing else is blocked —
+    # an OPEN position is managed normally, because this branch is only reached
+    # when flat.
+    bar_now = signal.get("asOf")
+    if bar_now and state.get("traded_bar") == bar_now:
+        if resting["entry"]:
+            act("cooldown-cancel",
+                f"cancel the buy order — already traded this hour",
+                dx.cancel_order, pid, resting["entry"].get("id"))
+        tg_once("cooldown", f"⏸ Already traded this hour ({bar_now}). Waiting for the next hour "
+                            f"before placing another order — one trade per setup.")
+        snapshot["note"] = "already traded this bar"
+        return snapshot
+    tg_clear("cooldown")
+
+    want = round(float(fib_entry), 1)
+    existing = resting["entry"]
+    # The bracket this resting entry belongs to, refreshed every poll while it
+    # sits there. Whenever it fills — including while this process is down — the
+    # levels it was entered on are already on disk.
+    state["armed"] = {"entry": want, "stop": stop, "target": target}
+
+    # ── A LIMIT BUY BELOW THE MARKET IS A GOOD FILL, NOT AN IMPOSSIBLE ONE ───
+    # Mirrors the Nifty Fib bot exactly. This used to refuse an entry when price
+    # was already at or below the fib level, on the reasoning that the order
+    # would fill instantly rather than on a pullback. That reasoning came by
+    # analogy from the inside-bar breakout guard, and the analogy is wrong.
+    #
+    # A STOP entry triggered after price has gapped past its level fills at
+    # whatever price now exists — worse than the level. A LIMIT buy resting
+    # below the market fills AT the market, which for a buy is at or BETTER than
+    # the level. Nothing impossible happens; the pullback is simply deeper than
+    # asked for.
+    #
+    # ETH backtest: 400 open-below trades, PF 3.02, 95% CI [2.34, 3.91] — the
+    # best trades in the strategy, not the ones to skip.
+    #
+    # The concern that made the guard seem reasonable — a better fill leaving
+    # the stop tighter than designed — needs no handling, because the stop is a
+    # FIXED level from the signal. state["stop"] is taken from the armed
+    # snapshot's stopPrice and this executor has no ATR, so it cannot derive a
+    # stop from a fill price even if asked. A better fill therefore tightens
+    # risk without moving the stop. Asserted by test.
+
+
+    if not existing:
+        act("entry", f"place BUY order for {lots} at {want} (stop-loss {stop}, target {target})",
+            dx.place_limit_buy, pid, lots, want)
+    elif abs(float(existing.get("limit_price") or 0) - want) >= 0.5:
+        act("entry", f"move the buy order to {want}",
+            dx.cancel_order, pid, existing.get("id"))
+    return snapshot
+
+
+# ── Main loop ────────────────────────────────────────────────────────────────
+
+def poll_once(pid: int, protect_only: bool = False) -> None:
+    global _last
+    state = load_state()
+
+    payload = fetch_signal()
+    if not payload:
+        log.warning("no signal this poll")
+        return
+    if not payload.get("signal"):
+        tg_once("signal", f"⚠️ NO SIGNAL — not trading.\n{payload.get('error') or ''}")
+        return
+
+    try:
+        snapshot = reconcile(pid, payload, state, protect_only=protect_only)
+    except dx.DeltaError as exc:
+        if exc.is_auth:
+            tg_once("auth", "🔑 DELTA REJECTED THE KEYS. No new orders.\n"
+                            "Orders already placed remain live. Check DELTA_API_KEY/SECRET.")
+        else:
+            tg_once("delta", f"⚠️ Delta error: {exc}")
+        return
+
+    for k in ("signal", "delta", "auth", "loop"):
+        tg_clear(k)
+    save_state(state)
+    with _lock:
+        _last = snapshot
+
+
+def main() -> None:
+    # Fail fast and loudly on a leverage that has already destroyed one account.
+    dx.assert_leverage(LEVERAGE)
+
+    # Refuse mainnet unless BOTH variables say so. Previously this only logged a
+    # warning and carried on, which is no protection at all — nobody reads a log
+    # line at startup, and the bot would have traded a real account anyway.
+    dx.assert_network_permitted()
+
+    # Adopt the switch as it was left. Announcing which state was adopted is the
+    # whole point: before this, a restart that silently re-enabled a stopped bot
+    # produced exactly the same "online" line as a normal start.
+    global _enabled
+    _enabled = load_switch()
+    switch_line = ("✅ RUNNING — trading normally" if _enabled else
+                   "⛔ PAUSED — you paused me earlier and I stayed paused through the "
+                   "restart. I will look after any open trade but start no new ones. "
+                   "Send /start to resume.")
+    tg(f"🤖 online — {SYMBOL}, {SIZE_LOTS} lot, {LEVERAGE}x, "
+       f"{'LIVE (real money)' if LIVE else 'TEST MODE'}, checking every {POLL_SECONDS}s\n{switch_line}")
+    threading.Thread(target=telegram_listener, daemon=True).start()
+
+    pid = None
+    while True:
+        try:
+            # Stopped means open nothing — NOT abandon an open position.
+            protect_only = not is_enabled()
+            if pid is None:
+                pid = dx.product_id(SYMBOL)
+                if LIVE:
+                    dx.set_leverage(pid, LEVERAGE)
+                log.info("%s → product_id %s", SYMBOL, pid)
+            poll_once(pid, protect_only=protect_only)
+        except dx.DeltaError as exc:
+            tg_once("loop", f"⚠️ Delta error: {exc}")
+            pid = None                      # re-resolve on the next pass
+        except Exception as exc:            # noqa: BLE001
+            log.exception("poll failed")
+            tg_once("loop", f"⚠️ executor error: {exc}")
+        time.sleep(POLL_SECONDS)
+
+
+if __name__ == "__main__":
+    main()

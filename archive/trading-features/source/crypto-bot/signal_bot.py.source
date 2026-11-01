@@ -1,0 +1,392 @@
+# ── signal_bot.py ─────────────────────────────────────────────────
+# Telegram → Delta Exchange India auto-trader
+# BTC + ETH | long + short | qty 100 | 50x | one position at a time
+#
+# pip3 install telethon delta-rest-client python-dotenv
+
+import os
+import re
+import asyncio
+import logging
+from datetime import datetime
+from dotenv import load_dotenv
+from telethon import TelegramClient, events
+
+load_dotenv()
+
+# ══════════════════════════════════════════════════════════════════
+# CONFIG
+# ══════════════════════════════════════════════════════════════════
+DRY_RUN      = False
+USE_TESTNET  = True
+
+QUANTITY     = 100
+LEVERAGE     = 50
+
+TELEGRAM_API_ID   = int(os.getenv('TELEGRAM_API_ID'))
+TELEGRAM_API_HASH = os.getenv('TELEGRAM_API_HASH')
+TELEGRAM_PHONE    = os.getenv('TELEGRAM_PHONE')
+SIGNAL_CHANNEL_ID = int(os.getenv('SIGNAL_CHANNEL_ID'))
+MY_CHAT_ID        = int(os.getenv('MY_CHAT_ID'))
+
+DELTA_API_KEY    = os.getenv('DELTA_API_KEY')
+DELTA_API_SECRET = os.getenv('DELTA_API_SECRET')
+
+DELTA_BASE_URL = ('https://cdn-ind.testnet.deltaex.org'
+                  if USE_TESTNET
+                  else 'https://api.india.delta.exchange')
+
+SYMBOL_MAP = {
+    'ETH.P': 'ETHUSD', 'BTC.P': 'BTCUSD',
+    'ETH':   'ETHUSD', 'BTC':   'BTCUSD',
+}
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s | %(levelname)s | %(message)s',
+    handlers=[logging.FileHandler('bot.log'), logging.StreamHandler()],
+)
+log = logging.getLogger(__name__)
+
+delta = None
+OrderType = None
+if not DRY_RUN:
+    from delta_rest_client import DeltaRestClient, OrderType
+    delta = DeltaRestClient(
+        base_url=DELTA_BASE_URL,
+        api_key=DELTA_API_KEY,
+        api_secret=DELTA_API_SECRET,
+    )
+
+# ── State (memory is a CACHE only — exchange is source of truth) ──
+current_position = None
+bot_enabled = True
+
+tg = TelegramClient('signal_session', TELEGRAM_API_ID, TELEGRAM_API_HASH)
+
+# ══════════════════════════════════════════════════════════════════
+# PARSER  (proven — 10/10 tests passed)
+# ══════════════════════════════════════════════════════════════════
+def parse_signal(text: str):
+    text = (text or "").strip()
+
+    m = re.search(r'Entered\s+(Long|Short)\s+in\s+([\w.]+)', text, re.I)
+    if m:
+        symbol = m.group(2).upper()
+        price  = re.search(r'Entry\s+Price[:\s]+([0-9.]+)', text, re.I)
+        sl     = re.search(r'SL\s*[@:]\s*([0-9.]+)', text, re.I)
+        return {
+            'type': 'entry',
+            'direction': m.group(1).lower(),
+            'symbol': symbol,
+            'delta_symbol': SYMBOL_MAP.get(symbol),
+            'entry': float(price.group(1)) if price else None,
+            'sl':    float(sl.group(1))    if sl    else None,
+        }
+
+    m = re.search(r'SL\s+updated\s+for\s+([\w.]+)\s*[@:]\s*([0-9.]+)', text, re.I)
+    if m:
+        sym = m.group(1).upper()
+        return {'type':'sl_update','symbol':sym,
+                'delta_symbol':SYMBOL_MAP.get(sym),'sl':float(m.group(2))}
+
+    m = re.search(r'Exited\s+([\w.]+)', text, re.I)
+    if m:
+        sym = m.group(1).upper()
+        return {'type':'exit','symbol':sym,'delta_symbol':SYMBOL_MAP.get(sym)}
+
+    return None
+
+# ══════════════════════════════════════════════════════════════════
+# DELTA HELPERS
+# ══════════════════════════════════════════════════════════════════
+def dx_get_product_id(delta_symbol):
+    t = delta.get_ticker(delta_symbol)
+    return t.get('product_id')
+
+def dx_get_position(product_id):
+    """
+    Ask the exchange for the REAL open position on this product.
+    Returns net size (int): 0 = flat, >0 = long, <0 = short.
+    This is the source of truth — never trust bot memory.
+    """
+    try:
+        pos = delta.get_position(product_id)
+        if not pos:
+            return 0
+        size = pos.get('size', 0)
+        return int(size) if size is not None else 0
+    except Exception as e:
+        log.error(f"get_position failed for {product_id}: {e}")
+        return 0
+
+def dx_set_leverage(product_id, leverage):
+    try:
+        delta.set_leverage(product_id=product_id, leverage=str(leverage))
+    except Exception as e:
+        log.warning(f"Could not set leverage: {e}")
+
+def dx_market_order(product_id, side, size):
+    return delta.place_order(
+        product_id=product_id,
+        size=size,
+        side=side,
+        order_type=OrderType.MARKET,
+    )
+
+def dx_stop_order(product_id, side, size, stop_price):
+    return delta.place_stop_order(
+        product_id=product_id,
+        size=size,
+        side=side,
+        order_type=OrderType.MARKET,
+        stop_price=str(stop_price),
+    )
+
+def dx_cancel(product_id, order_id):
+    try:
+        delta.cancel_order(product_id=product_id, order_id=order_id)
+    except Exception as e:
+        log.error(f"Cancel failed {order_id}: {e}")
+
+def dx_close_at_market(product_id, direction, size):
+    """Close an open position at market. direction = current position dir."""
+    side = 'sell' if direction == 'long' else 'buy'
+    return delta.place_order(
+        product_id=product_id,
+        size=abs(size),
+        side=side,
+        order_type=OrderType.MARKET,
+        reduce_only='true',
+    )
+
+# ── Notify ────────────────────────────────────────────────────────
+async def notify(msg):
+    prefix = "🧪 DRY RUN\n" if DRY_RUN else ""
+    try:
+        await tg.send_message(MY_CHAT_ID, prefix + msg)
+    except Exception as e:
+        log.error(f"Notify failed: {e}")
+
+# ══════════════════════════════════════════════════════════════════
+# HANDLERS
+# ══════════════════════════════════════════════════════════════════
+async def handle_entry(sig):
+    global current_position
+    ds = sig['delta_symbol']
+
+    if not ds:
+        await notify(f"⚠️ Unknown symbol: {sig['symbol']}"); return
+
+    direction = sig['direction']
+    entry, sl = sig.get('entry'), sig.get('sl')
+    order_side = 'buy'  if direction == 'long' else 'sell'
+    sl_side    = 'sell' if direction == 'long' else 'buy'
+
+    log.info(f"ENTRY {direction.upper()} {ds} @ {entry} SL {sl}")
+
+    if DRY_RUN:
+        await notify(f"WOULD ENTER {direction.upper()} {ds}\n"
+                     f"Entry: {entry}\nSL: {sl}\nQty: {QUANTITY} | {LEVERAGE}x")
+        return
+
+    try:
+        pid = dx_get_product_id(ds)
+
+        # SOURCE OF TRUTH: check the exchange, not bot memory
+        live_size = dx_get_position(pid)
+        if live_size != 0:
+            await notify(f"⚠️ Exchange shows open position on {ds} "
+                         f"(size {live_size}) — skipping new entry")
+            # sync memory to reality
+            current_position = {'delta_symbol':ds,
+                                'direction':'long' if live_size>0 else 'short',
+                                'entry':entry,'sl':sl,'sl_order_id':None,
+                                'product_id':pid,'size':abs(live_size),
+                                'opened_at':datetime.now()}
+            return
+
+        dx_set_leverage(pid, LEVERAGE)
+        dx_market_order(pid, order_side, QUANTITY)
+
+        sl_order_id = None
+        if sl:
+            await asyncio.sleep(1.5)
+            try:
+                sl_order = dx_stop_order(pid, sl_side, QUANTITY, sl)
+                sl_order_id = sl_order.get('id') if isinstance(sl_order, dict) else None
+            except Exception as se:
+                # stop would immediately execute → price already past SL → get out
+                if 'immediate_execution_stop_order' in str(se):
+                    log.warning("SL immediate-exec on entry — closing at market")
+                    dx_close_at_market(pid, direction, QUANTITY)
+                    await notify(f"⚠️ {ds} SL already breached at entry — "
+                                 f"closed immediately at market")
+                    current_position = None
+                    return
+                raise
+
+        current_position = {'delta_symbol':ds,'direction':direction,
+                            'entry':entry,'sl':sl,'sl_order_id':sl_order_id,
+                            'product_id':pid,'size':QUANTITY,
+                            'opened_at':datetime.now()}
+
+        await notify(f"✅ ENTERED {direction.upper()} {ds}\n"
+                     f"Entry: {entry}\nSL: {sl}\n"
+                     f"Qty: {QUANTITY} | SL Order: {sl_order_id}")
+    except Exception as e:
+        log.error(f"Entry failed: {e}")
+        await notify(f"❌ ENTRY FAILED {ds}: {e}")
+
+async def handle_sl_update(sig):
+    global current_position
+    ds, new_sl = sig['delta_symbol'], sig['sl']
+
+    if DRY_RUN:
+        await notify(f"WOULD UPDATE SL {ds} → {new_sl}"); return
+
+    try:
+        pid = dx_get_product_id(ds)
+
+        # SOURCE OF TRUTH: is there actually a position?
+        live_size = dx_get_position(pid)
+        if live_size == 0:
+            log.info(f"SL update {ds} but exchange shows FLAT — clearing state")
+            if current_position and current_position['delta_symbol'] == ds:
+                current_position = None
+            await notify(f"⚠️ SL update for {ds} ignored — position already closed")
+            return
+
+        direction = 'long' if live_size > 0 else 'short'
+        sl_side   = 'sell' if direction == 'long' else 'buy'
+
+        # cancel old stop if we have one tracked
+        if current_position and current_position.get('sl_order_id'):
+            dx_cancel(pid, current_position['sl_order_id'])
+            await asyncio.sleep(0.5)
+
+        try:
+            new_order = dx_stop_order(pid, sl_side, abs(live_size), new_sl)
+            new_id = new_order.get('id') if isinstance(new_order, dict) else None
+            # keep memory in sync
+            current_position = {'delta_symbol':ds,'direction':direction,
+                                'entry': current_position['entry'] if current_position else None,
+                                'sl':new_sl,'sl_order_id':new_id,
+                                'product_id':pid,'size':abs(live_size),
+                                'opened_at': current_position['opened_at'] if current_position else datetime.now()}
+            await notify(f"🔄 SL UPDATED {ds} → {new_sl}\nNew SL Order: {new_id}")
+        except Exception as se:
+            # OPTION A: price already past the new SL → close at market now
+            if 'immediate_execution_stop_order' in str(se):
+                log.warning(f"SL update {ds} would exec immediately — closing at market")
+                dx_close_at_market(pid, direction, abs(live_size))
+                current_position = None
+                await notify(f"⚠️ {ds} price already past SL {new_sl} — "
+                             f"closed at market (Option A)")
+                return
+            raise
+
+    except Exception as e:
+        log.error(f"SL update failed: {e}")
+        await notify(f"❌ SL UPDATE FAILED {ds}: {e}")
+
+async def handle_exit(sig):
+    global current_position
+    ds = sig['delta_symbol']
+
+    if DRY_RUN:
+        await notify(f"WOULD EXIT {ds}"); current_position = None; return
+
+    try:
+        pid = dx_get_product_id(ds)
+
+        # SOURCE OF TRUTH
+        live_size = dx_get_position(pid)
+        if live_size == 0:
+            log.info(f"Exit {ds} but exchange shows FLAT — clearing state")
+            if current_position and current_position['delta_symbol'] == ds:
+                current_position = None
+            await notify(f"⚪ {ds} already flat — nothing to exit")
+            return
+
+        direction = 'long' if live_size > 0 else 'short'
+
+        # cancel tracked stop first
+        if current_position and current_position.get('sl_order_id'):
+            dx_cancel(pid, current_position['sl_order_id'])
+            await asyncio.sleep(0.5)
+
+        dx_close_at_market(pid, direction, abs(live_size))
+        await notify(f"⚪ EXITED {ds} at market (size {abs(live_size)})")
+        current_position = None
+
+    except Exception as e:
+        log.error(f"Exit failed: {e}")
+        await notify(f"❌ EXIT FAILED {ds}: {e}")
+
+# ══════════════════════════════════════════════════════════════════
+# MESSAGE LISTENER  (serialized so entry/exit can't race)
+# ══════════════════════════════════════════════════════════════════
+_lock = asyncio.Lock()
+
+@tg.on(events.NewMessage(chats=SIGNAL_CHANNEL_ID))
+async def on_message(event):
+    if not bot_enabled:
+        return
+    text = event.message.text or ""
+    log.info(f"MSG: {text[:80].replace(chr(10),' ')}")
+
+    sig = parse_signal(text)
+    if not sig:
+        return
+
+    log.info(f"PARSED: {sig}")
+    # lock ensures messages process one-at-a-time in arrival order
+    async with _lock:
+        if   sig['type'] == 'entry':     await handle_entry(sig)
+        elif sig['type'] == 'sl_update': await handle_sl_update(sig)
+        elif sig['type'] == 'exit':      await handle_exit(sig)
+
+# ── Kill switch ───────────────────────────────────────────────────
+@tg.on(events.NewMessage(chats=MY_CHAT_ID, pattern=r'(?i)^/stop$'))
+async def kill_switch(event):
+    global bot_enabled
+    bot_enabled = False
+    await notify("🛑 BOT DISABLED. Send /start to re-enable.")
+
+@tg.on(events.NewMessage(chats=MY_CHAT_ID, pattern=r'(?i)^/start$'))
+async def resume(event):
+    global bot_enabled
+    bot_enabled = True
+    await notify("▶️ Bot re-enabled.")
+
+@tg.on(events.NewMessage(chats=MY_CHAT_ID, pattern=r'(?i)^/status$'))
+async def status(event):
+    # /status now queries the EXCHANGE, not memory
+    try:
+        lines = []
+        for sym, ds in [('ETH','ETHUSD'), ('BTC','BTCUSD')]:
+            pid = dx_get_product_id(ds)
+            sz  = dx_get_position(pid)
+            if sz != 0:
+                lines.append(f"{ds}: {'LONG' if sz>0 else 'SHORT'} size {abs(sz)}")
+        if lines:
+            await notify("📊 Exchange positions:\n" + "\n".join(lines))
+        else:
+            await notify("📊 No open position (exchange confirmed flat).")
+    except Exception as e:
+        await notify(f"Status check error: {e}")
+
+# ══════════════════════════════════════════════════════════════════
+async def main():
+    mode = "DRY RUN (no orders)" if DRY_RUN else \
+           ("TESTNET" if USE_TESTNET else "🔴 LIVE REAL MONEY")
+    await tg.start(phone=TELEGRAM_PHONE)
+    log.info(f"Bot started — mode: {mode}")
+    await notify(f"🤖 Bot online — mode: {mode}\n"
+                 f"Qty {QUANTITY} | {LEVERAGE}x | BTC+ETH\n"
+                 f"Commands: /stop /start /status")
+    await tg.run_until_disconnected()
+
+if __name__ == '__main__':
+    asyncio.run(main())

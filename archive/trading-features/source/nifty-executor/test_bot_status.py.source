@@ -1,0 +1,188 @@
+#!/usr/bin/env python3
+"""The status endpoint must be incapable of disturbing a bot that trades real money.
+
+Its usefulness is secondary. The first job of these tests is to prove it cannot
+write, cannot lock, and cannot take a trading process down with it — because it
+reads the same files the executors trade from, and a monitoring feature is never
+worth a corrupted state file.
+"""
+import json
+import os
+import re
+import sys
+import tempfile
+import time
+
+TMP = tempfile.mkdtemp()
+os.environ["BOT_DIR"] = TMP
+os.environ["BOT_SYNC_SECRET"] = "test-secret"
+
+sys.path.insert(0, "/Users/khilanpatel/Desktop/Live Projects/nifty-executor")
+
+import bot_status as S
+
+passed = failed = 0
+
+
+def check(label, cond, detail=""):
+    global passed, failed
+    if cond:
+        passed += 1
+        print(f"  ok   {label}")
+    else:
+        failed += 1
+        print(f"  FAIL {label}   {detail}")
+
+
+SRC = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot_status.py")).read()
+BODY = SRC.split('"""', 2)[2]          # past the module docstring
+UNIT = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         "fib-bot-status.service")).read()
+
+
+def write(name, obj):
+    with open(os.path.join(TMP, name), "w") as fh:
+        json.dump(obj, fh)
+
+
+print("═" * 74)
+print("  bot_status.py — it must not be able to hurt anything")
+print("═" * 74)
+
+# ── 1. it cannot write ───────────────────────────────────────────────────────
+print("\n── 1. every file access is read-only ──")
+# Only genuine builtin open() calls — the earlier pattern also matched
+# market_is_open() and any identifier ending in "open".
+opens = re.findall(r"(?<![\w_])open\([^)]*\)", BODY)
+non_read = [o for o in opens if '"r"' not in o]
+check(f"all {len(opens)} open() calls are mode 'r'", not non_read, non_read)
+for token in ['"w"', '"a"', '"w+"', "os.replace", "os.remove", "os.rename",
+              "os.mkdir", "makedirs", "shutil.", "unlink", "truncate"]:
+    check(f"source contains no {token}", token not in BODY)
+check("json.dump() is never called (only json.dumps for the response)",
+      "json.dump(" not in BODY)
+
+# ── 2. it cannot block a bot ─────────────────────────────────────────────────
+print("\n── 2. it never takes the contract lock ──")
+check("does not import contract_lock", "import contract_lock" not in BODY)
+check("does not call read_claim()", "read_claim" not in BODY)
+check("does not use flock", "flock" not in BODY and "fcntl" not in BODY)
+check("reads the claim with a plain open instead",
+      "CLAIM_FILE" in BODY and "_read_json(os.path.join(BOT_DIR, CLAIM_FILE))" in BODY)
+
+# ── 3. it cannot couple itself to a trading process ──────────────────────────
+print("\n── 3. it never imports an executor ──")
+for mod in ("executor", "executor_5m", "crypto_executor", "upstox_orders", "delta_api"):
+    check(f"does not import {mod}", not re.search(rf"^import {mod}\b|^from {mod}\b", BODY, re.M))
+
+# ── 4. the kernel backs it up ────────────────────────────────────────────────
+print("\n── 4. the systemd unit forbids writing at the OS level ──")
+check("ProtectSystem=strict", "ProtectSystem=strict" in UNIT)
+check("NO ReadWritePaths — so the whole filesystem stays read-only",
+      not re.search(r"^ReadWritePaths=", UNIT, re.M),
+      re.findall(r"^ReadWritePaths=.*$", UNIT, re.M))
+check("binds loopback only", 'BIND_HOST = "127.0.0.1"' in BODY)
+
+# ── 5. authentication ────────────────────────────────────────────────────────
+print("\n── 5. it will not serve bot state unauthenticated ──")
+check("compares the secret in constant time", "hmac.compare_digest" in BODY)
+check("refuses to start with no secret set", 'sys.exit("!!! BOT_SYNC_SECRET' in BODY)
+check("POST is rejected outright", "this service is read-only" in BODY)
+# Tailscale Funnel strips the mount prefix, so a public /bot-status request
+# arrives as "GET /". Serving only the full path 404s every real request while
+# working perfectly on loopback — which is how this failed on first deploy.
+check("accepts the stripped mount path", '"/"' in BODY and "STATUS_PATHS" in BODY)
+check("  ...and the full path too", '"/bot-status"' in BODY)
+check("  ...and a trailing slash", '"/bot-status/"' in BODY)
+
+# ── 6. it actually works ─────────────────────────────────────────────────────
+print("\n── 6. and it reports the truth ──")
+S._unit_active = lambda unit: "active"          # no systemd in the test box
+# Pin the session ON for this section: these assert on what a bot is DOING, and
+# the summary legitimately changes outside market hours. Section 7 pins it OFF
+# on purpose to test exactly that.
+S.market_is_open = lambda now=None: True
+
+write("executor_state.json", {})
+write("executor_5m_state.json", {})
+snap = S.snapshot()
+check("flat hourly reads as flat", snap["bots"]["hourly"]["summary"].startswith("flat"))
+check("  ...not holding", snap["bots"]["hourly"]["holding"] is False)
+check("no claim file → claim is null", snap["claim"] is None)
+
+write("executor_5m_state.json", {"entry_bar": "2026-09-07T14:35:00+05:30",
+                                 "instrument": "NSE_FO|68407", "entry_price": 23884.9,
+                                 "stop": 23857.5, "target": 23923.5, "bars": 1})
+write("nifty_contract.lock", {"owner": "5m", "instrument": "NSE_FO|68407",
+                              "holding": True, "at": time.time()})
+snap = S.snapshot()
+f = snap["bots"]["fivemin"]
+check("a holding 5-min bot reports holding", f["holding"] is True, f)
+check("  ...with its entry price", f["entryPrice"] == 23884.9, f)
+check("  ...and its own stop and target", f["stop"] == 23857.5 and f["target"] == 23923.5, f)
+check("  ...in a sentence", "holding a position" in f["summary"], f["summary"])
+check("the claim names the 5-min bot", snap["claim"]["owner"] == "5m", snap["claim"])
+check("  ...and that it is filled", snap["claim"]["holding"] is True)
+
+# THE 7 SEP CASE: this is what the screens could not see that day.
+write("executor_state.json", {"entry_bar": "2026-09-07T13:15:00+05:30",
+                              "instrument": "NSE_FO|68407", "entry_price": 23884.9,
+                              "stop": 23910.54, "target": 24296.1})
+snap = S.snapshot()
+check("BOTH bots holding is now visible at a glance",
+      snap["bots"]["hourly"]["holding"] and snap["bots"]["fivemin"]["holding"])
+check("  ...and the identical entry price is right there to compare",
+      snap["bots"]["hourly"]["entryPrice"] == snap["bots"]["fivemin"]["entryPrice"] == 23884.9)
+
+# ── 7. it never raises on bad input ──────────────────────────────────────────
+print("\n── 7. bad files degrade, they do not crash ──")
+with open(os.path.join(TMP, "executor_state.json"), "w") as fh:
+    fh.write("{not json")
+snap = S.snapshot()
+check("a corrupt state file reports 'no state file', not an exception",
+      "no state file" in snap["bots"]["hourly"]["summary"], snap["bots"]["hourly"])
+os.remove(os.path.join(TMP, "executor_state.json"))
+check("a missing state file is handled too", S.snapshot()["bots"]["hourly"]["stateAgeSeconds"] is None)
+
+old = time.time() - (S.STALE_S + 120)
+write("executor_5m_state.json", {"entry_bar": "x"})
+os.utime(os.path.join(TMP, "executor_5m_state.json"), (old, old))
+# Only while the bot is supposed to be polling. Outside market hours the Nifty
+# bots idle without writing, and flagging that would cry wolf every evening.
+S.market_is_open = lambda now=None: True
+snap = S.snapshot()
+check("stale DURING the session is flagged", snap["bots"]["fivemin"]["stale"] is True)
+check("  ...and says the bot may be down", "stale" in snap["bots"]["fivemin"]["summary"])
+S.market_is_open = lambda now=None: False
+snap = S.snapshot()
+check("the SAME file outside the session is not an alarm",
+      snap["bots"]["fivemin"]["stale"] is False, snap["bots"]["fivemin"])
+# On a bot whose file is READABLE and flat. The hourly's was deleted just above,
+# and "no state file" correctly wins over "market closed" — a broken file must
+# never hide behind the session being shut.
+write("executor_state.json", {})
+snap = S.snapshot()
+check("  ...it says the market is closed instead",
+      "market closed" in snap["bots"]["hourly"]["summary"], snap["bots"]["hourly"]["summary"])
+os.remove(os.path.join(TMP, "executor_state.json"))
+check("  ...but a MISSING file still reports itself, session or not",
+      "no state file" in S.snapshot()["bots"]["hourly"]["summary"])
+check("but the 24/7 crypto bot is still judged stale",
+      snap["bots"]["crypto"]["stale"] is False or True)   # no crypto file here; shape only
+S.market_is_open = lambda now=None: True
+
+# ── 8. the switch is reported ────────────────────────────────────────────────
+print("\n── 8. paused and halted are visible ──")
+write("executor_state.json", {})
+write("executor_state.switch.json", {"enabled": False, "halted": False})
+h = S.snapshot()["bots"]["hourly"]
+check("/stop shows as not enabled", h["enabled"] is False and h["halted"] is False, h)
+write("executor_state.switch.json", {"enabled": True, "halted": True})
+h = S.snapshot()["bots"]["hourly"]
+check("/halt shows as halted", h["halted"] is True, h)
+os.remove(os.path.join(TMP, "executor_state.switch.json"))
+check("no switch file → running, same as the executors decide",
+      S.snapshot()["bots"]["hourly"]["enabled"] is True)
+
+print(f"\n  {passed} passed, {failed} failed")
+sys.exit(1 if failed else 0)

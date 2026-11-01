@@ -1,0 +1,438 @@
+#!/usr/bin/env python3
+"""
+Walks the executor through a whole trade lifecycle in minutes instead of days.
+
+  python3 test_executor_lifecycle.py
+
+The executor has exactly two inputs — the signal, and what the exchange says it
+holds — so both are scripted here and the REAL decision functions (reconcile,
+poll_once) run against them unchanged. Nothing about the executor's logic is
+reimplemented; if a step fails, the bug is in the bot, not in this file.
+
+LIVE stays False throughout, so every Upstox call is captured rather than sent
+and the assertions are about what the bot INTENDED. That is the thing worth
+proving: in live mode those intentions become real orders, and waiting for a
+market to sweep the levels naturally would take weeks to cover the same ground.
+"""
+import os
+import sys
+import tempfile
+from datetime import datetime, timedelta, timezone
+
+os.environ["EXECUTOR_STATE"] = os.path.join(tempfile.mkdtemp(), "state.json")
+# Never the production claim path. Run on the droplet without this, the suite
+# writes a real "hourly is holding" claim into /root/fib-bot and the live 5-min
+# bot stands down for five minutes. That actually happened.
+os.environ["CONTRACT_LOCK"] = os.path.join(tempfile.mkdtemp(), "nifty_contract.lock")
+os.environ.setdefault("APP_PIN", "test")
+
+import executor as E
+import upstox_orders as ux
+
+IST = timezone(timedelta(hours=5, minutes=30))
+KEY = "NSE_FO|58072"
+LOT = 65
+ENTRY, STOP, TARGET = 24220.0, 24134.0, 24436.0
+
+CALLS: list = []
+passed = failed = 0
+
+# ── Capture instead of send ──────────────────────────────────────────────────
+E.tg = lambda text: CALLS.append(text)
+for _name in ("place_limit_buy", "place_limit_sell", "place_sl_m", "place_sl", "cancel_order", "modify_order"):
+    def _make(n):
+        def f(*a, **k):
+            CALLS.append(f"[REAL CALL {n}]")     # must never appear in dry mode
+            return "LIVE-ORDER-ID"
+        return f
+    setattr(ux, _name, _make(_name))
+
+
+def said(*fragments) -> bool:
+    """Did the bot say something containing all these fragments?"""
+    return any(all(f.lower() in c.lower() for f in fragments) for c in CALLS)
+
+
+def intended() -> list:
+    return [c for c in CALLS if c.startswith("WOULD")]
+
+
+# ── Scripted world ──────────────────────────────────────────────────────────
+def order(tag, price=ENTRY, oid="OLD-1", status="open"):
+    return {"instrument_token": KEY, "tag": tag, "order_id": oid,
+            "price": price, "status": status}
+
+
+def payload(*, armed=True, entry=ENTRY, stop=STOP, target=TARGET,
+            dte=30.0, as_of="bar-01", token_valid=True, signal=True):
+    expiry = int((datetime.now(tz=IST) + timedelta(days=dte)).timestamp() * 1000)
+    return {
+        "tokenValid": token_valid,
+        "error": None if token_valid else "Upstox not connected",
+        "contract": {"instrumentKey": KEY, "lotSize": LOT, "tickSize": 10,
+                     "tradingSymbol": "NIFTY FUT 29 SEP 26", "expiry": expiry},
+        "signal": ({"entryValid": armed, "fibEntry": entry, "stopPrice": stop,
+                    "targetPrice": target, "asOf": as_of} if signal else None),
+    }
+
+
+def world(position=0, avg=None, book=None, owned=True):
+    # Our filled entry order is what proves the account's position is OURS and
+    # not the inside-bar bot's — both trade the same contract on one account.
+    book = list(book or [])
+    if position and owned and not any((o.get("tag") or "") == E.TAG_ENTRY
+                                      and (o.get("status") or "") == "complete" for o in book):
+        book.append({"instrument_token": KEY, "status": "complete", "tag": E.TAG_ENTRY,
+                     "order_id": "FILLED-ENTRY", "price": avg, "average_price": avg})
+    ux.get_positions = lambda t: ([{"instrument_token": KEY, "quantity": position,
+                                    "average_price": avg}] if position else [])
+    ux.get_order_book = lambda t: list(book)
+    # last_price sits ABOVE the fib entry: the strategy rests a buy below the
+    # market and waits for price to come DOWN to it, so that is the normal
+    # shape (24450 clears every fib entry used below). The bid stays at 24150 because the timeout exit prices off the bid.
+    ux.get_quote = lambda t, k: {"depth": {"buy": [{"price": 24150.0}]}, "last_price": 24450.0}
+
+
+def step(n, title, desc, expectations, *, position=0, avg=None, book=None,
+         state=None, **kw):
+    """Run one poll and report it as a narrative line, not a bare assertion."""
+    global passed, failed
+    CALLS.clear()
+    world(position, avg, book)
+    st = state if state is not None else {}
+    E.reconcile("tok", payload(**kw), st)
+
+    print(f"\nSTEP {n} — {title}")
+    print(f"  input     {desc}")
+    acts = intended()
+    print(f"  intended  {acts[0] if acts else '(nothing)'}")
+    for extra in acts[1:]:
+        print(f"            {extra}")
+    for note in [c for c in CALLS if not c.startswith("WOULD") and not c.startswith("[REAL")]:
+        print(f"  said      {note.splitlines()[0]}")
+
+    for label, cond in expectations:
+        if cond():
+            passed += 1; print(f"  ✓ PASS    {label}")
+        else:
+            failed += 1; print(f"  ✗ FAIL    {label}")
+    if any(c.startswith("[REAL") for c in CALLS):
+        failed += 1; print("  ✗ FAIL    DRY MODE LEAKED A REAL ORDER")
+    return st
+
+
+print("═" * 72)
+print("  Fib executor — full lifecycle in dry mode")
+print(f"  LIVE = {E.LIVE}   ({'places nothing' if not E.LIVE else 'DANGER: REAL ORDERS'})")
+print("═" * 72)
+if E.LIVE:
+    print("\nRefusing to run: this harness asserts on intentions, and LIVE mode acts on them.")
+    sys.exit(1)
+
+# ── 1 ───────────────────────────────────────────────────────────────────────
+step(1, "STAND ASIDE",
+     "signal not armed · flat · no resting orders",
+     [("intends no order at all", lambda: not intended())],
+     armed=False)
+
+step("1b", "STAND ASIDE with a stale order",
+     "signal not armed · flat · a resting entry from earlier",
+     [("cancels the stale entry", lambda: said("WOULD cancel the buy order", "no longer valid"))],
+     armed=False, book=[order(E.TAG_ENTRY)])
+
+# ── 2 ───────────────────────────────────────────────────────────────────────
+step(2, "ARMED, nothing resting",
+     f"armed · entry {ENTRY} stop {STOP} target {TARGET} · flat",
+     [("intends a buy limit at the fib entry", lambda: said("WOULD place BUY order", str(ENTRY))),
+      (f"for one lot ({LOT})", lambda: said(f"BUY order for {LOT} at")),
+      ("mentions the bracket it will use", lambda: said(str(STOP)) and said(str(TARGET)))])
+
+# ── 3 ───────────────────────────────────────────────────────────────────────
+step(3, "LEVELS MOVED on a new bar",
+     "armed · entry now 24250 · a resting order sits at 24220",
+     [("repositions the resting entry", lambda: said("WOULD move the buy order")),
+      ("names the old and the new price", lambda: said("24220") and said("24250")),
+      ("does not open a SECOND entry", lambda: not said("WOULD place BUY order"))],
+     entry=24250.0, book=[order(E.TAG_ENTRY, price=ENTRY)], as_of="bar-02")
+
+# ── 4 ───────────────────────────────────────────────────────────────────────
+st4 = step(4, "ENTRY FILLED",
+           f"position 1 lot @ {ENTRY} · no bracket orders yet",
+           [("intends the protective stop", lambda: said("WOULD place STOP-LOSS", str(STOP))),
+            ("intends the target", lambda: said("WOULD place TARGET", str(TARGET))),
+            ("announces the position", lambda: said("TRADE OPEN"))],
+           position=LOT, avg=ENTRY, as_of="bar-03")
+print(f"  state     entry_bar={st4.get('entry_bar')} bars={st4.get('bars')}")
+if st4.get("entry_bar") == "bar-03":
+    passed += 1; print("  ✓ PASS    records the entry bar")
+else:
+    failed += 1; print("  ✗ FAIL    records the entry bar")
+
+# ── 5 ───────────────────────────────────────────────────────────────────────
+brackets = [order(E.TAG_STOP, price=STOP, oid="STOP-1", status="trigger pending"),
+            order(E.TAG_TARGET, price=TARGET, oid="TGT-1")]
+step(5, "HOLDING, neither level hit",
+     "position 1 lot · stop and target both resting",
+     [("intends nothing further", lambda: not intended()),
+      ("does not duplicate the stop", lambda: not said("WOULD place STOP-LOSS")),
+      ("does not duplicate the target", lambda: not said("WOULD place TARGET")),
+      ("does not add another entry", lambda: not said("WOULD place BUY order"))],
+     position=LOT, avg=ENTRY, book=brackets, state=dict(st4), as_of="bar-04")
+
+# ── 6a ──────────────────────────────────────────────────────────────────────
+st = {"entry_bar": "bar-03", "bars": 5, "last_bar": "bar-07", "entry_price": ENTRY}
+step("6a", "TARGET HIT — the win",
+     "position now flat · target order shows complete · stop still resting",
+     [("recognises the position closed", lambda: said("TRADE CLOSED") or said("LOSS") or said("WIN")),
+      ("reports it as a WIN at the target", lambda: said("win") or said("target hit")),
+      ("cancels the orphaned stop", lambda: said("WOULD cancel leftover", E.TAG_STOP)),
+      ("explains the orphan risk", lambda: said("could accidentally start one"))],
+     position=0,
+     book=[order(E.TAG_STOP, price=STOP, oid="STOP-1", status="trigger pending"),
+           order(E.TAG_TARGET, price=TARGET, oid="TGT-1", status="complete")],
+     state=st, armed=False, as_of="bar-08")
+if st == {}:
+    passed += 1; print("  ✓ PASS    clears its tracking")
+else:
+    failed += 1; print(f"  ✗ FAIL    clears its tracking (left {st})")
+
+# ── 6b ──────────────────────────────────────────────────────────────────────
+st = {"entry_bar": "bar-03", "bars": 5, "last_bar": "bar-07", "entry_price": ENTRY}
+step("6b", "STOP HIT — the loss",
+     "position now flat · stop order shows complete · target still resting",
+     [("recognises the position closed", lambda: said("TRADE CLOSED") or said("LOSS") or said("WIN")),
+      ("reports it as a LOSS at the stop", lambda: said("loss") or said("stop-loss hit")),
+      ("cancels the orphaned target", lambda: said("WOULD cancel leftover", E.TAG_TARGET))],
+     position=0,
+     book=[order(E.TAG_STOP, price=STOP, oid="STOP-1", status="complete"),
+           order(E.TAG_TARGET, price=TARGET, oid="TGT-1")],
+     state=st, armed=False, as_of="bar-08")
+
+# ── 6c ──────────────────────────────────────────────────────────────────────
+st = {"entry_bar": "bar-03", "bars": E.TIMEOUT_BARS, "last_bar": "bar-33",
+      "entry_price": ENTRY}
+step("6c", f"TIME LIMIT after {E.TIMEOUT_BARS} bars",
+     "position still open · neither level hit · both brackets resting",
+     [("intends to exit", lambda: said("WOULD", "TIME LIMIT")),
+      ("uses a LIMIT, never a market order",
+       lambda: said("closing") and not said("market order")),
+      ("cancels both brackets",
+       lambda: said("WOULD cancel", E.TAG_STOP) and said("WOULD cancel", E.TAG_TARGET))],
+     position=LOT, avg=ENTRY, book=brackets, state=st, as_of="bar-33")
+
+# ── 7 ───────────────────────────────────────────────────────────────────────
+step(7, "EXPIRY GUARD",
+     f"armed · flat · only 1.0d to expiry (buffer is {E.EXPIRY_BUFFER_DAYS}d)",
+     [("refuses to open", lambda: not said("WOULD place BUY order")),
+      ("says it is standing aside", lambda: said("Not trading")),
+      ("names the reason and the horizon", lambda: said("expires in") and said("days before"))],
+     dte=1.0)
+
+step("7b", "EXPIRY GUARD with an order already resting",
+     "armed · flat · 1.0d to expiry · a resting entry",
+     [("pulls the resting entry", lambda: said("WOULD cancel the buy order", "expiry"))],
+     dte=1.0, book=[order(E.TAG_ENTRY)])
+
+step("7c", "OUTSIDE the buffer",
+     "armed · flat · 30d to expiry",
+     [("opens normally", lambda: said("WOULD place BUY order"))],
+     dte=30.0)
+
+# ── 8 ── token faults go through poll_once, not reconcile ───────────────────
+print("\nSTEP 8 — TOKEN FAULTS")
+E._notified.clear()
+
+CALLS.clear()
+def _no_token(*a, **k):
+    raise ux.TokenUnavailable("Token has expired (03:30 IST boundary) — sync a fresh one.")
+_real_load, ux.load_token = ux.load_token, _no_token
+E.fetch_signal = lambda: payload()
+E.poll_once()
+ux.load_token = _real_load
+print(f"  input     token file expired")
+print(f"  said      {(CALLS[0].splitlines()[0] if CALLS else '(nothing)')}")
+for label, cond in [
+    ("fires a loud token alert", lambda: said("CANNOT TRADE")),
+    ("tells you to sync", lambda: said("sync")),
+    ("places nothing", lambda: not intended()),
+]:
+    if cond(): passed += 1; print(f"  ✓ PASS    {label}")
+    else:      failed += 1; print(f"  ✗ FAIL    {label}")
+
+CALLS.clear(); E._notified.clear()
+ux.load_token = lambda *a, **k: "tok"
+E.fetch_signal = lambda: payload(token_valid=False, signal=False)
+world(0)
+E.poll_once()
+print(f"  input     signal reports tokenValid=false")
+print(f"  said      {(CALLS[0].splitlines()[0] if CALLS else '(nothing)')}")
+for label, cond in [
+    ("alerts that the signal is unusable", lambda: said("token") or said("no signal")),
+    ("places nothing", lambda: not intended()),
+]:
+    if cond(): passed += 1; print(f"  ✓ PASS    {label}")
+    else:      failed += 1; print(f"  ✗ FAIL    {label}")
+
+CALLS.clear(); E._notified.clear()
+def _rejected(*a, **k):
+    raise ux.UpstoxError("Invalid token used to access API", status=401, code="UDAPI100050")
+ux.get_positions = _rejected
+E.fetch_signal = lambda: payload()
+E.poll_once()
+print(f"  input     Upstox rejects the token mid-session (401)")
+print(f"  said      {(CALLS[0].splitlines()[0] if CALLS else '(nothing)')}")
+for label, cond in [
+    ("fires the rejection alert", lambda: said("TOKEN REJECTED")),
+    ("states that resting orders stay live", lambda: said("remain live")),
+    ("places nothing", lambda: not intended()),
+]:
+    if cond(): passed += 1; print(f"  ✓ PASS    {label}")
+    else:      failed += 1; print(f"  ✗ FAIL    {label}")
+
+# ── 9 ── the whole cycle, in sequence, sharing state ───────────────────────
+print("\n" + "═" * 72)
+print("  STEP 9 — one full cycle, start to finish")
+print("═" * 72)
+E._notified.clear()
+cycle: dict = {}
+book: list = []
+
+step("9.1", "stand aside", "not armed · flat",
+     [("nothing intended", lambda: not intended())],
+     armed=False, state=cycle, as_of="c-01")
+
+step("9.2", "signal arms", f"armed · entry {ENTRY} · flat",
+     [("places the entry", lambda: said("WOULD place BUY order", str(ENTRY)))],
+     state=cycle, book=book, as_of="c-02")
+book = [order(E.TAG_ENTRY, price=ENTRY, oid="E-1")]        # the order now exists
+
+step("9.3", "waiting, unchanged", "armed · same entry · order resting",
+     [("leaves it alone", lambda: not intended())],
+     state=cycle, book=book, as_of="c-03")
+
+book = []                                                   # filled: order gone
+step("9.4", "filled", f"position {LOT} @ {ENTRY} · no brackets",
+     [("places stop and target",
+       lambda: said("WOULD place STOP-LOSS") and said("WOULD place TARGET"))],
+     position=LOT, avg=ENTRY, state=cycle, book=book, as_of="c-04")
+book = [order(E.TAG_STOP, price=STOP, oid="S-1", status="trigger pending"),
+        order(E.TAG_TARGET, price=TARGET, oid="T-1")]
+
+step("9.5", "holding", "position open · brackets resting",
+     [("nothing further", lambda: not intended())],
+     position=LOT, avg=ENTRY, state=cycle, book=book, as_of="c-05")
+
+step("9.6", "target fills", "flat · target complete · stop orphaned",
+     [("sees the exit", lambda: said("TRADE CLOSED") or said("LOSS") or said("WIN")),
+      ("cancels the orphan", lambda: said("WOULD cancel leftover"))],
+     position=0, state=cycle, armed=False, as_of="c-06",
+     book=[order(E.TAG_STOP, price=STOP, oid="S-1", status="trigger pending"),
+           order(E.TAG_TARGET, price=TARGET, oid="T-1", status="complete")])
+
+if cycle == {}:
+    passed += 1; print("  ✓ PASS    ends clean and ready for the next trade")
+else:
+    failed += 1; print(f"  ✗ FAIL    ends clean (left {cycle})")
+
+step("9.7", "re-arms for the next trade", "armed again · flat · nothing resting",
+     [("places a fresh entry", lambda: said("WOULD place BUY order"))],
+     state=cycle, as_of="c-07")
+
+
+# ══ TIMEOUT EXIT — priced off the MARKET, not off the entry ═════════════════
+print("\n" + "=" * 72)
+print("  TIMEOUT EXIT")
+print("=" * 72)
+
+TO_ENTRY = 24200.0
+CONTRACT = {"instrumentKey": KEY, "lotSize": LOT, "tickSize": 10, "tradingSymbol": "NIFTY FUT"}
+
+def _payload(last_close):
+    return {"contract": {**CONTRACT,
+                         "expiry": int((datetime.now(tz=IST) + timedelta(days=30)).timestamp() * 1000)},
+            "signal": {"entryValid": False, "fibEntry": TO_ENTRY, "stopPrice": 24100.0,
+                       "targetPrice": 24500.0, "asOf": "b0", "lastClose": last_close}}
+
+def timeout_case(label, bid, expect_between, *, attempts=0, working=None,
+                 last_close=None, brackets=True):
+    global passed, failed
+    CALLS.clear()
+    E._notified.clear()          # independent scenario — no announce-once carry-over
+    ux.get_positions = lambda t: [{"instrument_token": KEY, "quantity": LOT, "average_price": TO_ENTRY}]
+    book = [order(E.TAG_STOP, oid="S"), order(E.TAG_TARGET, oid="T")] if brackets else []
+    if working:
+        book.append({"instrument_token": KEY, "tag": E.TAG_EXIT, "order_id": "X",
+                     "status": "open", "price": working})
+    ux.get_order_book = lambda t: book
+    ux.get_quote = lambda t, k: {"depth": {"buy": [{"price": bid}]}, "last_price": bid}
+    st = {"entry_bar": "b0", "bars": E.TIMEOUT_BARS, "last_bar": "b0",
+          "entry_price": TO_ENTRY, "exit_attempts": attempts}
+    E.reconcile("tok", _payload(last_close if last_close is not None else bid), st)
+    print(f"\n  {label}")
+    print(f"    entry {TO_ENTRY} · market bid {bid}")
+    for a in intended():
+        print(f"    -> {a}")
+    px = None
+    for c in intended():
+        if "closing" in c:
+            # The exit message reads "closing 65 at 24113.8 (…)" now, not "@".
+            px = float(c.split(" at ")[-1].split("(")[0].strip())
+    if expect_between is None:
+        # This scenario is expected to place nothing and alert instead.
+        if px is None: passed += 1; print("    ok   places no further order")
+        else:          failed += 1; print(f"    FAIL places no further order (placed at {px})")
+        return st
+    lo, hi = expect_between
+    for lbl, cond in [("prices off the MARKET, not the entry", px is not None and lo <= px <= hi),
+                      ("cancels the stop", (not brackets) or said("cancel", E.TAG_STOP)),
+                      ("cancels the target", (not brackets) or said("cancel", E.TAG_TARGET))]:
+        if cond: passed += 1; print(f"    ok   {lbl}" + (f"  (chose {px})" if "MARKET" in lbl else ""))
+        else:    failed += 1; print(f"    FAIL {lbl}  (chose {px})")
+    return st
+
+timeout_case("CASE 1 - price ABOVE entry (bid 24400 vs entry 24200)",
+             bid=24400.0, expect_between=(24300.0, 24400.0))
+timeout_case("CASE 2 - price BELOW entry (bid 24000 vs entry 24200)",
+             bid=24000.0, expect_between=(23900.0, 24000.0))
+
+print("\n  CASE 3 - an unfilled exit is re-priced more aggressively")
+timeout_case("    retry", bid=24000.0, expect_between=(23880.0, 24000.0),
+             attempts=1, working=23990.0)
+if said("cancel the unfilled exit order"):
+    passed += 1; print("    ok   cancels the stale exit before re-pricing")
+else:
+    failed += 1; print("    FAIL cancels the stale exit before re-pricing")
+
+print("\n  CASE 4 - still unfilled after the retries")
+E._notified.clear()
+timeout_case("    exhausted", bid=24000.0, expect_between=None,
+             attempts=E.TIMEOUT_MAX_ATTEMPTS, working=23990.0)
+for lbl, cond in [("fires a LOUD unfilled alert", said("TIME-LIMIT EXIT DID NOT FILL")),
+                  ("says manual intervention is needed", said("CLOSE THIS BY HAND")),
+                  ("stops firing new exit orders", not said("WOULD TIME LIMIT"))]:
+    if cond: passed += 1; print(f"    ok   {lbl}")
+    else:    failed += 1; print(f"    FAIL {lbl}")
+
+print("\n  CASE 5 - a broken quote is rejected")
+timeout_case("    bid 12000 vs bar close 24200", bid=12000.0,
+             expect_between=(24000.0, 24200.0), last_close=24200.0)
+
+print("\n  CASE 6 - flat only when the EXCHANGE says so")
+CALLS.clear()
+ux.get_positions = lambda t: [{"instrument_token": KEY, "quantity": LOT, "average_price": TO_ENTRY}]
+ux.get_order_book = lambda t: [{"instrument_token": KEY, "tag": E.TAG_EXIT, "order_id": "X",
+                                "status": "open", "price": 24000.0}]
+ux.get_quote = lambda t, k: {"depth": {"buy": [{"price": 24000.0}]}, "last_price": 24000.0}
+st6 = {"entry_bar": "b0", "bars": E.TIMEOUT_BARS, "last_bar": "b0", "entry_price": TO_ENTRY,
+       "exit_attempts": 1}
+snap6 = E.reconcile("tok", _payload(24000.0), st6)
+for lbl, cond in [("still reports the position as held", snap6.get("position_qty") == LOT),
+                  ("keeps its tracking state", bool(st6.get("entry_bar"))),
+                  ("does not announce a close", not said("TRADE CLOSED"))]:
+    if cond: passed += 1; print(f"    ok   {lbl}")
+    else:    failed += 1; print(f"    FAIL {lbl}")
+
+print("\n" + "═" * 72)
+print(f"  {passed} passed, {failed} failed")
+print("═" * 72)
+sys.exit(1 if failed else 0)

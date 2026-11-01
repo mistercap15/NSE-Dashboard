@@ -1,0 +1,43 @@
+# /etc/systemd/system/fib-ib-executor.service
+#
+#   systemctl daemon-reload
+#   systemctl enable --now fib-ib-executor
+#   journalctl -u fib-ib-executor -f
+#
+# A SEPARATE unit from fib-executor. The two bots run the same account through
+# the same token but must fail independently: restarting or crashing one must
+# never touch the other, and neither can see the other's position state.
+
+[Unit]
+Description=Inside-bar breakout executor (Nifty futures)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/root/fib-bot/ib_executor.env
+ExecStart=/usr/bin/python3 /root/fib-bot/ib_executor.py
+WorkingDirectory=/root/fib-bot
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Same hardening as the other two units, including the two exceptions learned the
+# hard way: ProtectHome would mask /root and hide the working directory, and
+# AF_UNIX is required or glibc cannot resolve DNS.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=false
+ReadWritePaths=/root/fib-bot
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target

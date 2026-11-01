@@ -1,0 +1,62 @@
+# /etc/systemd/system/fib-bot-status.service
+#
+#   systemctl daemon-reload
+#   systemctl enable --now fib-bot-status
+#   journalctl -u fib-bot-status -f
+#
+# Read-only bot state for the dashboard and the phone app.
+#
+# WHY A SEPARATE UNIT FROM THE TOKEN RECEIVER. The receiver handles a live
+# broker credential. This serves a monitoring feature. Putting them in one
+# process would mean every change to a convenience risked the thing that keeps
+# the bots authenticated. They stay apart, on different ports, and either can be
+# stopped without touching the other — or the executors.
+#
+# ══ THE IMPORTANT LINE IN THIS FILE ══
+#
+#   ProtectSystem=strict  with NO ReadWritePaths
+#
+# ProtectSystem=strict mounts the entire filesystem read-only, and ReadWritePaths
+# is what carves exceptions back out. The other units list /root/fib-bot there
+# because they must write state. This one lists NOTHING, so the kernel refuses
+# every write this process could attempt, anywhere, whatever the code says.
+#
+# bot_status.py is also written to never write — every open() is mode "r" and a
+# test asserts it. This line is the belt to that pair of braces: a future edit
+# that introduced a write would fail immediately and loudly here, rather than
+# quietly corrupting a state file that a bot trades real money from.
+#
+# DO NOT ADD ReadWritePaths=/root/fib-bot TO THIS UNIT.
+
+[Unit]
+Description=Read-only bot status endpoint (dashboard + mobile)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/root/fib-bot/receiver.env
+Environment=STATUS_PORT=8788
+Environment=BOT_DIR=/root/fib-bot
+ExecStart=/usr/bin/python3 /root/fib-bot/bot_status.py
+WorkingDirectory=/root/fib-bot
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=false
+# Intentionally no ReadWritePaths — see the note above.
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target

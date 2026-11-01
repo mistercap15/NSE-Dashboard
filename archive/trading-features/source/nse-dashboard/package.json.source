@@ -1,0 +1,46 @@
+{
+  "name": "nse-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "refresh-data": "node scripts/export-backtest-data.mjs && node scripts/rebuild-universe-from-export.mjs",
+    "test:levels": "node scripts/test-levels.mjs",
+    "test:conviction": "node scripts/test-conviction.mjs",
+    "test": "npm run test:levels && npm run test:conviction && npm run test:qualify && npm run test:fib && npm run test:upstox && npm run test:inside-bar && npm run test:seasonality && npm run test:market-regime && npm run test:dns",
+    "test:qualify": "node scripts/test-qualify.mjs",
+    "test:fib": "node scripts/test-fib.mjs",
+    "test:dns": "node scripts/test-dns-fallback.mjs",
+    "test:upstox": "node scripts/test-upstox.mjs",
+    "test:inside-bar": "node scripts/test-inside-bar.mjs",
+    "test:seasonality": "node scripts/test-seasonality.mjs",
+    "test:market-regime": "node scripts/test-market-regime.mjs",
+    "build-promoter": "node scripts/build-promoter.mjs",
+    "test:gap-paper": "python3 -m unittest discover -s research/gap_paper -t . -v",
+    "test:gap-paper-ui": "node research/gap_paper/test_dashboard.mjs"
+  },
+  "dependencies": {
+    "@react-pdf/renderer": "^4.5.1",
+    "clsx": "^2.1.1",
+    "fast-xml-parser": "^5.11.2",
+    "jose": "^5.10.0",
+    "lucide-react": "^0.400.0",
+    "next": "14.2.5",
+    "next-themes": "^0.4.6",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "recharts": "^2.12.7",
+    "resend": "^6.12.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/react": "^18",
+    "@types/react-dom": "^18",
+    "autoprefixer": "^10",
+    "postcss": "^8",
+    "tailwindcss": "^3.4.4",
+    "typescript": "^5"
+  }
+}

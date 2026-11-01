@@ -1,0 +1,58 @@
+# /etc/systemd/system/fib-5m-executor.service
+#
+#   systemctl daemon-reload
+#   systemctl enable --now fib-5m-executor
+#   journalctl -u fib-5m-executor -f
+#
+# The 5-minute gap-fill bot. Entirely separate unit, process, env file, state
+# file and Telegram prefix from fib-executor — starting, stopping or crashing
+# this one cannot touch the hourly bot. The only thing shared is the Upstox
+# account, which is exactly why coordination.py exists.
+#
+# IT READS /root/fib-bot/executor_state.json (the hourly bot's state) AND NEVER
+# WRITES IT. ReadWritePaths below grants the whole directory because this bot
+# needs to write its own state and switch files there; the read-only discipline
+# is in the code, not the unit. If that ever needs enforcing at the OS level,
+# the answer is to move the two bots' state into separate directories — not to
+# tighten this file, which would also stop it writing its own.
+#
+# Idles outside 09:15-15:30 IST Mon-Fri rather than being started on a timer,
+# same as the hourly: a bot that is always up can answer /status at any hour.
+
+[Unit]
+Description=Fib 5-minute gap-fill executor (Nifty futures)
+After=network-online.target
+Wants=network-online.target
+
+# Deliberately NOT After=fib-executor.service. The two are independent; making
+# this one order after the hourly would imply a coupling that does not exist and
+# would drag this unit into the hourly's restart cycle.
+
+[Service]
+Type=simple
+EnvironmentFile=/root/fib-bot/executor_5m.env
+ExecStart=/usr/bin/python3 /root/fib-bot/executor_5m.py
+WorkingDirectory=/root/fib-bot
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Same hardening as fib-executor, including the same two exceptions: ProtectHome
+# would mask /root so the service could not reach its own working directory, and
+# AF_UNIX is required or glibc cannot resolve DNS.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=false
+ReadWritePaths=/root/fib-bot
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target

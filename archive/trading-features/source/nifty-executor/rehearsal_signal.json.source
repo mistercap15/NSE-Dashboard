@@ -1,0 +1,16 @@
+{
+ "asOf": "2026-09-07T08:40:00.000Z",
+ "swingHigh": 24414,
+ "swingLow": 24092,
+ "range": 322,
+ "lastClose": 24316,
+ "fibEntry": 24215,
+ "stopPrice": 24176.58,
+ "targetPrice": 24414,
+ "atr": 19.21,
+ "stopDistancePts": 38.43,
+ "targetDistancePts": 199,
+ "rewardRiskRatio": 5.18,
+ "entryValid": true,
+ "reason": "Pullback in uptrend: close 24316 holds above the 50% level 24253. Rest a buy at 24215, stop 24176.58, target 24414."
+}

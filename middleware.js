@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { verifySession, sessionToken } from "@/app/lib/auth";
+import { isRetiredTradingPath } from "@/app/lib/retiredTrading.mjs";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Route gate. ONE question is asked here: does this request carry a valid PIN
@@ -45,6 +46,13 @@ const PUBLIC_PATHS = new Set([
 
 export async function middleware(request) {
   const { pathname, search } = request.nextUrl;
+
+  // These features are archived; reject before any worker bypass or network call.
+  if (isRetiredTradingPath(pathname)) {
+    return pathname.startsWith("/api/")
+      ? NextResponse.json({ error: "Feature retired", code: "FEATURE_RETIRED" }, { status: 410 })
+      : NextResponse.redirect(new URL("/", request.url));
+  }
 
   // Dedicated read-only worker credential cannot authorize other routes or mutations.
   if(pathname==='/api/protection'&&request.method==='GET'&&process.env.HEDGE_WORKER_SECRET?.length>=32){

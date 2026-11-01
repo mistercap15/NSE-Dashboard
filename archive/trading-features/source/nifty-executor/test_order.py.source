@@ -1,0 +1,208 @@
+#!/usr/bin/env python3
+"""
+Proves order placement and cancellation work from this droplet, WITHOUT taking a
+position. Run: python3 test_order.py
+
+  1. confirms the synced token belongs to the trading account — aborts if not
+  2. resolves the front-month Nifty future
+  3. places ONE limit buy far below market, so it rests and cannot fill
+  4. reads it back (expect 'open')
+  5. cancels it, and confirms the cancellation
+
+This is the first and only deliberate real-money touch before the executor, so
+it asks for typed confirmation and shows exactly what it will send first.
+
+It refuses to run outside market hours by default. An order placed when NSE is
+shut becomes an after-market order that queues for the next session — it would
+sit over a weekend and could open at Monday's open, which is the opposite of a
+test that takes no position. Use --force only if you know why you want that.
+"""
+
+import argparse
+import logging
+import os
+import sys
+from datetime import datetime, timedelta, timezone
+
+import instruments
+import upstox_orders as ux
+
+IST = timezone(timedelta(hours=5, minutes=30))
+
+# Far enough below spot that no plausible move reaches it, close enough to stay
+# inside NSE's daily price band (index futures run ±10%, so 5% is comfortably in).
+#
+# The two failure modes are not symmetric, which is why the default is generous.
+# A price the exchange rejects costs nothing — the script prints the error and
+# nothing was placed. A price that FILLS leaves a real position, unhedged and
+# unattended, from a run that was only ever meant to prove the plumbing.
+DEFAULT_DISTANCE_PCT = 5.0
+
+# Below this, a normal intraday move can reach the order. Nifty covers 100-200
+# points in a session without anything unusual happening, which at ~24,000 is
+# roughly 0.5-0.8%.
+RISKY_DISTANCE_PCT = 2.0
+
+LOTS = 1
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+
+def expected_account() -> str:
+    """From the environment, falling back to the receiver's config so the test
+    and the receiver can never disagree about whose account this is."""
+    acct = os.environ.get("BOT_ACCOUNT_ID", "").strip()
+    if acct:
+        return acct
+    try:
+        with open("/root/fib-bot/receiver.env") as fh:
+            for line in fh:
+                if line.startswith("BOT_ACCOUNT_ID="):
+                    return line.split("=", 1)[1].strip()
+    except OSError:
+        pass
+    return ""
+
+
+def market_is_open(now=None) -> bool:
+    now = now or datetime.now(tz=IST)
+    if now.weekday() >= 5:                       # Sat/Sun
+        return False
+    minutes = now.hour * 60 + now.minute
+    return 9 * 60 + 15 <= minutes <= 15 * 60 + 30
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--force", action="store_true",
+                    help="place even outside market hours (becomes an after-market order)")
+    ap.add_argument("--distance", type=float, default=DEFAULT_DISTANCE_PCT,
+                    help=f"%% below the last price to rest the order (default {DEFAULT_DISTANCE_PCT})")
+    args = ap.parse_args()
+    distance = args.distance
+
+    # ── Token ────────────────────────────────────────────────────────────────
+    try:
+        token = ux.load_token()
+    except ux.TokenUnavailable as exc:
+        print(f"✗ {exc}")
+        return 1
+    print("✓ token loaded")
+
+    # ── Whose account? Abort rather than assume ─────────────────────────────
+    want = expected_account()
+    if not want:
+        print("✗ BOT_ACCOUNT_ID is not set and receiver.env has none — refusing to trade blind.")
+        return 1
+    try:
+        profile = ux.get_profile(token)
+    except ux.UpstoxError as exc:
+        print(f"✗ Could not read the profile: {exc}")
+        return 1
+    account = profile.get("user_id")
+    if account != want:
+        print(f"✗ This token is for account {account}, expected {want}. Aborting — nothing sent.")
+        return 1
+    print(f"✓ account {account} ({profile.get('user_name', '?')})")
+
+    # ── Market hours ────────────────────────────────────────────────────────
+    if not market_is_open():
+        now = datetime.now(tz=IST).strftime("%a %H:%M IST")
+        if not args.force:
+            print(f"\n✗ NSE is closed ({now}). An order now would queue as an after-market")
+            print("  order and could open a position at the next session's open.")
+            print("  Run during 09:15–15:30 IST Mon–Fri, or pass --force if that is what you want.")
+            return 1
+        print(f"⚠ NSE is closed ({now}) and --force was given: this will be an AFTER-MARKET order.")
+
+    # ── Contract ────────────────────────────────────────────────────────────
+    contract = instruments.current_contract(instruments.fetch_master())
+    if not contract:
+        print("✗ No live Nifty futures contract found.")
+        return 1
+    key = contract["instrument_key"]
+    lot = int(contract["lot_size"])
+    qty = LOTS * lot
+    print(f"✓ contract {contract['trading_symbol']} ({key}), lot {lot}, expiry {instruments.expiry_ist(contract)}")
+
+    # ── Price it well away from the market ──────────────────────────────────
+    quote = ux.get_quote(token, key)
+    ltp = quote.get("last_price")
+    if not ltp:
+        print(f"✗ No last price for {key} — cannot price the order safely.")
+        return 1
+    limit = ux.round_to_tick(ltp * (1 - distance / 100), contract.get("tick_size") or 5)
+    print(f"✓ last price {ltp}, placing {distance}% below at {limit}")
+
+    # ── Confirm, in words, before anything real happens ─────────────────────
+    print("\n" + "─" * 62)
+    print("  ABOUT TO PLACE A REAL ORDER")
+    print(f"    {contract['trading_symbol']}   BUY LIMIT")
+    print(f"    quantity   {qty}  ({LOTS} lot × {lot})")
+    print(f"    price      {limit}   ({distance}% below the last price of {ltp}, {round(ltp - limit)} pts)")
+    print(f"    product    D (carry-forward)")
+    print(f"    account    {account}")
+    print("  It should REST unfilled and will be cancelled immediately after.")
+    print("─" * 62)
+
+    # A distance a normal session can cover is a different decision from the one
+    # this script was written to make, so it asks a different question.
+    if distance < RISKY_DISTANCE_PCT:
+        notional = round(limit * qty)
+        print()
+        print("  !! WARNING — THIS ORDER MAY ACTUALLY FILL !!")
+        print(f"     {round(ltp - limit)} points below spot. Nifty covers that in a normal session.")
+        print(f"     If it fills you hold {LOTS} lot, about Rs {notional:,} notional, with NO stop.")
+        print(f"     {DEFAULT_DISTANCE_PCT}% (the default) cannot fill; a rejection there costs nothing.")
+        print()
+        if input('  Type I ACCEPT FILL RISK to continue: ').strip() != "I ACCEPT FILL RISK":
+            print("Aborted — nothing sent.")
+            return 1
+
+    if input('  Type PLACE to continue: ').strip() != "PLACE":
+        print("Aborted — nothing sent.")
+        return 1
+
+    # ── Place ───────────────────────────────────────────────────────────────
+    try:
+        order_id = ux.place_limit_buy(token, key, qty, limit, tag="fibtest")
+    except ux.UpstoxError as exc:
+        print(f"\n✗ Order rejected: {exc}  (code={exc.code}, http={exc.status})")
+        return 1
+    print(f"\n✓ order placed: {order_id}")
+
+    # ── Read it back ────────────────────────────────────────────────────────
+    try:
+        status = ux.get_order_status(token, order_id)
+        print(f"  status: {status.get('status')}   price: {status.get('price')}   qty: {status.get('quantity')}")
+        if status.get("status") == "complete":
+            print("  ⚠ IT FILLED. You hold a position — this should not happen at 5% away.")
+            print("    Square it off manually in the Upstox app before doing anything else.")
+            return 1
+    except ux.UpstoxError as exc:
+        print(f"  (could not read status: {exc}) — cancelling anyway")
+
+    # ── Cancel, always ──────────────────────────────────────────────────────
+    try:
+        ux.cancel_order(token, order_id)
+        print(f"✓ cancel requested for {order_id}")
+    except ux.UpstoxError as exc:
+        print(f"\n✗ CANCEL FAILED: {exc}")
+        print(f"  Cancel order {order_id} manually in the Upstox app NOW.")
+        return 1
+
+    try:
+        final = ux.get_order_status(token, order_id).get("status")
+        print(f"✓ final status: {final}")
+        if final not in ("cancelled", "cancel pending"):
+            print(f"  ⚠ expected 'cancelled' — check the Upstox app.")
+            return 1
+    except ux.UpstoxError as exc:
+        print(f"  (could not confirm: {exc}) — verify in the Upstox app")
+
+    print("\n✓ Placement and cancellation both work from this droplet. No position taken.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

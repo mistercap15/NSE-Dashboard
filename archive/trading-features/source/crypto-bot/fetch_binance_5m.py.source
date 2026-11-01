@@ -1,0 +1,501 @@
+#!/usr/bin/env python3
+"""Download 5-MINUTE Binance USDT-M PERPETUAL futures candles for backtesting.
+
+    python3 fetch_binance_5m.py                 # 2020-01-01 → now, resumable
+    python3 fetch_binance_5m.py --start 2022-01-01
+    python3 fetch_binance_5m.py --symbol eth    # one coin only
+    python3 fetch_binance_5m.py --verify-only   # re-run the checks on existing CSVs
+    python3 fetch_binance_5m.py --restart       # throw away the checkpoint
+
+Outputs, next to this script:
+    eth_5m.csv   btc_5m.csv    time,open,high,low,close,volume
+    time is "YYYY-MM-DD HH:MM:SS" UTC, ascending, no duplicate timestamps.
+
+Roughly 700,000 rows and ~45 MB per coin for the full range. That is expected.
+
+DERIVATIVES, NOT SPOT. Exchange id `binanceusdm`; the ":USDT" suffix on
+"ETH/USDT:USDT" means a linear swap settled in USDT. Verified live rather than
+assumed — both resolve to type=swap, linear=True, contract=True, ids
+ETHUSDT/BTCUSDT.
+
+═══ THE PART THAT HAD TO BE ROBUST: PAGING AND RESUMING ═══
+
+Five and a half years of 5-minute candles is ~700k bars, and ccxt returns at
+most 1000 per call — PROBED, not assumed: asking for 1500 or 2000 still returns
+1000, so a script written around a 1500 cap would silently under-page and leave
+holes. That is ~700 calls per coin, ~25 minutes of wall time, and any one of
+them can fail. Losing all of it to a timeout at call 650 is not acceptable, so:
+
+  • Candles are APPENDED to <out>.partial.csv the moment a page lands, then
+    flushed and fsynced. A kill at any point costs at most the page in flight.
+  • Resuming reads the last timestamp out of that file and carries on from the
+    next bar. No re-fetching of what is already down.
+  • Because paging runs FORWARD and each page is filtered to rows strictly
+    after the last one written, the partial file is ascending and duplicate-free
+    by construction — so finishing is a copy, not a sort of 700k rows in memory.
+
+Rate limiting is ccxt's own advertised gap (50 ms for this exchange) plus
+exponential backoff on 429/418, which is what Binance answers with when it wants
+you to slow down. A 418 means you already ignored a 429, so it is treated as
+serious and waited out for longer.
+
+FUNDING IS NOT REFETCHED. eth_funding.csv and btc_funding.csv already exist from
+the earlier run. This checks their coverage and fills only the missing tail; if
+they already reach the present, it does nothing at all.
+"""
+
+import argparse
+import csv
+import os
+import sys
+import time
+from datetime import datetime, timedelta, timezone
+
+try:
+    import ccxt
+except ImportError:
+    sys.exit("ccxt is not installed.  Run:  pip install ccxt")
+
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+SYMBOLS = {                       # ccxt symbol → output prefix
+    "ETH/USDT:USDT": "eth",
+    "BTC/USDT:USDT": "btc",
+}
+
+TIMEFRAME = "5m"
+TF_MS = 5 * 60 * 1000
+
+# PROBED against the live exchange on 2026-09-07: asking 1000, 1500 and 2000 all
+# return exactly 1000 rows. Writing 1500 here would make the "did we get a short
+# page" check below misfire on every single call.
+PAGE = 1000
+
+DEFAULT_START = "2020-01-01"
+MAX_RETRIES = 6
+
+FUNDING_INTERVAL_MS = 8 * 3600 * 1000     # Binance funds every 8h
+FUNDING_PAGE = 1000
+
+
+# ── time helpers ─────────────────────────────────────────────────────────────
+
+def ms_to_str(ms):
+    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def str_to_ms(s):
+    return int(datetime.strptime(s, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp() * 1000)
+
+
+def full_str_to_ms(s):
+    return int(datetime.strptime(s, "%Y-%m-%d %H:%M:%S")
+               .replace(tzinfo=timezone.utc).timestamp() * 1000)
+
+
+def human(ms):
+    m, _ = divmod(int(ms / 1000), 60)
+    h, m = divmod(m, 60)
+    d, h = divmod(h, 24)
+    return f"{d}d {h}h" if d else (f"{h}h {m}m" if h else f"{m}m")
+
+
+# ── the network layer ────────────────────────────────────────────────────────
+
+def call_with_retry(fn, what):
+    """Exponential backoff on the failures that are worth retrying.
+
+    Binance answers a rate-limit breach with 429, and 418 when you ignored the
+    429 — so 418 is treated as the more serious of the two and waited out for
+    considerably longer. A bad symbol or a malformed request is NOT retried;
+    hammering the exchange with a request it has already refused on its merits
+    is how an IP ban starts.
+    """
+    delay = 2.0
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            return fn()
+        except ccxt.BadSymbol:
+            raise
+        except ccxt.DDoSProtection as exc:
+            wait = delay * 6                       # 418: back a long way off
+            print(f"    rate limited hard ({str(exc)[:60]}) — sleeping {wait:.0f}s", flush=True)
+            time.sleep(wait)
+        except ccxt.RateLimitExceeded as exc:
+            wait = delay * 3
+            print(f"    rate limited ({str(exc)[:60]}) — sleeping {wait:.0f}s", flush=True)
+            time.sleep(wait)
+        except (ccxt.NetworkError, ccxt.ExchangeNotAvailable, ccxt.RequestTimeout) as exc:
+            print(f"    {what}: {type(exc).__name__} {str(exc)[:70]} — retry in {delay:.0f}s",
+                  flush=True)
+            time.sleep(delay)
+        except ccxt.ExchangeError as exc:
+            raise SystemExit(f"\n!!! {what} failed with an exchange error that will not "
+                             f"fix itself:\n    {exc}")
+        delay = min(delay * 2, 120)
+    raise SystemExit(f"\n!!! {what} failed {MAX_RETRIES} times. Stopping rather than "
+                     f"leaving a hole in the data.")
+
+
+# ── the checkpoint ───────────────────────────────────────────────────────────
+
+def partial_path(prefix):
+    return os.path.join(HERE, f"{prefix}_{TIMEFRAME}.partial.csv")
+
+
+def out_path(prefix):
+    return os.path.join(HERE, f"{prefix}_{TIMEFRAME}.csv")
+
+
+def resume_point(path):
+    """(last timestamp in ms, rows already written), or (None, 0).
+
+    Reads the last line rather than the whole file — the point of resuming is
+    not to touch 700k rows again. The row count comes from a cheap line count,
+    which is only used for reporting.
+    """
+    if not os.path.exists(path):
+        return None, 0
+    rows = 0
+    last = None
+    with open(path, "r") as fh:
+        for line in fh:
+            if line.strip():
+                rows += 1
+                last = line
+    if not last:
+        return None, 0
+    try:
+        return full_str_to_ms(last.split(",", 1)[0]), rows
+    except ValueError:
+        # A torn final line from a hard kill. Drop it and resume from the one
+        # before, rather than resuming from a timestamp that never existed.
+        print("    (last checkpoint line was torn — rewinding one row)")
+        with open(path, "r") as fh:
+            good = [l for l in fh if l.strip()][:-1]
+        with open(path, "w") as fh:
+            fh.writelines(good)
+        return (full_str_to_ms(good[-1].split(",", 1)[0]), len(good)) if good else (None, 0)
+
+
+# ── the fetch ────────────────────────────────────────────────────────────────
+
+def fetch_symbol(ex, symbol, prefix, start_ms, end_ms, restart=False):
+    part = partial_path(prefix)
+    if restart and os.path.exists(part):
+        os.remove(part)
+
+    last_ts, have = resume_point(part)
+    if last_ts is not None:
+        since = last_ts + TF_MS
+        print(f"  resuming {prefix}: {have:,} rows already down, "
+              f"continuing from {ms_to_str(since)}")
+    else:
+        since = start_ms
+        print(f"  starting {prefix} at {ms_to_str(since)}")
+
+    if since >= end_ms:
+        print(f"  {prefix}: already complete")
+        return have, last_ts
+
+    sleep_s = max(ex.rateLimit / 1000.0, 0.05)
+    calls = 0
+    empty_streak = 0
+    t0 = time.time()
+    fh = open(part, "a", newline="")
+    writer = csv.writer(fh)
+
+    try:
+        while since < end_ms:
+            batch = call_with_retry(
+                lambda: ex.fetch_ohlcv(symbol, TIMEFRAME, since=since, limit=PAGE),
+                f"fetch_ohlcv {symbol} @ {ms_to_str(since)}",
+            )
+            calls += 1
+
+            # Strictly after what we already hold. Pages overlap at the edges and
+            # the exchange occasionally repeats the boundary candle; filtering
+            # here is what makes the file duplicate-free by construction.
+            fresh = [c for c in batch if c[0] > (last_ts if last_ts is not None else -1)
+                     and c[0] < end_ms]
+
+            if not fresh:
+                # No new rows. Either a genuine hole in the exchange's history or
+                # we have caught up. Step over one page and see; give up after a
+                # few so a dead range cannot spin forever.
+                empty_streak += 1
+                if empty_streak >= 5:
+                    print(f"    5 empty pages from {ms_to_str(since)} — assuming the end "
+                          f"of available history")
+                    break
+                since += PAGE * TF_MS
+                time.sleep(sleep_s)
+                continue
+            empty_streak = 0
+
+            for ts_, o, h, l, c_, v in fresh:
+                writer.writerow([ms_to_str(ts_), o, h, l, c_, v])
+            fh.flush()
+            os.fsync(fh.fileno())
+
+            have += len(fresh)
+            last_ts = fresh[-1][0]
+            since = last_ts + TF_MS
+
+            if calls % 25 == 0 or len(batch) < PAGE:
+                done = max(0, min(1.0, (last_ts - start_ms) / max(1, end_ms - start_ms)))
+                rate = have / max(0.001, time.time() - t0)
+                eta = (end_ms - last_ts) / TF_MS / max(1e-9, rate)
+                print(f"    {ms_to_str(last_ts)}  {have:>7,} rows  {done*100:5.1f}%  "
+                      f"{rate:,.0f}/s  eta {human(eta * 1000)}", flush=True)
+
+            time.sleep(sleep_s)
+    finally:
+        fh.close()
+
+    print(f"  {prefix}: {calls} calls, {have:,} rows, "
+          f"{time.time() - t0:.0f}s")
+    return have, last_ts
+
+
+def finalise(prefix):
+    """Copy the checkpoint to the real file with a header.
+
+    A copy, not a sort: paging runs forward and every page is filtered to rows
+    strictly after the last one written, so the checkpoint is already ascending
+    and duplicate-free. Sorting 700k rows in memory to prove something already
+    guaranteed by construction would be slower and no safer — and the integrity
+    report re-checks both properties independently anyway.
+    """
+    part, out = partial_path(prefix), out_path(prefix)
+    if not os.path.exists(part):
+        return 0
+    n = 0
+    with open(part, "r") as src, open(out, "w", newline="") as dst:
+        dst.write("time,open,high,low,close,volume\n")
+        for line in src:
+            if line.strip():
+                dst.write(line)
+                n += 1
+    return n
+
+
+# ── funding: only the gap ────────────────────────────────────────────────────
+
+def funding_gap(ex, symbol, prefix, end_ms):
+    """Top up <prefix>_funding.csv, and only if it is actually behind."""
+    path = os.path.join(HERE, f"{prefix}_funding.csv")
+    if not os.path.exists(path):
+        print(f"  {prefix}_funding.csv does not exist — this script does not create it "
+              f"from scratch; run fetch_binance_data.py for that.")
+        return
+    with open(path, "r") as fh:
+        rows = [l for l in fh if l.strip()]
+    header, body = rows[0], rows[1:]
+    if not body:
+        print(f"  {prefix}_funding.csv is empty — leaving it alone.")
+        return
+
+    last = full_str_to_ms(body[-1].split(",", 1)[0])
+    behind = end_ms - last
+    print(f"  {prefix}_funding.csv: {len(body):,} rows, last {ms_to_str(last)} "
+          f"({human(behind)} behind)")
+    if behind < FUNDING_INTERVAL_MS:
+        print("    up to date — not refetching")
+        return
+
+    since = last + 1
+    added = []
+    while since < end_ms:
+        batch = call_with_retry(
+            lambda: ex.fetch_funding_rate_history(symbol, since=since, limit=FUNDING_PAGE),
+            f"funding {symbol} @ {ms_to_str(since)}",
+        )
+        fresh = [f for f in batch if f["timestamp"] > last and f["timestamp"] < end_ms]
+        if not fresh:
+            break
+        added.extend(fresh)
+        last = fresh[-1]["timestamp"]
+        since = last + 1
+        time.sleep(max(ex.rateLimit / 1000.0, 0.05))
+
+    if not added:
+        print("    nothing new returned")
+        return
+    with open(path, "a", newline="") as fh:
+        w = csv.writer(fh)
+        for f in added:
+            w.writerow([ms_to_str(f["timestamp"]), f["fundingRate"]])
+    print(f"    appended {len(added)} rows, now to {ms_to_str(added[-1]['timestamp'])}")
+
+
+# ── integrity ────────────────────────────────────────────────────────────────
+
+def verify(prefix):
+    """Stream the file and report. Never loads 700k rows into memory at once."""
+    path = out_path(prefix)
+    line = "─" * 78
+    print("\n" + line + f"\nINTEGRITY — {os.path.basename(path)}\n" + line)
+    if not os.path.exists(path):
+        print("!!! FILE DOES NOT EXIST")
+        return False
+
+    n = 0
+    first = last = None
+    prev_ts = None
+    dupes = 0
+    backwards = 0
+    bad = []
+    gaps = []
+    lo = hi = None
+    zero_vol = 0
+
+    with open(path, "r") as fh:
+        rd = csv.reader(fh)
+        head = next(rd, None)
+        if head != ["time", "open", "high", "low", "close", "volume"]:
+            print(f"!!! UNEXPECTED HEADER: {head}")
+        for row in rd:
+            if len(row) != 6:
+                continue
+            try:
+                ts = full_str_to_ms(row[0])
+                o, h, l, c, v = (float(x) for x in row[1:])
+            except ValueError:
+                bad.append((row[0], "unparseable"))
+                continue
+            n += 1
+            if first is None:
+                first = ts
+            if prev_ts is not None:
+                if ts == prev_ts:
+                    dupes += 1
+                elif ts < prev_ts:
+                    backwards += 1
+                else:
+                    missing = (ts - prev_ts) // TF_MS - 1
+                    if missing > 0:
+                        gaps.append((prev_ts, ts, int(missing)))
+            prev_ts = last = ts
+
+            why = []
+            if h < l:
+                why.append("high<low")
+            if h < o or h < c:
+                why.append("high<open/close")
+            if l > o or l > c:
+                why.append("low>open/close")
+            if why:
+                bad.append((row[0], ",".join(why)))
+            lo = l if lo is None else min(lo, l)
+            hi = h if hi is None else max(hi, h)
+            if v == 0:
+                zero_vol += 1
+
+    if not n:
+        print("!!! NO ROWS")
+        return False
+
+    span = (last - first) // TF_MS + 1
+    print(f"\nRows              : {n:,}")
+    print(f"First             : {ms_to_str(first)} UTC")
+    print(f"Last              : {ms_to_str(last)} UTC")
+    print(f"Expected (no gaps): {span:,}   → missing {span - n:,} "
+          f"({(span - n) / span * 100:.3f}%)")
+    print(f"Duplicate stamps  : {dupes}" + ("   <-- !!!" if dupes else ""))
+    print(f"Out-of-order rows : {backwards}" + ("   <-- !!!" if backwards else ""))
+    print(f"Price min / max   : {lo:,.2f} / {hi:,.2f}")
+    print(f"Zero-volume bars  : {zero_vol:,}"
+          + ("   (thin 5-min prints; normal in small numbers)" if zero_vol else ""))
+
+    print(f"\nBad candles       : {len(bad)}")
+    if bad:
+        print("    !!! STRUCTURALLY IMPOSSIBLE — DO NOT BACKTEST ON THESE")
+        for t, why in bad[:20]:
+            print(f"    !!! {t}  [{why}]")
+        if len(bad) > 20:
+            print(f"    !!! … and {len(bad) - 20} more")
+
+    print(f"\nGaps              : {len(gaps)}")
+    if gaps:
+        gaps.sort(key=lambda g: -g[2])
+        print("  largest, by missing candles:")
+        for a, b, miss in gaps[:15]:
+            print(f"    {ms_to_str(a)} → {ms_to_str(b)}   {miss:,} candles "
+                  f"({human(miss * TF_MS)})")
+        big = [g for g in gaps if g[2] >= 12]        # an hour or more
+        print(f"  gaps of an hour or more : {len(big)}")
+        print("  NOTE: Binance futures do halt — maintenance windows and delistings "
+              "leave\n        real holes. A handful of short gaps is normal; a long one "
+              "means that\n        stretch cannot be backtested, not that the fetch failed.")
+
+    serious = bool(bad or dupes or backwards)
+    print("\n" + line)
+    print("VERDICT: !!! PROBLEMS FOUND — read the !!! lines above."
+          if serious else
+          "VERDICT: no bad candles, no duplicates, ordering is strict.\n"
+          "         Gaps above are the exchange's own, and are listed so you can\n"
+          "         decide whether they matter to the strategy.")
+    print(line)
+    return not serious
+
+
+# ── main ─────────────────────────────────────────────────────────────────────
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--start", default=DEFAULT_START, help="YYYY-MM-DD (default 2020-01-01)")
+    ap.add_argument("--end", default=None, help="YYYY-MM-DD (default now)")
+    ap.add_argument("--symbol", choices=["eth", "btc"], help="just one coin")
+    ap.add_argument("--restart", action="store_true", help="discard checkpoints")
+    ap.add_argument("--verify-only", action="store_true", help="re-check existing CSVs")
+    ap.add_argument("--skip-funding", action="store_true")
+    args = ap.parse_args()
+
+    wanted = {s: p for s, p in SYMBOLS.items() if not args.symbol or p == args.symbol}
+
+    if args.verify_only:
+        ok = all(verify(p) for p in wanted.values())
+        sys.exit(0 if ok else 1)
+
+    start_ms = str_to_ms(args.start)
+    end_ms = (str_to_ms(args.end) if args.end
+              else int(datetime.now(tz=timezone.utc).timestamp() * 1000))
+    # Never ask for the bar still forming — its close is not final.
+    end_ms = (end_ms // TF_MS) * TF_MS
+
+    ex = ccxt.binanceusdm({"enableRateLimit": True})
+    ex.load_markets()
+
+    print("═" * 78)
+    print("  Binance USDT-M PERPETUAL futures · 5-minute candles")
+    print(f"  range   {ms_to_str(start_ms)} → {ms_to_str(end_ms)} UTC")
+    print(f"  symbols {', '.join(wanted)}")
+    est = (end_ms - start_ms) // TF_MS
+    print(f"  ~{est:,} candles per coin, ~{est // PAGE + 1} calls each")
+    print("═" * 78)
+
+    for symbol, prefix in wanted.items():
+        m = ex.market(symbol)
+        if not (m.get("swap") and m.get("linear")):
+            sys.exit(f"!!! {symbol} is not a linear swap — refusing to fetch spot data.")
+        print(f"\n▶ {symbol}  (id {m['id']}, {m['type']}, linear)")
+        fetch_symbol(ex, symbol, prefix, start_ms, end_ms, restart=args.restart)
+        n = finalise(prefix)
+        print(f"  wrote {n:,} rows → {out_path(prefix)}")
+
+    if not args.skip_funding:
+        print("\n▶ funding — checking coverage, filling only what is missing")
+        for symbol, prefix in wanted.items():
+            funding_gap(ex, symbol, prefix, end_ms)
+
+    ok = all(verify(p) for p in wanted.values())
+    print("\nCheckpoints kept at *_5m.partial.csv — delete them, or pass --restart, "
+          "to force a clean refetch.")
+    sys.exit(0 if ok else 1)
+
+
+if __name__ == "__main__":
+    main()

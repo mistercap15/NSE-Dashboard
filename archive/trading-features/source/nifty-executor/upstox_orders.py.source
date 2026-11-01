@@ -1,0 +1,425 @@
+#!/usr/bin/env python3
+"""
+Upstox order placement for the Fib bot. Runs on the droplet, whose IP is
+registered with Upstox — order endpoints are refused from anywhere else.
+
+EVERY FUNCTION HERE MOVES REAL MONEY except the read-only ones. Nothing in this
+module decides *whether* to trade; it only does what it is told, so the strategy
+stays in one place (the executor) and this stays boring and auditable.
+
+THREE THINGS THAT ARE NOT OBVIOUS, all verified rather than assumed:
+
+  1. Two different hosts. Order writes go to api-hft.upstox.com/v3; reads
+     (positions, order status, quotes, profile) go to api.upstox.com/v2. Sending
+     a write to the wrong host fails in a way that looks like an auth problem.
+
+  2. MARKET orders are banned over the API. Upstox removed them, so every exit —
+     including a panic exit — has to be a LIMIT priced through the touch, or an
+     SL-M which converts to market only once its trigger fires. There is
+     deliberately no place_market() here.
+
+  3. Upstox sits behind Cloudflare, which blocks Python's default User-Agent
+     with error 1010 before the request reaches Upstox at all. Every call needs
+     an explicit UA. This cost an afternoon on the token receiver; it would cost
+     a great deal more discovered mid-order.
+
+NO reduce_only. Upstox's v3 place-order has no such field — checked against the
+documented parameter list. A protective stop is simply an opposite-side SL-M for
+the position's quantity, which means an SL-M left resting after a position closes
+some other way can OPEN a new position in the opposite direction. The executor
+must cancel the sibling order on every exit; that is not optional bookkeeping.
+"""
+
+import json
+import logging
+import os
+import socket
+import ssl
+import urllib.error
+import urllib.parse
+import urllib.request
+from datetime import datetime, timezone
+
+# ── Endpoints ────────────────────────────────────────────────────────────────
+API_V2 = "https://api.upstox.com/v2"        # reads
+API_HFT_V3 = "https://api-hft.upstox.com/v3"  # order writes
+
+TOKEN_PATH = os.environ.get("TOKEN_PATH", "/root/fib-bot/.upstox_token")
+USER_AGENT = "nifty-executor/1.0"           # see note 3 above — do not remove
+TIMEOUT = 15
+
+log = logging.getLogger("upstox-orders")
+_ssl = ssl.create_default_context()
+
+
+# ── Force IPv4 to Upstox ─────────────────────────────────────────────────────
+# The droplet has both an IPv4 and an IPv6 address, and Python prefers IPv6 when
+# both resolve. Upstox's order endpoints check the origin against the ONE static
+# IP registered on the account — an IPv4 — so an order sent over IPv6 is refused:
+#
+#   403 UDAPI1154: The configured static IP (139.59.33.81) does not match the
+#                  request origin IP (2400:6180:...)
+#
+# Nothing about the token or the payload is wrong when this happens, which is
+# what makes it so confusing: reads to api.upstox.com are not IP-restricted and
+# keep working over IPv6, so everything looks healthy right up until an order.
+#
+# Scoped to Upstox hostnames rather than patched globally: Tailscale and Telegram
+# have no such restriction, and quietly changing how the whole process reaches
+# the network to fix one API would be a much bigger change than it appears.
+# Falls through to the original result if no IPv4 address exists, so a v6-only
+# host would still work rather than failing to resolve at all.
+_real_getaddrinfo = socket.getaddrinfo
+
+
+def _getaddrinfo_ipv4_for_upstox(host, *args, **kwargs):
+    results = _real_getaddrinfo(host, *args, **kwargs)
+    if isinstance(host, str) and "upstox.com" in host:
+        ipv4 = [r for r in results if r[0] == socket.AF_INET]
+        if ipv4:
+            return ipv4
+    return results
+
+
+socket.getaddrinfo = _getaddrinfo_ipv4_for_upstox
+
+
+class UpstoxError(Exception):
+    """An Upstox-side failure, with the bits needed to decide what to do next."""
+
+    def __init__(self, message, status=None, code=None, body=None):
+        super().__init__(message)
+        self.status = status
+        self.code = code          # e.g. UDAPI100050
+        self.body = body
+
+    @property
+    def is_auth(self) -> bool:
+        """A dead or invalid token, as opposed to a rejected order.
+
+        The executor keys off this: an auth failure means stop trading and shout
+        for a fresh sync, while a rejection means this particular order was bad
+        and the bot is otherwise fine.
+        """
+        return self.status == 401 or self.code == "UDAPI100050"
+
+
+class TokenUnavailable(Exception):
+    """No usable token on disk. Distinct from an Upstox rejection."""
+
+
+# ── Token ────────────────────────────────────────────────────────────────────
+
+def load_token(path: str = TOKEN_PATH) -> str:
+    """The synced order-capable token, refusing a stale one.
+
+    Checks the expiry the sync recorded rather than waiting for Upstox to reject
+    it: a bot that knows its credential is dead can say so, while one that finds
+    out mid-order has already sent the order.
+    """
+    try:
+        with open(path) as fh:
+            token = fh.read().strip()
+    except OSError as exc:
+        raise TokenUnavailable(f"No token at {path} — sync one from the dashboard.") from exc
+    if not token:
+        raise TokenUnavailable(f"Token file {path} is empty — sync one from the dashboard.")
+
+    try:
+        with open(path + ".meta.json") as fh:
+            expires_at = json.load(fh).get("expiresAt")
+    except (OSError, ValueError):
+        expires_at = None       # unknown expiry is not a reason to refuse
+
+    if expires_at:
+        now_ms = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
+        if expires_at <= now_ms:
+            raise TokenUnavailable("Token has expired (03:30 IST boundary) — sync a fresh one.")
+    return token
+
+
+# ── Transport ────────────────────────────────────────────────────────────────
+
+def _request(method: str, url: str, token: str, payload: dict | None = None) -> dict:
+    """One place for auth, headers, envelope unwrapping and error shaping."""
+    data = json.dumps(payload).encode() if payload is not None else None
+    req = urllib.request.Request(url, data=data, method=method)
+    req.add_header("Authorization", f"Bearer {token}")
+    req.add_header("Accept", "application/json")
+    req.add_header("User-Agent", USER_AGENT)
+    if data is not None:
+        req.add_header("Content-Type", "application/json")
+
+    log.info("%s %s %s", method, url, json.dumps(payload) if payload else "")
+
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT, context=_ssl) as res:
+            body = json.loads(res.read().decode())
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode(errors="replace")
+        code = None
+        try:
+            errs = json.loads(raw).get("errors") or []
+            code = errs[0].get("errorCode") if errs else None
+            message = errs[0].get("message") if errs else raw[:200]
+        except (ValueError, AttributeError, IndexError):
+            message = raw[:200]
+        log.error("%s %s -> %s %s", method, url, exc.code, message)
+        raise UpstoxError(message, status=exc.code, code=code, body=raw) from exc
+    except Exception as exc:                                     # noqa: BLE001
+        log.error("%s %s -> %s", method, url, exc)
+        raise UpstoxError(f"Request failed: {exc}") from exc
+
+    if body.get("status") != "success":
+        raise UpstoxError(f"Upstox returned status={body.get('status')}", body=body)
+
+    log.info("%s %s -> ok", method, url)
+    return body
+
+
+# ── Reads ────────────────────────────────────────────────────────────────────
+
+def get_profile(token: str) -> dict:
+    """Whose account is this token for? `data.user_id` is the UCC."""
+    return _request("GET", f"{API_V2}/user/profile", token)["data"]
+
+
+def get_positions(token: str) -> list:
+    """Open positions. The executor treats this as the source of truth for
+    whether a trade is on — never its own memory, which a restart erases."""
+    return _request("GET", f"{API_V2}/portfolio/short-term-positions", token)["data"] or []
+
+
+def get_order_status(token: str, order_id: str) -> dict:
+    """One order's current state. `status` is the field that matters:
+    'open' resting · 'complete' filled · 'cancelled' · 'rejected' ·
+    'trigger pending' for an SL/SL-M waiting on its trigger."""
+    url = f"{API_V2}/order/details?order_id={urllib.parse.quote(str(order_id))}"
+    return _request("GET", url, token)["data"]
+
+
+def get_order_book(token: str) -> list:
+    """Every order from today, whatever its state.
+
+    The executor rebuilds its picture from this on every poll rather than
+    trusting variables it set earlier. A restart, a crash, or an order placed by
+    hand in the app all leave the in-memory view wrong; the exchange's view is
+    never wrong.
+    """
+    return _request("GET", f"{API_V2}/order/retrieve-all", token)["data"] or []
+
+
+def get_quote(token: str, instrument_key: str) -> dict:
+    """Live quote, used to price an order relative to the market.
+
+    Upstox keys the response by exchange:SYMBOL rather than the instrument key
+    that was requested, so the value is taken positionally — with one instrument
+    requested there is exactly one, and `instrument_token` inside it is checked
+    against what was asked for.
+    """
+    url = f"{API_V2}/market-quote/quotes?instrument_key={urllib.parse.quote(instrument_key)}"
+    data = _request("GET", url, token)["data"] or {}
+    for value in data.values():
+        if value.get("instrument_token") == instrument_key:
+            return value
+    return next(iter(data.values()), {})
+
+
+# ── Writes — these place real orders ─────────────────────────────────────────
+
+def _place(token: str, body: dict) -> str:
+    """POST an order and return its id. Upstox answers with a LIST of ids
+    because `slice` can split one request into several; unsliced orders return
+    exactly one, and anything else here would be a silent surprise."""
+    data = _request("POST", f"{API_HFT_V3}/order/place", token, body)["data"]
+    ids = data.get("order_ids") or []
+    if len(ids) != 1:
+        raise UpstoxError(f"Expected one order id, got {ids}", body=data)
+    return ids[0]
+
+
+def place_limit_buy(token: str, instrument_key: str, quantity: int, price: float,
+                    product: str = "D", tag: str | None = None) -> str:
+    """A resting BUY limit. `product="D"` is carry-forward (NRML for futures);
+    "I" would be intraday and auto-square-off at the close, which is wrong for a
+    swing trade that may be held for days."""
+    body = {
+        "instrument_token": instrument_key,
+        "quantity": int(quantity),
+        "product": product,
+        "validity": "DAY",
+        "price": float(price),
+        "order_type": "LIMIT",
+        "transaction_type": "BUY",
+        "disclosed_quantity": 0,
+        "trigger_price": 0,
+    }
+    if tag:
+        body["tag"] = tag
+    return _place(token, body)
+
+
+def place_limit_sell(token: str, instrument_key: str, quantity: int, price: float,
+                     product: str = "D", tag: str | None = None) -> str:
+    """The target order, and the only way to exit in a hurry — MARKET is banned,
+    so an urgent exit is a LIMIT priced through the touch."""
+    body = {
+        "instrument_token": instrument_key,
+        "quantity": int(quantity),
+        "product": product,
+        "validity": "DAY",
+        "price": float(price),
+        "order_type": "LIMIT",
+        "transaction_type": "SELL",
+        "disclosed_quantity": 0,
+        "trigger_price": 0,
+    }
+    if tag:
+        body["tag"] = tag
+    return _place(token, body)
+
+
+def place_sl_m(token: str, instrument_key: str, quantity: int, trigger_price: float,
+               transaction_type: str = "SELL", product: str = "D",
+               tag: str | None = None) -> str:
+    """Protective stop: sits as 'trigger pending' until price touches the
+    trigger, then goes to market.
+
+    market_protection=-1 is sent explicitly. It applies to SL-M, and the
+    documented behaviour of 0 is rejection — so leaving it to a default would be
+    trusting an unknown on the one order whose job is to limit a loss.
+
+    WHAT UPSTOX ACTUALLY DOES WITH THIS, observed on a live order (2026-08-24):
+    an SL-M with trigger 22995.7 came back as order_type "SL" with price 22880.7
+    — a stop-LIMIT at trigger minus ~0.5%, the band that market_protection=-1
+    computes. So the protective stop is NOT a market order on trigger. It is a
+    limit placed 0.5% through it.
+
+    In an orderly move that fills. In a gap that jumps the whole band it may not
+    fill at all, leaving the position open in a falling market. That is inherent
+    to Upstox banning MARKET over the API, not something this code can avoid —
+    the only lever is a wider band (market_protection 1..25 instead of -1),
+    trading a worse fill price for a higher chance of filling at all.
+
+    Overnight gap risk is the real exposure here, since product "D" holds
+    positions across sessions.
+
+    NO LONGER USED ANYWHERE — place_sl() is, everywhere. The band above turned
+    out to vary between ₹2.60 and ₹115 on the same instrument.
+
+    It was kept for a while on breakout stop-ENTRIES, on the theory that a wide
+    band is what makes an entry fill. Observed cost of that theory: a BUY armed
+    at trigger 24281.70 rested with a limit of 24403, ~0.5% and ~₹7,900 of
+    slippage on 65 lots, before the trade had started. A missed entry is an
+    opportunity; a bad fill is money. Kept only so the contrast stays on record.
+    """
+    body = {
+        "instrument_token": instrument_key,
+        "quantity": int(quantity),
+        "product": product,
+        "validity": "DAY",
+        "price": 0,
+        "order_type": "SL-M",
+        "transaction_type": transaction_type,
+        "disclosed_quantity": 0,
+        "trigger_price": float(trigger_price),
+        "market_protection": -1,
+    }
+    if tag:
+        body["tag"] = tag
+    return _place(token, body)
+
+
+# Rupees through the trigger that a protective stop's limit price is placed.
+# Deliberately tight: NIFTY futures are liquid enough that a rupee is plenty of
+# room in an orderly move, and a deterministic offset beats whatever band
+# market_protection computes (see place_sl_m's note — it has been observed at
+# ₹2.60 and at ₹115 on the same instrument).
+#
+# THE TRADE-OFF THIS MAKES, stated plainly: a tight limit is the one that does
+# NOT fill in a gap. Product "D" holds overnight, so a gap-down through the
+# whole offset leaves the position open with the stop unfilled. Widen this if
+# that matters more than fill price.
+STOP_LIMIT_OFFSET = float(os.environ.get("STOP_LIMIT_OFFSET", "1"))
+
+
+def stop_limit_price(trigger_price: float, transaction_type: str = "SELL",
+                     offset: float | None = None, tick_paise: float = 5) -> float:
+    """Limit price for a protective stop, `offset` rupees THROUGH the trigger.
+
+    Through, not above/below blindly: a SELL stop protects a long and must rest
+    below its trigger, a BUY stop protects a short and must rest above. Getting
+    that backwards produces an order the exchange rejects, or worse, one that
+    fills instantly at the wrong side.
+    """
+    off = STOP_LIMIT_OFFSET if offset is None else float(offset)
+    px = (float(trigger_price) - off if transaction_type.upper() == "SELL"
+          else float(trigger_price) + off)
+    return round_to_tick(px, tick_paise)
+
+
+def place_sl(token: str, instrument_key: str, quantity: int, trigger_price: float,
+             transaction_type: str = "SELL", product: str = "D",
+             tag: str | None = None, limit_price: float | None = None,
+             tick_paise: float = 5) -> str:
+    """Protective stop as an explicit stop-LIMIT (order_type "SL").
+
+    Why not SL-M: Upstox converts an SL-M into a limit anyway (it has to —
+    MARKET is banned over the API), at a price IT chooses from
+    market_protection. Observed on live orders: trigger 22995.7 → limit 22880.7
+    (₹115 through), and trigger 24267.6 → limit 24265.0 (₹2.60 through). Same
+    instrument, same market_protection=-1, two wildly different bands, because
+    the band is computed off the market at trigger time rather than off the
+    trigger. Naming the limit ourselves removes that variance entirely.
+
+    No market_protection here: it governs the price Upstox would have picked,
+    and we are picking it.
+    """
+    px = (float(limit_price) if limit_price is not None
+          else stop_limit_price(trigger_price, transaction_type, tick_paise=tick_paise))
+    body = {
+        "instrument_token": instrument_key,
+        "quantity": int(quantity),
+        "product": product,
+        "validity": "DAY",
+        "price": px,
+        "order_type": "SL",
+        "transaction_type": transaction_type,
+        "disclosed_quantity": 0,
+        "trigger_price": float(trigger_price),
+    }
+    if tag:
+        body["tag"] = tag
+    return _place(token, body)
+
+
+def modify_order(token: str, order_id: str, *, price: float | None = None,
+                 quantity: int | None = None, trigger_price: float | None = None,
+                 order_type: str = "LIMIT", validity: str = "DAY") -> dict:
+    """Change a resting order in place. Used for cancel-replace when a new bar
+    moves the entry."""
+    body = {
+        "order_id": str(order_id),
+        "validity": validity,
+        "order_type": order_type,
+        "price": float(price) if price is not None else 0,
+        "trigger_price": float(trigger_price) if trigger_price is not None else 0,
+    }
+    if quantity is not None:
+        body["quantity"] = int(quantity)
+    return _request("PUT", f"{API_HFT_V3}/order/modify", token, body)["data"]
+
+
+def cancel_order(token: str, order_id: str) -> dict:
+    """DELETE with the id on the query string — not in a body."""
+    url = f"{API_HFT_V3}/order/cancel?order_id={urllib.parse.quote(str(order_id))}"
+    return _request("DELETE", url, token)["data"]
+
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
+def round_to_tick(price: float, tick_paise: float = 5) -> float:
+    """Exchanges reject prices off the tick grid. The instrument master reports
+    tick_size in paise (NIFTY futures: 10 → ₹0.10)."""
+    tick = tick_paise / 100.0
+    return round(round(price / tick) * tick, 2)

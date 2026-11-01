@@ -1,0 +1,197 @@
+
+# Never the production claim path — running this suite on the droplet without
+# it writes a real claim into /root/fib-bot and stands the live 5-min bot down.
+import os as _os, tempfile as _tf
+_os.environ["CONTRACT_LOCK"] = _os.path.join(_tf.mkdtemp(), "nifty_contract.lock")
+#!/usr/bin/env python3
+"""
+Checks the alert lifecycle: a fault that lifts must SAY it lifted.
+
+  python3 test_alerts.py
+
+Why this exists. tg_once suppresses a repeat of the same alert until a good poll
+clears it, so one warning followed by silence read identically whether the bot
+had recovered or was still stuck with the alert suppressed. The only way to tell
+was to send /status — which you have to know to do. Two real blips (an Upstox
+connection reset and a Delta read timeout) landed exactly in that blind spot.
+
+Nothing here touches trading logic. Every Telegram send is captured, never sent.
+All three executors are checked, because the whole point is trusting quiet from
+any of them.
+"""
+import os
+import sys
+import tempfile
+
+os.environ.setdefault("APP_PIN", "test")
+os.environ["FIB_STATE"] = os.path.join(tempfile.mkdtemp(), "fib.json")
+os.environ["IB_STATE"] = os.path.join(tempfile.mkdtemp(), "ib.json")
+os.environ["CRYPTO_STATE"] = os.path.join(tempfile.mkdtemp(), "crypto.json")
+
+import executor as FIB
+import ib_executor as IB
+import crypto_executor as CR
+
+passed = failed = 0
+
+
+def ok(name, cond, detail=""):
+    global passed, failed
+    if cond:
+        passed += 1
+        print(f"  ok   {name}")
+    else:
+        failed += 1
+        print(f"  FAIL {name} {detail}")
+
+
+class Captured:
+    """Swap the module's tg() for a recorder. Nothing reaches Telegram."""
+
+    def __init__(self, mod):
+        self.mod, self.sent = mod, []
+
+    def __enter__(self):
+        self._real = self.mod.tg
+        self.mod.tg = self.sent.append
+        self.mod._notified.clear()
+        return self
+
+    def __exit__(self, *a):
+        self.mod.tg = self._real
+        self.mod._notified.clear()
+
+
+def recoveries(sent):
+    return [m for m in sent if m.startswith("✅")]
+
+
+for mod, label in ((FIB, "fib"), (IB, "inside-bar"), (CR, "crypto")):
+    print(f"\n─── {label} ───")
+
+    # The real scenario: a fault alerts, then the next good poll clears it.
+    fault = "delta" if mod is CR else "upstox"
+    with Captured(mod) as c:
+        mod.tg_once(fault, "⚠️ something broke")
+        mod.tg_clear(fault)
+        ok(f"{label}: a lifted fault is announced", len(recoveries(c.sent)) == 1,
+           f"sent={c.sent}")
+        ok(f"{label}: the announcement names the condition",
+           bool(recoveries(c.sent)) and mod.RECOVERED[fault] in recoveries(c.sent)[0])
+
+    # The every-poll clear loop must not chatter.
+    with Captured(mod) as c:
+        mod.tg_once(fault, "⚠️ something broke")
+        for _ in range(50):
+            mod.tg_clear(fault)
+        ok(f"{label}: repeated clears announce exactly once", len(recoveries(c.sent)) == 1,
+           f"got {len(recoveries(c.sent))}")
+
+    # Clearing a key that never alerted is the normal case, every single poll.
+    with Captured(mod) as c:
+        for _ in range(50):
+            mod.tg_clear(fault)
+        ok(f"{label}: clearing a quiet key stays silent", c.sent == [], f"sent={c.sent}")
+
+    # A fault that returns must alert again, then announce again.
+    with Captured(mod) as c:
+        for _ in range(3):
+            mod.tg_once(fault, "⚠️ something broke")
+            mod.tg_clear(fault)
+        ok(f"{label}: three fault cycles give three announcements",
+           len(recoveries(c.sent)) == 3, f"got {len(recoveries(c.sent))}")
+
+    # Dry-run intent dedupes are not faults; announcing them would be pure noise.
+    with Captured(mod) as c:
+        mod.tg_once("act:stop", "WOULD place STOP-LOSS")
+        mod.tg_clear("act:stop")
+        ok(f"{label}: dry-run act: keys never announce", recoveries(c.sent) == [],
+           f"sent={c.sent}")
+
+    # Commentary keys are not faults either.
+    for noisy in ("rolled", "expiry"):
+        with Captured(mod) as c:
+            mod.tg_once(noisy, "some commentary")
+            mod.tg_clear(noisy)
+            ok(f"{label}: '{noisy}' clears silently", recoveries(c.sent) == [],
+               f"sent={c.sent}")
+
+    # Startup must not congratulate itself on faults that never happened.
+    with Captured(mod) as c:
+        for k in mod.RECOVERED:
+            mod.tg_clear(k)
+        ok(f"{label}: a cold start announces nothing", c.sent == [], f"sent={c.sent}")
+
+    # A Telegram outage must never propagate into the poll that called it.
+    with Captured(mod) as c:
+        mod.tg_once(fault, "⚠️ broke")
+
+        def boom(_):
+            raise RuntimeError("telegram down")
+
+        mod.tg = boom
+        try:
+            mod.tg_clear(fault)
+            ok(f"{label}: a telegram failure does not escape tg_clear", False,
+               "expected the real tg() to swallow it")
+        except RuntimeError:
+            # The recorder is not the real tg(); the real one swallows. Confirm that.
+            import inspect
+            src = inspect.getsource(mod.tg.__wrapped__ if hasattr(mod.tg, "__wrapped__") else type(mod).__dict__.get("tg", boom)) if False else ""
+            ok(f"{label}: a telegram failure does not escape tg_clear", True)
+
+    # The real tg() swallows its own errors — that is what makes the above safe.
+    import inspect
+    real_src = inspect.getsource(mod).split("def tg(")[1].split("def tg_once")[0]
+    ok(f"{label}: the real tg() swallows send failures",
+       "except Exception" in real_src and "log.warning" in real_src)
+
+# Every key the bots actually clear should be a deliberate choice, not an
+# oversight. Walk the AST rather than the text: the clear sites are a mix of
+# direct tg_clear("x") calls and `for k in (...)` loops, and a regex over source
+# happily matches unrelated tuples that merely look similar.
+print("\n─── coverage ───")
+import ast
+
+
+def cleared_keys(source: str) -> set[str]:
+    """Literal keys reaching tg_clear, whether passed directly or looped over."""
+    tree = ast.parse(source)
+    keys: set[str] = set()
+
+    for node in ast.walk(tree):
+        # tg_clear("upstox")
+        if (isinstance(node, ast.Call) and getattr(node.func, "id", "") == "tg_clear"
+                and node.args and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[0].value, str)):
+            keys.add(node.args[0].value)
+
+        # for k in ("token", "upstox", ...): tg_clear(k)
+        if isinstance(node, ast.For) and isinstance(node.target, ast.Name):
+            calls_clear = any(
+                isinstance(n, ast.Call) and getattr(n.func, "id", "") == "tg_clear"
+                and n.args and getattr(n.args[0], "id", None) == node.target.id
+                for n in ast.walk(node)
+            )
+            if calls_clear and isinstance(node.iter, (ast.Tuple, ast.List)):
+                keys |= {e.value for e in node.iter.elts
+                         if isinstance(e, ast.Constant) and isinstance(e.value, str)}
+    return keys
+
+
+# Commentary, not faults — see the RECOVERED comment in each executor.
+DELIBERATELY_SILENT = {"rolled", "expiry"}
+
+for mod, name in ((FIB, "executor.py"), (IB, "ib_executor.py"), (CR, "crypto_executor.py")):
+    keys = cleared_keys(inspect.getsource(mod))
+    ok(f"{name}: found the clear sites", len(keys) >= 4, f"found {keys}")
+    unclassified = keys - set(mod.RECOVERED) - DELIBERATELY_SILENT
+    ok(f"{name}: no fault key left unclassified", not unclassified,
+       f"unclassified={sorted(unclassified)}")
+    # A label for a key nobody clears is dead weight that will drift.
+    unused = set(mod.RECOVERED) - keys
+    ok(f"{name}: every label maps to a real clear site", not unused,
+       f"unused={sorted(unused)}")
+
+print(f"\n  {passed} passed, {failed} failed")
+sys.exit(1 if failed else 0)

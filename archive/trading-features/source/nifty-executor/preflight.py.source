@@ -1,0 +1,146 @@
+#!/usr/bin/env python3
+"""
+Read-only check that everything the bot needs is working. Run it any time —
+market open or shut — and especially each morning after syncing a token.
+
+  python3 preflight.py
+
+Places NO orders and changes nothing. It exists because the executor only
+exercises these paths during market hours, so a broken token, a lapsed dashboard
+session or an Upstox auth problem would otherwise surface at 09:15 on a Monday
+with real money in play. Better to find it on a Saturday.
+"""
+import os
+import sys
+from datetime import datetime, timedelta, timezone
+
+IST = timezone(timedelta(hours=5, minutes=30))
+ok_count = fail_count = 0
+
+
+def check(label, fn):
+    global ok_count, fail_count
+    try:
+        detail = fn()
+        ok_count += 1
+        print(f"  ✓ {label}" + (f" — {detail}" if detail else ""))
+        return True
+    except Exception as exc:                                    # noqa: BLE001
+        fail_count += 1
+        print(f"  ✗ {label} — {exc}")
+        return False
+
+
+def main() -> int:
+    # Loaded here so a missing env var reports as a failed check rather than an
+    # import-time traceback.
+    import executor as E
+    import instruments
+    import upstox_orders as ux
+
+    print("\nFib bot preflight\n" + "─" * 50)
+
+    print("\nConfig")
+    check("APP_PIN set", lambda: "yes" if os.environ.get("APP_PIN") else _fail("not set — the signal cannot be read"))
+    check("Telegram configured",
+          lambda: "yes" if os.environ.get("TELEGRAM_BOT_TOKEN") and os.environ.get("TELEGRAM_CHAT_ID")
+          else _fail("no bot token / chat id — you will get no alerts"))
+
+    print("\nUpstox token")
+    token = None
+    def _load():
+        nonlocal token
+        token = ux.load_token()
+        return f"{len(token)} chars"
+    if not check("token file present and in date", _load):
+        print("\n  Sync a token from the dashboard, then re-run.\n")
+        return 1
+
+    check("account matches", lambda: _account(ux, token))
+    check("positions readable", lambda: f"{len(ux.get_positions(token))} open")
+    check("order book readable", lambda: f"{len(ux.get_order_book(token))} orders today")
+    check("ORDER endpoint accepts this IP", lambda: _order_host_reachable(ux, token))
+
+    print("\nContract")
+    contract = {}
+    def _contract():
+        contract.update(instruments.current_contract(instruments.fetch_master()) or {})
+        if not contract:
+            raise RuntimeError("no live Nifty future found")
+        dte = E.days_to_expiry(contract["expiry"])
+        return f"{contract['trading_symbol']} ({contract['instrument_key']}), {dte:.1f}d to expiry"
+    check("front-month resolves", _contract)
+    if contract:
+        check("live quote", lambda: f"last {ux.get_quote(token, contract['instrument_key']).get('last_price')}")
+
+    print("\nDashboard signal")
+    def _signal():
+        p = E.fetch_signal()
+        if not p:
+            raise RuntimeError("no response — check APP_PIN and SIGNAL_URL")
+        if not p.get("tokenValid"):
+            raise RuntimeError(p.get("error") or "signal reports tokenValid false")
+        s = p.get("signal") or {}
+        return (f"{p['contract']['tradingSymbol']} · "
+                f"{'ARMED' if s.get('entryValid') else 'stand aside'} · "
+                f"entry {s.get('fibEntry')} stop {s.get('stopPrice')} target {s.get('targetPrice')}")
+    check("signal fetch (dashboard login + read)", _signal)
+
+    print("\nMode")
+    print(f"  {'!! LIVE — real orders !!' if E.LIVE else '✓ DRY — places nothing'}")
+    print(f"  Market {'open' if E.market_is_open() else 'closed'} "
+          f"({datetime.now(tz=IST):%a %H:%M IST})")
+
+    print("─" * 50)
+    print(f"  {ok_count} ok, {fail_count} failed\n")
+    return 1 if fail_count else 0
+
+
+def _order_host_reachable(ux, token):
+    """Can we reach the order host FROM THE REGISTERED IP?
+
+    This is separate from "is the token valid" and separate again from "can we
+    read". Order endpoints live on api-hft.upstox.com and are the only ones that
+    check the origin against the static IP registered on the account, so reads
+    can pass while every order is refused — which is exactly what happened on the
+    first live attempt: nine green checks, then 403 UDAPI1154 on the order.
+
+    Probes by cancelling an order id that cannot exist. Upstox answers "not
+    found", which proves the request arrived and was authorised; if the origin
+    were wrong it would never get that far. Nothing real can be cancelled by a
+    bogus id, so this is safe to run any time.
+    """
+    try:
+        ux.cancel_order(token, "preflight-probe-not-a-real-order")
+        return "reachable"                       # would be surprising, but fine
+    except ux.UpstoxError as exc:
+        if exc.code == "UDAPI1154":
+            raise RuntimeError(
+                f"static IP mismatch — {exc}. Orders will be refused. "
+                "Check the droplet is reaching Upstox over its registered IPv4."
+            ) from exc
+        return f"reachable (probe rejected as expected: {exc.code or exc.status})"
+
+
+def _fail(msg):
+    raise RuntimeError(msg)
+
+
+def _account(ux, token):
+    want = os.environ.get("BOT_ACCOUNT_ID", "").strip()
+    if not want:
+        try:
+            with open("/root/fib-bot/receiver.env") as fh:
+                for line in fh:
+                    if line.startswith("BOT_ACCOUNT_ID="):
+                        want = line.split("=", 1)[1].strip()
+        except OSError:
+            pass
+    got = ux.get_profile(token).get("user_id")
+    if want and got != want:
+        raise RuntimeError(f"token is for {got}, expected {want}")
+    return f"{got}" + ("" if want else " (BOT_ACCOUNT_ID unset — not verified)")
+
+
+if __name__ == "__main__":
+    sys.exit(main())

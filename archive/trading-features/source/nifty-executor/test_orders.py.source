@@ -1,0 +1,128 @@
+#!/usr/bin/env python3
+"""Checks the order layer's pure logic. Run: python3 test_orders.py
+
+No token, no network, no orders. What can be proven offline is proven here so
+that test_order.py — which places a real order — is only ever exercising the
+things that genuinely need a live market.
+"""
+import json
+import os
+import tempfile
+from datetime import datetime, timedelta, timezone
+
+import instruments
+import test_order as T
+import upstox_orders as ux
+
+IST = timezone(timedelta(hours=5, minutes=30))
+passed = failed = 0
+
+
+def ok(name, cond, detail=""):
+    global passed, failed
+    if cond:
+        passed += 1; print(f"  ok   {name}")
+    else:
+        failed += 1; print(f"  FAIL {name} {detail}")
+
+
+# ── round_to_tick — an off-grid price is rejected by the exchange ────────────
+ok("rounds to the NIFTY 0.10 grid", ux.round_to_tick(24236.234, 10) == 24236.2,
+   str(ux.round_to_tick(24236.234, 10)))
+ok("rounds up past the halfway point", ux.round_to_tick(24236.29, 10) == 24236.3,
+   str(ux.round_to_tick(24236.29, 10)))
+ok("handles a 0.05 grid", ux.round_to_tick(1313.17, 5) == 1313.15,
+   str(ux.round_to_tick(1313.17, 5)))
+ok("leaves an on-grid price alone", ux.round_to_tick(24230.0, 10) == 24230.0)
+
+# ── market hours — the guard that stops an accidental after-market order ────
+mk = lambda *a: datetime(*a, tzinfo=IST)
+ok("open during the session", T.market_is_open(mk(2026, 8, 24, 12, 0)))
+ok("shut a minute before the bell", not T.market_is_open(mk(2026, 8, 24, 9, 14)))
+ok("open exactly at the bell", T.market_is_open(mk(2026, 8, 24, 9, 15)))
+ok("open exactly at the close", T.market_is_open(mk(2026, 8, 24, 15, 30)))
+ok("shut a minute after the close", not T.market_is_open(mk(2026, 8, 24, 15, 31)))
+ok("shut on Saturday", not T.market_is_open(mk(2026, 8, 22, 12, 0)))
+ok("shut on Sunday", not T.market_is_open(mk(2026, 8, 23, 12, 0)))
+
+# ── contract selection, from fixture rows rather than the live master ────────
+rows = [
+    {"segment": "NSE_FO", "instrument_type": "FUT", "underlying_symbol": "NIFTY",
+     "instrument_key": "NSE_FO|OCT", "trading_symbol": "NIFTY FUT 27 OCT 26",
+     "expiry": int(mk(2026, 10, 27, 23, 59).timestamp() * 1000), "lot_size": 65, "tick_size": 10},
+    {"segment": "NSE_FO", "instrument_type": "FUT", "underlying_symbol": "NIFTY",
+     "instrument_key": "NSE_FO|JUL", "trading_symbol": "NIFTY FUT 28 JUL 26",
+     "expiry": int(mk(2026, 7, 28, 23, 59).timestamp() * 1000), "lot_size": 65, "tick_size": 10},
+    {"segment": "NSE_FO", "instrument_type": "FUT", "underlying_symbol": "NIFTY",
+     "instrument_key": "NSE_FO|AUG", "trading_symbol": "NIFTY FUT 25 AUG 26",
+     "expiry": int(mk(2026, 8, 25, 23, 59).timestamp() * 1000), "lot_size": 65, "tick_size": 10},
+    # noise that must not be picked up
+    {"segment": "NSE_FO", "instrument_type": "CE", "underlying_symbol": "NIFTY",
+     "instrument_key": "NSE_FO|OPT", "expiry": int(mk(2026, 8, 25).timestamp() * 1000)},
+    {"segment": "NSE_EQ", "instrument_type": "EQ", "trading_symbol": "RELIANCE",
+     "instrument_key": "NSE_EQ|INE002A01018"},
+    {"segment": "NSE_FO", "instrument_type": "FUT", "underlying_symbol": "BANKNIFTY",
+     "instrument_key": "NSE_FO|BN", "expiry": int(mk(2026, 8, 25).timestamp() * 1000)},
+]
+now = int(mk(2026, 8, 22, 14, 0).timestamp() * 1000)
+
+chain = instruments.futures_chain(rows)
+ok("chain holds only NIFTY futures", len(chain) == 3, str([c["instrument_key"] for c in chain]))
+ok("options are excluded", all("OPT" not in c["instrument_key"] for c in chain))
+ok("other underlyings are excluded", all("BN" not in c["instrument_key"] for c in chain))
+ok("chain is expiry-ascending", [c["instrument_key"] for c in chain] ==
+   ["NSE_FO|JUL", "NSE_FO|AUG", "NSE_FO|OCT"], str([c["instrument_key"] for c in chain]))
+
+cur = instruments.current_contract(rows, now_ms=now)
+ok("front month skips the expired one", cur["instrument_key"] == "NSE_FO|AUG", str(cur))
+ok("carries the fields an order needs", cur["lot_size"] == 65 and cur["tick_size"] == 10)
+
+after = int(mk(2026, 8, 26, 10, 0).timestamp() * 1000)
+ok("rolls once the contract has expired",
+   instruments.current_contract(rows, now_ms=after)["instrument_key"] == "NSE_FO|OCT")
+ok("all expired -> None",
+   instruments.current_contract(rows, now_ms=int(mk(2027, 1, 1).timestamp() * 1000)) is None)
+ok("empty master -> None", instruments.current_contract([], now_ms=now) is None)
+
+# ── token loading refuses what it should ────────────────────────────────────
+d = tempfile.mkdtemp()
+missing = os.path.join(d, "nope")
+try:
+    ux.load_token(missing); ok("missing token raises", False)
+except ux.TokenUnavailable:
+    ok("missing token raises TokenUnavailable", True)
+
+p = os.path.join(d, ".upstox_token")
+open(p, "w").write("   \n")
+try:
+    ux.load_token(p); ok("empty token raises", False)
+except ux.TokenUnavailable:
+    ok("empty token raises TokenUnavailable", True)
+
+open(p, "w").write("a-real-looking-token\n")
+past = int(datetime.now(tz=timezone.utc).timestamp() * 1000) - 1000
+json.dump({"expiresAt": past}, open(p + ".meta.json", "w"))
+try:
+    ux.load_token(p); ok("expired token raises", False)
+except ux.TokenUnavailable as e:
+    ok("expired token raises TokenUnavailable", "expired" in str(e).lower(), str(e))
+
+future = int(datetime.now(tz=timezone.utc).timestamp() * 1000) + 3600_000
+json.dump({"expiresAt": future}, open(p + ".meta.json", "w"))
+ok("valid token loads and is stripped", ux.load_token(p) == "a-real-looking-token")
+
+os.unlink(p + ".meta.json")
+ok("token without metadata still loads", ux.load_token(p) == "a-real-looking-token")
+
+# ── auth-vs-rejection, which decides whether the bot stops or carries on ────
+ok("401 reads as auth", ux.UpstoxError("x", status=401).is_auth)
+ok("UDAPI100050 reads as auth", ux.UpstoxError("x", code="UDAPI100050").is_auth)
+ok("an order rejection does NOT read as auth",
+   not ux.UpstoxError("bad price", status=400, code="UDAPI1013").is_auth)
+
+# ── there is deliberately no market order ──────────────────────────────────
+ok("no place_market exists (MARKET is banned over the API)",
+   not hasattr(ux, "place_market"))
+
+print(f"\n  {passed} passed, {failed} failed")
+raise SystemExit(1 if failed else 0)

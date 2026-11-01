@@ -1,0 +1,308 @@
+#!/usr/bin/env python3
+"""Every bug this system has actually had, re-asserted against the 5-minute bot.
+
+executor_5m.py is a copy of executor.py, so in principle it inherited all of
+these fixes. "In principle" is not good enough before real money: the copy
+changed tags, added a coordination gate in the middle of reconcile, and moved
+where things return. Any of that could have quietly undone a fix.
+
+So this file is the list of mistakes this system has made, each one written as a
+test against the NEW bot. Every entry below is a thing that went wrong in
+production or in a live dry run — not a hypothetical.
+
+Run LIVE with stubbed placers throughout. In dry mode act() only announces, so
+"the right order was placed" cannot be asserted at all.
+"""
+import json
+import os
+import sys
+import tempfile
+import time
+from datetime import datetime, timedelta, timezone
+
+TMP = tempfile.mkdtemp()
+HOURLY_STATE = os.path.join(TMP, "executor_state.json")
+LOCK = os.path.join(TMP, "nifty_contract.lock")
+os.environ.update({
+    "EXECUTOR_5M_STATE": os.path.join(TMP, "executor_5m_state.json"),
+    "HOURLY_STATE": HOURLY_STATE,
+    "PEER_STATE": os.path.join(TMP, "ib_state.json"),
+    "CONTRACT_LOCK": LOCK,
+    "APP_PIN": "test",
+})
+
+sys.path.insert(0, "/Users/khilanpatel/Desktop/Live Projects/nifty-executor")
+
+import contract_lock as lock
+import executor_5m as E
+import upstox_orders as ux
+
+# ── PIN THE CLOCK ────────────────────────────────────────────────────────────
+# The 5-min bot is now intraday: it opens nothing after 15:00 and squares off at
+# 15:20. Every assertion below is about MID-SESSION behaviour, so without this
+# the suite passes in the morning and fails after 15:00 — a suite whose result
+# depends on when you run it is one you stop believing. test_5m_intraday.py owns
+# the time-based rules and drives the clock deliberately.
+E.past_no_entry_cutoff = lambda now=None: False
+E.must_square_off = lambda now=None: False
+
+
+IST = timezone(timedelta(hours=5, minutes=30))
+KEY = "NSE_FO|58072"
+LOT = 65
+TICK = 10                      # paise, i.e. Rs 0.10 — as the master reports it
+ENTRY, STOP, TARGET = 24220.0, 24134.0, 24436.0
+
+CALLS: list = []
+PLACED: list = []
+passed = failed = 0
+
+
+def check(label, cond, detail=""):
+    global passed, failed
+    if cond:
+        passed += 1
+        print(f"  ok   {label}")
+    else:
+        failed += 1
+        print(f"  FAIL {label}   {detail}")
+
+
+src_5m = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "executor_5m.py")).read()
+
+E.tg = lambda t: CALLS.append(t)
+_real_round = ux.round_to_tick
+_real_slp = ux.stop_limit_price
+for _n in ("place_limit_buy", "place_limit_sell", "place_sl_m", "place_sl",
+           "cancel_order", "modify_order"):
+    def _mk(n):
+        def f(*a, **k):
+            PLACED.append((n, a, k))
+            return f"OID-{n}"
+        return f
+    setattr(ux, _n, _mk(_n))
+
+
+def payload(*, armed=True, entry=ENTRY, stop=STOP, target=TARGET, dte=30.0,
+            as_of="bar-01"):
+    expiry = int((datetime.now(tz=IST) + timedelta(days=dte)).timestamp() * 1000)
+    return {"tokenValid": True, "error": None,
+            "contract": {"instrumentKey": KEY, "lotSize": LOT, "tickSize": TICK,
+                         "tradingSymbol": "NIFTY FUT 29 SEP 26", "expiry": expiry},
+            "signal": {"entryValid": armed, "fibEntry": entry, "stopPrice": stop,
+                       "targetPrice": target, "asOf": as_of}}
+
+
+def world(position=0, avg=None, book=None, owned=True):
+    book = list(book or [])
+    if position and owned and not any((o.get("tag") or "") == E.TAG_ENTRY
+                                      and (o.get("status") or "") == "complete" for o in book):
+        book.append({"instrument_token": KEY, "status": "complete", "tag": E.TAG_ENTRY,
+                     "order_id": "FILLED-ENTRY", "price": avg, "average_price": avg,
+                     "quantity": position})
+    ux.get_positions = lambda t: ([{"instrument_token": KEY, "quantity": position,
+                                    "average_price": avg}] if position else [])
+    ux.get_order_book = lambda t: list(book)
+    ux.get_quote = lambda t, k: {"depth": {"buy": [{"price": 24150.0}]}, "last_price": 24450.0}
+
+
+def hourly(**f):
+    with open(HOURLY_STATE, "w") as fh:
+        json.dump(f, fh)
+
+
+def run(position=0, avg=None, book=None, state=None, owned=True, **kw):
+    CALLS.clear()
+    PLACED.clear()
+    try:
+        os.remove(LOCK)
+    except OSError:
+        pass
+    world(position, avg, book, owned)
+    st = state if state is not None else {}
+    E.reconcile("tok", payload(**kw), st)
+    return st
+
+
+def of(kind):
+    return [p for p in PLACED if p[0] == kind]
+
+
+print("═" * 76)
+print("  5-MINUTE BOT — regression against every bug this system has had")
+print("═" * 76)
+E.LIVE = True
+try:
+    hourly()
+
+    # ── 1. Aug 2026: the stop went in as SL-Limit with trigger == limit, and
+    #    did not fill in a fast move. Fixed with an explicit SL order whose
+    #    limit sits STOP_LIMIT_OFFSET rupees THROUGH the trigger.
+    print("\n── 1. stop-loss must be a real SL with a trigger/limit gap ──")
+    run(position=LOT, avg=ENTRY, state={})
+    sl = of("place_sl")
+    check("a stop is placed via place_sl (not place_sl_m)", len(sl) == 1 and not of("place_sl_m"), PLACED)
+    if sl:
+        args = sl[0][1]
+        trig, lim = args[3], args[7] if len(args) > 7 else None
+        # signature: (token, key, qty, trigger, side, product, tag, limit, tick)
+        check(f"  trigger {trig} is the signal stop rounded to tick",
+              trig == _real_round(STOP, TICK), (trig, _real_round(STOP, TICK)))
+        check(f"  limit {lim} sits BELOW the trigger, not equal to it",
+              lim is not None and lim < trig, (trig, lim))
+        check("  the gap is the configured offset",
+              lim == _real_slp(trig, "SELL", None, TICK), (lim, _real_slp(trig, "SELL", None, TICK)))
+
+    # ── 2. Sep 2026: brackets were sized to a fixed lot count, not to what was
+    #    actually held, so a partial fill left the position wrongly protected.
+    print("\n── 2. brackets sized to what is HELD, not a constant ──")
+    run(position=LOT * 2, avg=ENTRY, state={})
+    check("stop quantity equals the held quantity",
+          of("place_sl") and of("place_sl")[0][1][2] == LOT * 2, PLACED)
+    check("target quantity equals the held quantity",
+          of("place_limit_sell") and of("place_limit_sell")[0][1][2] == LOT * 2, PLACED)
+
+    run(position=LOT, avg=ENTRY,
+        book=[{"instrument_token": KEY, "tag": E.TAG_STOP, "status": "open",
+               "order_id": "S1", "quantity": LOT * 2}],
+        state={"entry_bar": "b", "instrument": KEY, "stop": STOP, "target": TARGET})
+    check("a stop resting at the wrong size is RESIZED, not left",
+          any("S1" in str(p[1]) for p in of("modify_order")), PLACED)
+
+    # ── 3. Aug 2026: the stop was re-read from the live signal every poll, so a
+    #    replacement went in at whatever ATR said THEN. It must be frozen at
+    #    entry and survive the signal drifting.
+    print("\n── 3. the stop is anchored to the trade, not the live signal ──")
+    st = run(position=LOT, avg=ENTRY, state={})
+    check("stop frozen into state at entry", st.get("stop") == STOP, st)
+    # signal now drifts; the bracket must not follow it
+    run(position=LOT, avg=ENTRY, state=st, stop=23990.0, target=24999.0)
+    check("a drifted signal does NOT move the frozen stop", st.get("stop") == STOP, st)
+    if of("place_sl"):
+        check("  ...and any replacement uses the frozen level",
+              of("place_sl")[0][1][3] == _real_round(STOP, TICK), PLACED)
+
+    # ── 4. 29 Aug 2026: the bot decided a real position was not its own and
+    #    abandoned it — a Rs 9,938 loss. Positive evidence only; adopt when
+    #    nothing says otherwise.
+    print("\n── 4. never abandon a position that is ours ──")
+    run(position=LOT, avg=ENTRY, state={})
+    check("our own filled entry → we manage it", of("place_sl"), PLACED)
+    st = run(position=LOT, avg=ENTRY, book=[], owned=False, state={})
+    check("an UNATTRIBUTED position is adopted and protected, not abandoned",
+          of("place_sl"), PLACED)
+    check("  ...and it says so", any("TAKING OVER" in c for c in CALLS), CALLS[:1])
+    # but a position the HOURLY claims is left strictly alone
+    hourly(entry_bar="x", instrument=KEY)
+    run(position=LOT, avg=ENTRY, book=[], owned=False, state={})
+    check("a position the hourly claims is NOT touched",
+          not of("place_sl") and not of("place_limit_sell"), PLACED)
+    hourly()
+
+    # ── 5. 1 Sep 2026: a Friday fill was forgotten over the weekend and the
+    #    position ran unbracketed. The fill is recorded the moment the tagged
+    #    entry shows complete, and that record is in the state file.
+    print("\n── 5. a fill is remembered across sessions ──")
+    st = run(position=0, avg=None,
+             book=[{"instrument_token": KEY, "status": "complete", "tag": E.TAG_ENTRY,
+                    "order_id": "F1", "average_price": ENTRY}],
+             state={"armed": {"entry": ENTRY, "stop": STOP, "target": TARGET}})
+    check("entry_fill is written as soon as the fill is visible",
+          st.get("entry_fill", {}).get("price") == ENTRY, st.get("entry_fill"))
+    check("  ...carrying the bracket it was entered on",
+          st.get("entry_fill", {}).get("stop") == STOP, st.get("entry_fill"))
+    check("completed_orders tracks TAG_ENTRY (it once tracked only exits)",
+          E.TAG_ENTRY in E.completed_orders([], KEY))
+
+    # ── 6. 2 Sep 2026: an alert interpolated a live price into tg_once, so the
+    #    'suppress duplicates' key never matched and it sent every 15 seconds.
+    print("\n── 6. no message storms ──")
+    hourly(armed={"entry": 24500.0}, instrument=KEY)
+    seen = []
+    for _ in range(6):
+        run()
+        seen.extend(CALLS)
+    downs = [c for c in seen if "Standing down" in c]
+    check(f"six identical polls produce ONE stand-down, not six (got {len(downs)})",
+          len(downs) == 1, downs[:2])
+    hourly()
+
+    # ── 7. 1 Sep 2026: the bot refused any entry where price was already at or
+    #    below the fib level, reasoning from the breakout case. That dropped 44
+    #    of 85 backtest trades — the best ones.
+    print("\n── 7. a limit buy below the market is a GOOD fill, not a refusal ──")
+    ux.get_quote = lambda t, k: {"depth": {"buy": [{"price": 24100.0}]}, "last_price": 24150.0}
+    run(entry=24220.0)          # market 24150 is BELOW the 24220 entry
+    check("entry still placed when price is already below the fib level",
+          len(of("place_limit_buy")) == 1, PLACED)
+    ux.get_quote = lambda t, k: {"depth": {"buy": [{"price": 24150.0}]}, "last_price": 24450.0}
+
+    # ── 8. Upstox has no reduce_only, so a stop or target left resting with no
+    #    position is a plain opposite-side order that OPENS a reversed one.
+    print("\n── 8. orphaned brackets are cancelled when flat ──")
+    run(position=0, armed=False,
+        book=[{"instrument_token": KEY, "tag": E.TAG_STOP, "status": "open", "order_id": "ORPH-S"},
+              {"instrument_token": KEY, "tag": E.TAG_TARGET, "status": "open", "order_id": "ORPH-T"}])
+    ids = str(of("cancel_order"))
+    check("a resting stop with no position is cancelled", "ORPH-S" in ids, PLACED)
+    check("a resting target with no position is cancelled", "ORPH-T" in ids, PLACED)
+
+    # ── 9. The timeout exit once reused TAG_TARGET, so the bot could not tell
+    #    its own exit from the profit target and re-placed it every poll.
+    print("\n── 9. the timeout exit has its own tag ──")
+    check("TAG_EXIT is distinct from TAG_TARGET", E.TAG_EXIT != E.TAG_TARGET)
+    check("all four tags are distinct", len(set(E.OUR_TAGS)) == 4, E.OUR_TAGS)
+    check("and disjoint from the hourly bot's",
+          not (set(E.OUR_TAGS) & {"fibentry", "fibstop", "fibtarget", "fibexit"}), E.OUR_TAGS)
+
+    # ── 10. 31 Aug 2026: /stop set a module global, so a restart resumed
+    #    trading with an 'online' message identical to a normal start.
+    print("\n── 10. the kill switch survives a restart ──")
+    check("the switch is a file, separate from trade state",
+          E.SWITCH_PATH != E.STATE_PATH and E.SWITCH_PATH.endswith(".switch.json"), E.SWITCH_PATH)
+    E._set_enabled(False)
+    check("  ...and /stop is written to disk", E.load_switch() is False)
+    E._set_enabled(True)
+    check("  ...and /start too", E.load_switch() is True)
+    # Stopped means PROTECT, not abandon. reconcile() takes protect_only as an
+    # argument — poll_once is what derives it from the switch — so the test has
+    # to exercise both halves: the flag's effect, and the wiring that sets it.
+    CALLS.clear(); PLACED.clear(); world(LOT, ENTRY, None)
+    E.reconcile("tok", payload(), {}, protect_only=True)
+    check("while STOPPED it still protects an open trade", of("place_sl"), PLACED)
+    CALLS.clear(); PLACED.clear(); world(0, None, None)
+    E.reconcile("tok", payload(), {}, protect_only=True)
+    check("  ...but opens nothing new", not of("place_limit_buy"), PLACED)
+    check("  ...and poll_once derives protect_only from the switch",
+          "poll_once(protect_only=not is_enabled())" in src_5m, "wiring changed")
+    E._set_enabled(True)
+
+    # ── 11. 7 Sep 2026, found in the DRY run: sharing the hourly's Telegram
+    #    token made getUpdates return 409 to both and stole its commands.
+    print("\n── 11. it cannot steal the hourly bot's Telegram commands ──")
+    check("no own token → listener disabled", E.OWN_TELEGRAM_BOT in (True, False))
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "executor_5m.py")).read()
+    check("  ...the listener is behind that flag",
+          "if OWN_TELEGRAM_BOT:" in src and "threading.Thread(target=telegram_listener" in src)
+
+    # ── 12. THE NEW ONE. Coordination must not be bypassable by any path.
+    print("\n── 12. the coordination gate itself ──")
+    for label, hf in [("armed", dict(armed={"entry": 1}, instrument=KEY)),
+                      ("holding", dict(entry_bar="b", instrument=KEY)),
+                      ("fill", dict(entry_fill={"price": 1}, instrument=KEY))]:
+        hourly(**hf)
+        run()
+        check(f"hourly {label} → no entry placed", not of("place_limit_buy"), PLACED)
+    hourly()
+    lock.claim(LOCK, "hourly", KEY, holding=True)
+    CALLS.clear(); PLACED.clear(); world(0, None, None)
+    E.reconcile("tok", payload(), {})
+    check("hourly holds the CLAIM → no entry placed even with a clean state file",
+          not of("place_limit_buy"), PLACED)
+finally:
+    E.LIVE = False
+
+check("LIVE restored to False", E.LIVE is False)
+print(f"\n  {passed} passed, {failed} failed")
+sys.exit(1 if failed else 0)

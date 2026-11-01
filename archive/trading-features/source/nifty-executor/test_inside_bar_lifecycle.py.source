@@ -1,0 +1,766 @@
+#!/usr/bin/env python3
+"""
+Full validation of the inside-bar executor's decision logic, both directions.
+
+  python3 test_inside_bar_lifecycle.py
+
+Scripts the executor's two inputs — the signal, and what the exchange says it
+holds — and runs the REAL reconcile() against them. Nothing is reimplemented, so
+a failure here is a bug in the bot.
+
+LIVE stays False, every Upstox call is captured rather than sent, and the
+assertions are about what the bot INTENDED. A leaked real call fails the run.
+
+Supersedes test_ib_lifecycle.py, which covered the happy paths only; this adds
+the edge cases that actually decide whether it is safe to arm — a bar that breaks
+both ways, a whipsaw through the stop, a token dying while a position is open,
+and the isolation guarantees against the live Fib bot.
+"""
+import os
+import sys
+import tempfile
+from datetime import datetime, timedelta, timezone
+
+os.environ["IB_STATE"] = os.path.join(tempfile.mkdtemp(), "ib.json")
+os.environ.setdefault("APP_PIN", "test")
+
+import ib_executor as E
+import upstox_orders as ux
+
+IST = timezone(timedelta(hours=5, minutes=30))
+KEY, LOT = "NSE_FO|58072", 65
+MH, ML, RANGE = 24200.0, 24000.0, 200.0
+LT, LS, LG = MH, ML, MH + 5 * RANGE          # long: trigger / stop / target
+ST, SS, SG = ML, MH, ML - 5 * RANGE          # short: trigger / stop / target
+
+CALLS: list = []
+passed = failed = 0
+findings: list = []
+
+E.tg = lambda t: CALLS.append(t)
+for _n in ("place_limit_buy", "place_limit_sell", "place_sl_m", "place_sl", "cancel_order", "modify_order"):
+    def _mk(n):
+        def f(*a, **k): CALLS.append(f"[REAL {n}]"); return "ID"
+        return f
+    setattr(ux, _n, _mk(_n))
+
+# A live price INSIDE the range is the normal case, so it is the harness
+# default — the bot now refuses to arm without one, and without this stub every
+# arming step would be testing the no-quote path by accident.
+ux.get_quote = lambda t, k: {"last_price": (MH + ML) / 2}
+
+said = lambda *f: any(all(x.lower() in c.lower() for x in f) for c in CALLS)
+intended = lambda: [c for c in CALLS if c.startswith("WOULD")]
+count = lambda frag: sum(1 for c in CALLS if frag.lower() in c.lower())
+
+
+def order(tag, price=0.0, trigger=0.0, oid="O-1", status="open"):
+    return {"instrument_token": KEY, "tag": tag, "order_id": oid,
+            "price": price, "trigger_price": trigger, "status": status}
+
+
+def done(tag, price, qty=LOT, oid="D-1"):
+    return {"instrument_token": KEY, "tag": tag, "order_id": oid, "status": "complete",
+            "price": price, "average_price": price, "quantity": qty}
+
+
+def payload(*, state="watching_breakout", direction=None, entry_valid=False,
+            dte=30.0, as_of="b-01"):
+    expiry = int((datetime.now(tz=IST) + timedelta(days=dte)).timestamp() * 1000)
+    return {
+        "tokenValid": True, "error": None,
+        "contract": {"instrumentKey": KEY, "lotSize": LOT, "tickSize": 10,
+                     "tradingSymbol": "NIFTY FUT 29 SEP 26", "expiry": expiry},
+        "signal": {"state": state, "direction": direction, "entryValid": entry_valid,
+                   "motherHigh": MH, "motherLow": ML, "range": RANGE,
+                   "longTrigger": LT, "longStop": LS, "longTarget": LG,
+                   "shortTrigger": ST, "shortStop": SS, "shortTarget": SG,
+                   "asOf": as_of},
+    }
+
+
+def step(n, title, desc, expectations, *, position=0, avg=None, book=None, track=None,
+         owned=True, **kw):
+    global passed, failed
+    CALLS.clear()
+    # One of OUR stop-entries must have filled for the position to be ours. The
+    # Fib bot trades the same contract on the same account, so without this the
+    # bot cannot tell its own trade from that one.
+    book = list(book or [])
+    if position and owned and not any((o.get("status") or "") == "complete"
+                                      and (o.get("tag") or "") in E.ENTRY_TAGS for o in book):
+        book.append({"instrument_token": KEY, "status": "complete",
+                     "tag": E.TAG_ENTRY_L if position > 0 else E.TAG_ENTRY_S,
+                     "order_id": "FILLED-ENTRY", "average_price": avg})
+    ux.get_positions = lambda t: ([{"instrument_token": KEY, "quantity": position,
+                                    "average_price": avg}] if position else [])
+    ux.get_order_book = lambda t: list(book)
+    st = track if track is not None else {}
+    E.reconcile("tok", payload(**kw), st)
+
+    print(f"\nSTEP {n} — {title}")
+    print(f"  input     {desc}")
+    acts = intended()
+    print(f"  intended  {acts[0] if acts else '(nothing)'}")
+    for a in acts[1:]:
+        print(f"            {a}")
+    for note in [c for c in CALLS if not c.startswith(("WOULD", "[REAL"))]:
+        print(f"  said      {note.splitlines()[0]}")
+    for label, cond in expectations:
+        if cond(): passed += 1; print(f"  ✓ PASS    {label}")
+        else:      failed += 1; print(f"  ✗ FAIL    {label}"); findings.append(f"STEP {n}: {label}")
+    if any(c.startswith("[REAL") for c in CALLS):
+        failed += 1; print("  ✗ FAIL    DRY MODE LEAKED A REAL ORDER")
+        findings.append(f"STEP {n}: dry mode leaked a real order")
+    return st
+
+
+def check(label, cond):
+    global passed, failed
+    if cond: passed += 1; print(f"  ✓ PASS    {label}")
+    else:    failed += 1; print(f"  ✗ FAIL    {label}"); findings.append(label)
+
+
+print("═" * 74)
+print("  Inside-bar executor — validation suite")
+print(f"  LIVE = {E.LIVE}   ({'places nothing' if not E.LIVE else 'DANGER'})")
+print("═" * 74)
+if E.LIVE:
+    sys.exit("Refusing to run: this asserts on intentions, LIVE acts on them.")
+
+# ══ PART 1 — LONG PATH ══════════════════════════════════════════════════════
+print("\n" + "━" * 74 + "\n  PART 1a — LONG PATH\n" + "━" * 74)
+
+step(1, "NO SETUP", "no inside bar · flat",
+     [("intends nothing", lambda: not intended())], state="no_setup")
+
+step(2, "INSIDE BAR FORMS — arm BOTH sides",
+     "watching_breakout · flat · nothing resting",
+     [("arms a BUY stop at the mother high",
+       lambda: said("place BUY trigger order for", f"fires at {MH}")),
+      # A long breakout's limit rests ONE RUPEE ABOVE its trigger. Left on
+      # SL-M, market_protection put it ~0.5% away — a BUY armed at 24281.70
+      # rested with a limit of 24403, ~₹7,900 of slippage on 65 lots.
+      ("  ...its limit is 1 rupee ABOVE the trigger",
+       lambda: said(f"fills at {ux.stop_limit_price(MH, 'BUY', tick_paise=10)}")),
+      ("arms a SELL stop at the mother low",
+       lambda: said("place SELL trigger order for", f"fires at {ML}")),
+      ("  ...and a short's limit 1 rupee BELOW",
+       lambda: said(f"fills at {ux.stop_limit_price(ML, 'SELL', tick_paise=10)}")),
+      ("arms exactly two orders", lambda: count("WOULD place") == 2),
+      ("one lot each", lambda: said(f"trigger order for {LOT}"))],
+     state="watching_breakout")
+CALLS.clear()
+ux.get_positions = lambda t: []
+ux.get_order_book = lambda t: []
+snap = E.reconcile("tok", payload(state="watching_breakout"), {})
+check("snapshot carries both mother levels",
+      snap.get("mother_high") == MH and snap.get("mother_low") == ML)
+
+# The break already happened and we are still flat: the resting orders should
+# have filled. Arming now would place a stop-entry at a level price is already
+# past, which fires instantly — the chasing entry this design exists to avoid.
+step(3, "BREAK ALREADY HAPPENED, still flat",
+     "long_signal · flat · orders waiting from the watch",
+     [("does NOT chase the break", lambda: not said("ARM")),
+      ("pulls both orders waiting", lambda: count("cancel waiting") == 2),
+      ("says the setup is no longer live", lambda: said("no live setup"))],
+     state="long_signal", direction="long", entry_valid=True, as_of="b-02",
+     book=[order(E.TAG_ENTRY_L, trigger=MH, oid="EL"), order(E.TAG_ENTRY_S, trigger=ML, oid="ES")])
+
+stL = step(4, "LONG STOP-ENTRY FILLED", f"position +{LOT} @ {MH} · short entry still resting",
+           [("CANCELS the other entry (OCO)", lambda: said("cancel the other entry", "OCO")),
+            # SL, not SL-M: the limit is named explicitly now. It must rest
+            # BELOW the trigger for a long's protective stop.
+            ("stop is an SL SELL triggered at the mother LOW", lambda: said("WOULD place STOP-LOSS SELL", str(LS))),
+            ("...with its limit 1 rupee BELOW that trigger",
+             lambda: said(f"fills at {ux.stop_limit_price(LS, 'SELL', tick_paise=10)}")),
+            ("target is a limit sell at entry + 5×range", lambda: said("WOULD place TARGET for", str(LG))),
+            ("announces LONG and which level broke", lambda: said("TRADE OPEN — bought") and said("broke above"))],
+           position=LOT, avg=MH, state="long_signal", direction="long", as_of="b-03",
+           book=[order(E.TAG_ENTRY_S, trigger=ML, oid="ES")])
+check("remembers direction and the bracket it entered with",
+      stL.get("long") is True and stL.get("stop") == LS and stL.get("target") == LG)
+
+bracketsL = [order(E.TAG_STOP, trigger=LS, oid="S", status="trigger pending"),
+             order(E.TAG_TARGET, price=LG, oid="T")]
+step(5, "LONG HOLDING", "position open · both brackets resting",
+     [("intends nothing further", lambda: not intended())],
+     position=LOT, avg=MH, book=bracketsL, track=dict(stL),
+     state="long_signal", direction="long", as_of="b-04")
+
+st = {"entry_bar": "b-03", "bars": 6, "last_bar": "b-09", "entry_price": MH,
+      "long": True, "stop": LS, "target": LG}
+step("5a", "LONG TARGET HIT", "flat · target complete · stop orphaned",
+     [("calls it a WIN", lambda: said("WIN")),
+      ("profit computed the LONG way", lambda: said("+1000.0 pts")),
+      ("cancels the orphaned stop", lambda: said("WOULD cancel leftover", E.TAG_STOP)),
+      ("warns it would OPEN a position", lambda: said("could accidentally start one"))],
+     position=0, track=st, state="no_setup",
+     book=[order(E.TAG_STOP, trigger=LS, oid="S", status="trigger pending"), done(E.TAG_TARGET, LG)])
+check("clears tracking after the win", st == {})
+
+st = {"entry_bar": "b-03", "bars": 2, "last_bar": "b-05", "entry_price": MH,
+      "long": True, "stop": LS, "target": LG}
+step("5b", "LONG STOP HIT", "flat · stop complete · target orphaned",
+     [("calls it a LOSS", lambda: said("LOSS")),
+      ("loss is entry − stop", lambda: said("-200.0 pts")),
+      ("cancels the orphaned target", lambda: said("WOULD cancel leftover", E.TAG_TARGET))],
+     position=0, track=st, state="no_setup",
+     book=[done(E.TAG_STOP, LS), order(E.TAG_TARGET, price=LG, oid="T")])
+
+st = {"entry_bar": "b-03", "bars": E.TIMEOUT_BARS, "last_bar": "b-23", "entry_price": MH,
+      "long": True, "stop": LS, "target": LG}
+step("5c", f"LONG TIMEOUT ({E.TIMEOUT_BARS} bars)", "position open · neither level hit",
+     [("exits with a limit SELL", lambda: said("WOULD", "TIME LIMIT") and said("closing")),
+      ("never a market order", lambda: not said("market order")),
+      # Only the closing line carries a price; the sibling cancels do not, so
+      # this selects on "closing" rather than on every line mentioning a time
+      # limit — the reworded messages made the old parse blow up on a cancel.
+      ("prices BELOW entry to get filled", lambda: any(
+          "closing" in c.lower() and " at " in c
+          and float(c.split(" at ")[-1].strip()) < MH for c in intended())),
+      ("cancels both brackets", lambda: count("WOULD cancel") >= 2)],
+     position=LOT, avg=MH, track=st, book=bracketsL,
+     state="long_signal", direction="long", as_of="b-23")
+
+# ══ PART 1b — SHORT PATH ════════════════════════════════════════════════════
+print("\n" + "━" * 74 + "\n  PART 1b — SHORT PATH (every sign flips)\n" + "━" * 74)
+
+step(6, "SHORT STOP-ENTRY armed at the mother low",
+     "watching_breakout · flat",
+     [("the SELL side is armed below", lambda: said("place SELL trigger order for", f"fires at {ML}")),
+      ("and the BUY side above, together", lambda: said("place BUY trigger order for", f"fires at {MH}"))],
+     state="watching_breakout", as_of="s-01")
+
+stS = step(7, "SHORT STOP-ENTRY FILLED", f"position −{LOT} @ {ML} · long entry still resting",
+           [("CANCELS the other entry (OCO)", lambda: said("cancel the other entry", "OCO")),
+            # A short's stop is the mirror: BUY, and its limit rests ABOVE.
+            ("stop is an SL BUY triggered at the mother HIGH", lambda: said("WOULD place STOP-LOSS BUY", str(SS))),
+            ("...with its limit 1 rupee ABOVE that trigger",
+             lambda: said(f"fills at {ux.stop_limit_price(SS, 'BUY', tick_paise=10)}")),
+            ("target is a limit BUY below", lambda: said("WOULD place TARGET for", str(SG))),
+            ("announces SHORT and which level broke", lambda: said("TRADE OPEN — sold") and said("broke below"))],
+           position=-LOT, avg=ML, state="short_signal", direction="short", as_of="s-02",
+           book=[order(E.TAG_ENTRY_L, trigger=MH, oid="EL")])
+check("records it as a short", stS.get("long") is False and stS.get("stop") == SS)
+
+step(8, "SHORT HOLDING", "position open · brackets resting",
+     [("intends nothing further", lambda: not intended())],
+     position=-LOT, avg=ML, track=dict(stS),
+     book=[order(E.TAG_STOP, trigger=SS, oid="S", status="trigger pending"),
+           order(E.TAG_TARGET, price=SG, oid="T")],
+     state="short_signal", direction="short", as_of="s-03")
+
+st = {"entry_bar": "s-02", "bars": 4, "last_bar": "s-06", "entry_price": ML,
+      "long": False, "stop": SS, "target": SG}
+step("8a", "SHORT TARGET HIT", "flat · target complete",
+     [("calls it a WIN", lambda: said("WIN")),
+      ("profit computed the SHORT way (entry − exit)", lambda: said("+1000.0 pts"))],
+     position=0, track=st, state="no_setup", book=[done(E.TAG_TARGET, SG)])
+
+st = {"entry_bar": "s-02", "bars": 4, "last_bar": "s-06", "entry_price": ML,
+      "long": False, "stop": SS, "target": SG}
+step("8b", "SHORT STOP HIT", "flat · stop complete",
+     [("calls it a LOSS", lambda: said("LOSS")),
+      ("a short stopped ABOVE entry loses", lambda: said("-200.0 pts"))],
+     position=0, track=st, state="no_setup", book=[done(E.TAG_STOP, SS)])
+
+st = {"entry_bar": "s-02", "bars": E.TIMEOUT_BARS, "last_bar": "s-22", "entry_price": ML,
+      "long": False, "stop": SS, "target": SG}
+step("8c", f"SHORT TIMEOUT ({E.TIMEOUT_BARS} bars)", "position open · neither hit",
+     [("exits with a limit BUY", lambda: said("WOULD", "TIME LIMIT") and said("closing")),
+      ("prices ABOVE entry to get filled", lambda: any(
+          "closing" in c.lower() and " at " in c
+          and float(c.split(" at ")[-1].strip()) > ML for c in intended())),
+      ("cancels both brackets", lambda: count("WOULD cancel") >= 2)],
+     position=-LOT, avg=ML, track=st,
+     book=[order(E.TAG_STOP, trigger=SS, oid="S", status="trigger pending"),
+           order(E.TAG_TARGET, price=SG, oid="T")],
+     state="short_signal", direction="short", as_of="s-22")
+
+# ══ CRITICAL EDGE CASES ═════════════════════════════════════════════════════
+print("\n" + "━" * 74 + "\n  CRITICAL EDGE CASES\n" + "━" * 74)
+
+# The engine voids a both-sides bar (direction null, entryValid false). The
+# executor must respect that and not invent a side.
+step("E1", "SETUP VOIDED (engine saw one bar break both sides)",
+     "no_setup · flat · nothing resting",
+     [("arms nothing", lambda: not said("ARM")),
+      ("intends nothing at all", lambda: not intended())],
+     state="no_setup", direction=None, entry_valid=False, as_of="e-01")
+
+step("E1b", "SETUP VOIDED with both entries armed",
+     "voided setup · both stop-entries resting from the watch",
+     [("pulls BOTH armed entries", lambda: count("cancel waiting") == 2),
+      ("arms nothing new", lambda: not said("ARM"))],
+     state="no_setup", direction=None, entry_valid=False, as_of="e-02",
+     book=[order(E.TAG_ENTRY_L, trigger=MH, oid="EL"), order(E.TAG_ENTRY_S, trigger=ML, oid="ES")])
+
+# Whipsaw: long filled, then price reverses through the mother low.
+stW = {"entry_bar": "w-01", "bars": 1, "last_bar": "w-02", "entry_price": MH,
+       "long": True, "stop": LS, "target": LG}
+step("E2", "WHIPSAW — stopped out of the long",
+     "flat after the stop filled · signal now shows the SHORT side",
+     [("recognises the loss", lambda: said("LOSS")),
+      ("does NOT immediately reverse into a short", lambda: not said("ARM")),
+      ("cancels the orphaned target", lambda: said("WOULD cancel leftover", E.TAG_TARGET))],
+     position=0, track=stW, state="no_setup", direction=None, entry_valid=False,
+     book=[done(E.TAG_STOP, LS), order(E.TAG_TARGET, price=LG, oid="T")], as_of="w-03")
+
+step("E3", "NEVER TWO POSITIONS",
+     "already long · a fresh setup is watching",
+     [("does not arm anything while positioned", lambda: not said("ARM"))],
+     position=LOT, avg=MH, book=bracketsL, track=dict(stL),
+     state="watching_breakout", as_of="b-05")
+
+step("E4", "NEW SETUP WHILE IN A TRADE",
+     "position open · a different inside bar has formed",
+     [("does not re-bracket the live position", lambda: not intended())],
+     position=LOT, avg=MH, book=bracketsL, track=dict(stL),
+     state="watching_breakout", direction=None, as_of="b-06")
+
+E._notified.clear()
+step("E5", "EXPIRY GUARD", "watching · flat · 1.0d to expiry",
+     [("arms nothing", lambda: not said("ARM")),
+      ("says it is standing aside", lambda: said("Not trading"))],
+     state="watching_breakout", dte=1.0)
+
+E._notified.clear()
+step("E6", "EXPIRY GUARD pulls armed entries",
+     "watching · 1.0d to expiry · both entries resting",
+     [("cancels both armed entries", lambda: count("cancel waiting") == 2)],
+     state="watching_breakout", dte=1.0,
+     book=[order(E.TAG_ENTRY_L, trigger=MH, oid="EL"), order(E.TAG_ENTRY_S, trigger=ML, oid="ES")])
+
+# Same-bar stop+target is resolved by the pure ENGINE (insideBar.js), not by the
+# executor — so it is asserted where the engine lives, in the dashboard repo's
+# `npm run test:inside-bar`. Verified here too when both the dashboard checkout
+# and node happen to be present, which is true on a dev machine and not on the
+# droplet. Skipping is correct rather than a gap: the droplet does not contain
+# the code this would be testing.
+print("\nSTEP E7 — SAME-BAR STOP AND TARGET (engine rule)")
+import json as _json, shutil, subprocess
+_engine = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                       "..", "nse-dashboard", "app", "lib", "insideBar.js")
+if not shutil.which("node") or not os.path.exists(_engine):
+    print("  ⚠ SKIP    engine not reachable here (no node, or dashboard repo absent)")
+    print("            asserted in nse-dashboard: npm run test:inside-bar")
+else:
+    _probe = subprocess.run(["node", "-e", """
+const fs=require('fs');
+const src=fs.readFileSync(process.argv[1],'utf8').replace(/export /g,'');
+const {manageInsideBarTrade}=(new Function(src+';return {manageInsideBarTrade};'))();
+const b=(o,h,l,c)=>({open:o,high:h,low:l,close:c});
+const L=manageInsideBarTrade({direction:'long',entryPrice:24200,entryIndex:0,stopPrice:24000,
+  targetPrice:25200,candles:[b(24200,24250,24180,24230),b(24230,25260,23990,24100)]});
+const S=manageInsideBarTrade({direction:'short',entryPrice:24000,entryIndex:0,stopPrice:24200,
+  targetPrice:23000,candles:[b(24000,24050,23950,23980),b(23980,24210,22990,23500)]});
+console.log(JSON.stringify({long:L.action,short:S.action}));
+""", _engine], capture_output=True, text=True)
+    if _probe.returncode == 0:
+        res = _json.loads(_probe.stdout.strip())
+        check("long: a bar spanning both resolves to the STOP", res["long"] == "stop")
+        check("short: a bar spanning both resolves to the STOP", res["short"] == "stop")
+    else:
+        print(f"  ⚠ SKIP    engine probe failed: {_probe.stderr.strip()[:120]}")
+
+# Token dying mid-position.
+print("\nSTEP E8 — TOKEN REJECTED WHILE HOLDING A POSITION")
+CALLS.clear(); E._notified.clear()
+def _rejected(*a, **k):
+    raise ux.UpstoxError("Invalid token used to access API", status=401, code="UDAPI100050")
+ux.get_positions = _rejected
+E.fetch_signal = lambda: payload(state="long_signal", direction="long", entry_valid=True)
+_real_load, ux.load_token = ux.load_token, (lambda *a, **k: "tok")
+E.poll_once()
+ux.load_token = _real_load
+print(f"  said      {(CALLS[0].splitlines()[0] if CALLS else '(nothing)')}")
+check("fires the rejection alert", said("TOKEN REJECTED"))
+check("states the exchange stop is still live", said("remain live"))
+check("places nothing", not intended())
+
+CALLS.clear(); E._notified.clear()
+def _no_token(*a, **k):
+    raise ux.TokenUnavailable("Token has expired (03:30 IST boundary) — sync a fresh one.")
+ux.load_token = _no_token
+E.poll_once()
+ux.load_token = _real_load
+check("a missing token alerts loudly", said("CANNOT TRADE"))
+check("and places nothing", not intended())
+
+
+
+print("\nSTEP E9 — BOTH ENTRIES FILLED IN ONE MOVE (the OCO hazard)")
+CALLS.clear(); E._notified.clear()
+ux.get_positions = lambda t: []
+ux.get_order_book = lambda t: [done(E.TAG_ENTRY_L, MH), done(E.TAG_ENTRY_S, ML),
+                               order(E.TAG_STOP, trigger=LS, oid="S")]
+dbl = {}
+snapD = E.reconcile("tok", payload(state="watching_breakout"), dbl)
+print(f"  input     both stop-entries show complete · net position 0")
+for n in [c for c in CALLS if not c.startswith(("WOULD", "[REAL"))]:
+    print(f"  said      {n.splitlines()[0]}")
+print(f"  intended  {intended()[0] if intended() else '(nothing)'}")
+check("detects the double fill", said("BOTH trigger orders filled"))
+check("tells you to check the app", said("CHECK THE APP"))
+check("cancels every resting order", said("cancel", "double fill"))
+check("does NOT arm again", not said("ARM"))
+check("stands down rather than reasoning about it", snapD.get("note") == "double fill — stood down")
+
+# ══ ROLL — managing a contract the signal has moved on from ═════════════════
+print("\n" + "━" * 74 + "\n  ROLL BEHAVIOUR\n" + "━" * 74)
+OLDKEY = "NSE_FO|AUG-OLD"
+
+# Entry pins the contract, so a later roll cannot lose track of the position.
+stR = step("R1", "entry pins the contract", "fills on the contract the signal named",
+           [("announces the position", lambda: said("TRADE OPEN"))],
+           position=LOT, avg=MH, state="watching_breakout", as_of="r-01")
+check("records which contract it is in", stR.get("instrument") == KEY)
+
+# Now the dashboard rolls: the signal names SEP while the position is in AUG.
+# Positions are keyed by instrument, so without the pin the bot would see zero
+# here and open a second position.
+CALLS.clear()
+rolled_state = {"entry_bar": "r-01", "bars": 2, "last_bar": "r-02", "entry_price": MH,
+                "long": True, "stop": LS, "target": LG, "instrument": OLDKEY}
+ux.get_positions = lambda t: [{"instrument_token": OLDKEY, "quantity": LOT, "average_price": MH}]
+ux.get_order_book = lambda t: [order(E.TAG_STOP, trigger=LS, oid="S", status="trigger pending"),
+                               order(E.TAG_TARGET, price=LG, oid="T")]
+for o in ux.get_order_book(None):
+    o["instrument_token"] = OLDKEY
+snapR = E.reconcile("tok", payload(state="watching_breakout", as_of="r-03"), rolled_state)
+print("\nSTEP R2 — SIGNAL HAS ROLLED, POSITION HAS NOT")
+print(f"  input     holding {OLDKEY} · signal now names {KEY} · armed long")
+print(f"  intended  {intended()[0] if intended() else '(nothing)'}")
+for n in [c for c in CALLS if not c.startswith(("WOULD", "[REAL"))]:
+    print(f"  said      {n.splitlines()[0]}")
+check("still sees the position it holds", snapR.get("position_qty") == LOT)
+check("does NOT arm on the new contract while positioned", not said("ARM"))
+check("says it is mid-roll", said("rolled to") or said("Holding"))
+check("snapshot reports the contract actually held", snapR.get("instrument") == OLDKEY)
+
+# Once flat, the pin clears and the new contract is tradeable.
+CALLS.clear()
+flat_state = dict(rolled_state)
+ux.get_positions = lambda t: []
+ux.get_order_book = lambda t: []
+E.reconcile("tok", payload(state="no_setup"), flat_state)
+check("closing the position clears the pin", flat_state == {})
+
+CALLS.clear()
+snapN = E.reconcile("tok", payload(state="watching_breakout", as_of="r-05"), {})
+print("\nSTEP R3 — FLAT AFTER THE ROLL")
+print(f"  intended  {intended()[0] if intended() else '(nothing)'}")
+check("places orders on the NEW contract once flat", said("trigger order"))
+check("and targets the new instrument", snapN.get("instrument") == KEY)
+
+# ══ PART 3 — ISOLATION FROM THE LIVE FIB BOT ════════════════════════════════
+print("\n" + "━" * 74 + "\n  PART 3 — ISOLATION FROM THE LIVE FIB BOT\n" + "━" * 74)
+import executor as F
+check("order tags do not overlap",
+      not ({*E.ENTRY_TAGS, E.TAG_STOP, E.TAG_TARGET} & {F.TAG_ENTRY, F.TAG_STOP, F.TAG_TARGET}))
+check("state files are different paths", E.STATE_PATH != F.STATE_PATH)
+# Compared as exact lookups, not substrings: "FIB_LIVE" CONTAINS "IB_LIVE", so a
+# naive `in` test reports a collision that does not exist. os.environ.get is an
+# exact key lookup, so the two flags are genuinely independent.
+_ib_src, _fib_src = open(E.__file__).read(), open(F.__file__).read()
+check("each bot reads its own LIVE env key",
+      'os.environ.get("IB_LIVE"' in _ib_src and 'os.environ.get("FIB_LIVE"' in _fib_src)
+check("neither reads the other's LIVE key",
+      'os.environ.get("FIB_LIVE"' not in _ib_src and 'os.environ.get("IB_LIVE"' not in _fib_src)
+check("both default to DRY", E.LIVE is False and F.LIVE is False)
+check("this bot prefixes its Telegram messages", E.PREFIX.strip() == "[IB]")
+check("Telegram tokens come from different env vars",
+      "IB_TELEGRAM_BOT_TOKEN" in open(E.__file__).read()
+      and "IB_TELEGRAM_BOT_TOKEN" not in open(F.__file__).read())
+check("kill switches are per-process, not shared",
+      E.is_enabled.__module__ != F.is_enabled.__module__)
+E._set_enabled(False)
+check("stopping THIS bot leaves the Fib bot enabled", not E.is_enabled() and F.is_enabled())
+E._set_enabled(True)
+check("systemd units are separate files",
+      os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), "fib-ib-executor.service"))
+      and os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), "fib-token-receiver.service")))
+check("the token file is SHARED and read-only to both",
+      "TOKEN_PATH" in open(ux.__file__).read() and "open(path" in open(ux.__file__).read())
+
+
+
+# ══ SHARED-ACCOUNT SAFETY ═══════════════════════════════════════════════════
+# Regression cover for 27 Aug 2026. Both bots trade the SAME NIFTY future on the
+# SAME Upstox account, and Upstox nets positions per instrument — so the Fib
+# bot's fill showed up here as an ordinary long. This bot announced
+#   "TRADE OPEN — bought 65 @ 0.0 (broke above None)"
+# three seconds after that fill, having placed nothing all day, wrote
+# stop: null / target: null, and began counting toward its own 20-bar timeout —
+# at the end of which it would have sold a position it did not own.
+
+print("\n" + "═" * 74)
+print("  SHARED-ACCOUNT SAFETY")
+print("═" * 74)
+
+# A position with none of OUR entries filled is not ours.
+CALLS.clear()
+ux.get_positions = lambda t: [{"instrument_token": KEY, "quantity": LOT, "average_price": 0.0}]
+ux.get_order_book = lambda t: [{"instrument_token": KEY, "tag": "fibentry", "status": "complete",
+                                "order_id": "FIB1", "average_price": 24379.8}]
+st = {}
+snap = E.reconcile("tok", payload(state="no_setup"), st)
+joined = " ".join(str(c) for c in CALLS)
+check("a foreign position is refused, not adopted", "Not trading" in joined)
+check("  ...and it NAMES the bot that owns it, from the order tag",
+      "the Fib bot" in joined and "24379.8" in joined)
+# Check for actual order intents, not the word "place" — the explanation prose
+# now contains it, and a substring match on it would pass whatever we wrote.
+check("  ...nothing is placed against it",
+      not any("WOULD place" in str(c) or "[REAL CALL" in str(c) or "ARM " in str(c)
+              for c in CALLS))
+check("  ...no entry_bar is written for it", not st.get("entry_bar"))
+
+# Standing down must also PULL our live stop-entries. Left resting they would
+# fill into a position we just refused to manage, netting both bots' size.
+CALLS.clear(); E._notified.clear()
+ux.get_order_book = lambda t: [
+    {"instrument_token": KEY, "tag": "fibentry", "status": "complete",
+     "order_id": "FIB1", "average_price": 24379.8},
+    {"instrument_token": KEY, "tag": E.TAG_ENTRY_L, "status": "open",
+     "order_id": "MINE-L", "trigger_price": MH},
+]
+E.reconcile("tok", payload(state="watching_breakout"), {})
+joined = " ".join(str(c) for c in CALLS)
+check("not trading cancels our own orders waiting", "MINE-L" in joined and "cancel" in joined.lower())
+check("  ...and still arms nothing", "ARM" not in joined)
+check("  ...and the snapshot says why", snap.get("note", "").startswith("foreign"))
+
+# Our own fill IS adopted, and brings its bracket with it.
+CALLS.clear(); E._notified.clear()
+ux.get_positions = lambda t: [{"instrument_token": KEY, "quantity": LOT,
+                               "average_price": 0.0, "buy_price": MH}]
+ux.get_order_book = lambda t: [{"instrument_token": KEY, "tag": E.TAG_ENTRY_L,
+                                "status": "complete", "order_id": "OURS", "average_price": MH}]
+st = {"armed": {"mother_high": MH, "mother_low": ML, "long_stop": LS, "long_target": LG,
+                "short_stop": SS, "short_target": SG}}
+E.reconcile("tok", payload(state="no_setup"), st)
+joined = " ".join(str(c) for c in CALLS)
+check("our own fill IS adopted", st.get("entry_bar") is not None)
+check("bracket comes from what we ARMED at, not the dead signal",
+      st.get("stop") == LS and st.get("target") == LG)
+check("  ...so the message names a real level, never None",
+      "broke above" in joined and "None" not in joined)
+check("  ...and average_price 0.0 falls back to buy_price", f"at {MH}" in joined)
+
+# ── A STANDING CONDITION MUST NOT SPAM ──────────────────────────────────────
+# The 2 Sep incident itself: this notice carried the live price, so tg_once saw
+# a new string every poll and re-sent every 15 seconds.
+print("\n" + "=" * 74)
+print("  A STANDING STAND-DOWN MUST BE ANNOUNCED ONCE")
+print("=" * 74)
+
+CALLS.clear(); E._notified.clear()
+ux.get_positions = lambda t: []
+ux.get_order_book = lambda t: []
+for px in (ML - 92.0, ML - 94.0, ML - 97.3, ML - 99.1, ML - 101.5):
+    ux.get_quote = lambda t, k, _p=px: {"last_price": _p}
+    E.reconcile("tok", payload(state="watching_breakout"), {})
+notices = [c for c in CALLS if "Not placing orders" in str(c)]
+check("5 polls, price moving below the range -> ONE notice", len(notices) == 1)
+
+CALLS.clear(); E._notified.clear()
+for _ in range(5):
+    ux.get_quote = lambda t, k: {}
+    E.reconcile("tok", payload(state="watching_breakout"), {})
+check("5 polls with no quote -> ONE notice",
+      len([c for c in CALLS if "cannot read a live price" in str(c)]) == 1)
+
+ux.get_quote = lambda t, k: {"last_price": (MH + ML) / 2}
+
+# ── 1 SEP 2026: ARMED INTO A SETUP PRICE HAD ALREADY LEFT ───────────────────
+# Stopped out at 24175.5, and two seconds later armed a SELL stop-entry at
+# 24217 — 45 points ABOVE a market trading 24171-24215. A sell stop fires when
+# price FALLS to its trigger; price was already through it. sig_state said
+# "watching_breakout" because insideBar.js reads CLOSED bars, and at 09:16 the
+# newest closed hourly bar was yesterday's.
+print("\n" + "═" * 74)
+print("  STALE SETUP: PRICE ALREADY OUTSIDE THE MOTHER BAR")
+print("═" * 74)
+
+def _with_price(px):
+    ux.get_quote = lambda t, k: ({"last_price": px} if px is not None else {})
+
+CALLS.clear(); E._notified.clear()
+ux.get_positions = lambda t: []
+ux.get_order_book = lambda t: []
+_with_price(ML - 45)                      # price below the mother low
+E.reconcile("tok", payload(state="watching_breakout"), {})
+joined = " ".join(str(c) for c in CALLS)
+check("price BELOW the range -> arms nothing", "WOULD place" not in joined)
+check("  ...and says the break already happened", "already broken below the range" in joined)
+
+CALLS.clear(); E._notified.clear()
+_with_price(MH + 45)                      # price above the mother high
+E.reconcile("tok", payload(state="watching_breakout"), {})
+joined = " ".join(str(c) for c in CALLS)
+check("price ABOVE the range -> arms nothing", "WOULD place" not in joined)
+
+# A resting pair from before the break must be pulled, not left sitting.
+CALLS.clear(); E._notified.clear()
+ux.get_order_book = lambda t: [
+    {"instrument_token": KEY, "tag": E.TAG_ENTRY_L, "status": "open",
+     "order_id": "L1", "trigger_price": MH, "price": MH + 1},
+    {"instrument_token": KEY, "tag": E.TAG_ENTRY_S, "status": "open",
+     "order_id": "S1", "trigger_price": ML, "price": ML - 1}]
+_with_price(ML - 45)
+E.reconcile("tok", payload(state="watching_breakout"), {})
+joined = " ".join(str(c) for c in CALLS)
+check("  ...and pulls entries already resting", "L1" in joined and "S1" in joined)
+
+# Inside the bar it must still work exactly as before.
+CALLS.clear(); E._notified.clear()
+ux.get_order_book = lambda t: []
+_with_price((MH + ML) / 2)
+E.reconcile("tok", payload(state="watching_breakout"), {})
+joined = " ".join(str(c) for c in CALLS)
+check("price INSIDE the range -> still arms both sides",
+      "place BUY trigger order for" in joined and "place SELL trigger order for" in joined)
+
+# No quote at all: unverifiable, so arm nothing rather than arm blind.
+CALLS.clear(); E._notified.clear()
+_with_price(None)
+E.reconcile("tok", payload(state="watching_breakout"), {})
+joined = " ".join(str(c) for c in CALLS)
+check("no live price -> arms nothing rather than arming blind", "WOULD place" not in joined)
+check("  ...and says why", "cannot read a live price" in joined)
+
+ux.get_quote = lambda t, k: {"last_price": (MH + ML) / 2}
+
+# An order already resting with the old 0.5% band keeps its trigger but has the
+# wrong limit. Without an explicit check it would sit like that until the level
+# moved, so the limit is compared too.
+CALLS.clear(); E._notified.clear()
+ux.get_positions = lambda t: []
+_wide = {"instrument_token": KEY, "tag": E.TAG_ENTRY_L, "status": "open",
+         "order_id": "WIDE", "trigger_price": MH, "price": MH * 1.005}
+ux.get_order_book = lambda t: [_wide]
+E.reconcile("tok", payload(state="watching_breakout"), {})
+joined = " ".join(str(c) for c in CALLS)
+check("a resting order with a too-wide limit is corrected",
+      "WIDE" in joined and "limit was too far from the trigger" in joined)
+check("  ...to 1 rupee from the trigger",
+      f"fills at {ux.stop_limit_price(MH, 'BUY', tick_paise=10)}" in joined)
+
+# ── THE 28 AUG SEQUENCE, END TO END ─────────────────────────────────────────
+# Friday: our long stop-entry fills at 15:1x. get_positions has NOT caught up
+# yet — which is exactly what happened, the bot polled 472 more times and never
+# saw a position — and then the session ends. Monday: the position is there and
+# the filled order has aged out of the book.
+print("\n" + "═" * 74)
+print("  FRIDAY FILL -> WEEKEND -> MONDAY BRACKET")
+print("═" * 74)
+
+_fri_book = [{"instrument_token": KEY, "tag": E.TAG_ENTRY_L, "status": "complete",
+              "order_id": "FRI-L", "average_price": 24357.9,
+              "order_timestamp": "2026-08-28 15:19:00"}]
+carry = {"armed": {"mother_high": MH, "mother_low": ML, "long_stop": LS,
+                   "long_target": LG, "short_stop": SS, "short_target": SG}}
+
+# FRIDAY — order complete, position endpoint still reporting flat
+CALLS.clear(); E._notified.clear()
+ux.get_positions = lambda t: []
+ux.get_order_book = lambda t: list(_fri_book)
+E.reconcile("tok", payload(state="watching_breakout", as_of="fri-15"), carry)
+joined = " ".join(str(c) for c in CALLS)
+check("FRI: the fill is recorded even though the position reads flat",
+      carry.get("entry_fill") is not None)
+check("FRI: it says the bracket will go on at the next open", "next open" in joined)
+check("FRI: it remembers the direction from our own tag", carry["entry_fill"]["long"] is True)
+check("FRI: and the stop it was armed on", carry["entry_fill"]["stop"] == LS)
+check("FRI: the record is NOT wiped by the same-bar flat path",
+      carry.get("entry_fill") is not None)
+
+# MONDAY — position is there, Friday's order is gone from the book
+CALLS.clear(); E._notified.clear()
+ux.get_positions = lambda t: [{"instrument_token": KEY, "quantity": LOT,
+                               "average_price": 0.0, "buy_price": 24357.9}]
+ux.get_order_book = lambda t: []
+E.reconcile("tok", payload(state="no_setup", as_of="mon-01"), carry)
+joined = " ".join(str(c) for c in CALLS)
+check("MON: the position is recognised as OURS", "Not trading" not in joined)
+check("MON: a STOP is placed", "WOULD place STOP-LOSS" in joined)
+check("MON: at the level Friday armed", str(LS) in joined)
+check("MON: a TARGET is placed", "WOULD place TARGET" in joined)
+check("MON: entry price comes from the remembered fill",
+      carry.get("entry_price") == 24357.9)
+
+# MONDAY, alternative — it was closed by hand over the weekend
+CALLS.clear(); E._notified.clear()
+gone = {"armed": carry["armed"], "entry_fill": dict(carry["entry_fill"])}
+ux.get_positions = lambda t: []
+E.reconcile("tok", payload(state="watching_breakout", as_of="mon-01"), gone)
+joined = " ".join(str(c) for c in CALLS)
+check("MON(closed by hand): the stale record is cleared", "entry_fill" not in gone)
+check("MON(closed by hand): and it says so rather than going quiet",
+      "no longer open" in joined)
+
+# ── 28 AUG 2026: THE POSITION HELD OVER A WEEKEND ───────────────────────────
+# Our stop-entry filled in the closing minutes, after the last reconcile of a
+# session this loop only runs during. By Monday the filled order had aged out
+# of "today's" order book and state had no entry_bar, so the bot disowned a
+# position IT had opened, left 65 lots naked with no stop across a weekend, and
+# the exit had to be done by hand 50 points worse.
+import json as _json, tempfile as _tf
+
+_peer = _tf.NamedTemporaryFile("w", suffix=".json", delete=False)
+_json.dump({}, _peer); _peer.close()
+E.PEER_STATE = _peer.name                       # peer holds nothing
+
+CALLS.clear(); E._notified.clear()
+ux.get_positions = lambda t: [{"instrument_token": KEY, "quantity": LOT,
+                               "average_price": 0.0, "buy_price": MH}]
+ux.get_order_book = lambda t: []                 # Monday: Friday's fill is gone
+st = {"armed": {"mother_high": MH, "mother_low": ML, "long_stop": LS,
+                "long_target": LG, "short_stop": SS, "short_target": SG}}
+E.reconcile("tok", payload(state="no_setup"), st)
+joined = " ".join(str(c) for c in CALLS)
+check("an unclaimed position is ADOPTED, not abandoned", "TAKING OVER" in joined)
+check("  ...it is NOT called someone else's", "Not trading" not in joined)
+check("  ...entry_bar is written so it stays owned", st.get("entry_bar") is not None)
+check("  ...a STOP is actually placed for it", "WOULD place STOP-LOSS" in joined)
+check("  ...and a TARGET", "WOULD place TARGET" in joined)
+check("  ...bracketed from the levels last armed", str(LS) in joined)
+
+# But a position the PEER claims is still refused — that check has to survive
+# the day rolling over, which is why it reads the peer's state file and not
+# today's order book.
+_json.dump({"entry_bar": "f-01", "instrument": KEY, "entry_price": 24379.8},
+           open(_peer.name, "w"))
+CALLS.clear(); E._notified.clear()
+E.reconcile("tok", payload(state="no_setup"), {})
+joined = " ".join(str(c) for c in CALLS)
+check("a position the Fib bot's STATE claims is still refused", "Not trading" in joined)
+check("  ...named from the peer state, not the order book", "the Fib bot" in joined)
+check("  ...and it is not adopted", "TAKING OVER" not in joined)
+_json.dump({}, open(_peer.name, "w"))
+
+# No armed levels AND a signal that has gone blank — exactly 27 Aug, where the
+# setup was already no_setup when the entry filled. Nothing to derive a stop
+# from, so the position is naked and the bot must say the word.
+CALLS.clear(); E._notified.clear()
+blank = payload(state="no_setup")
+for k in ("motherHigh", "motherLow", "longStop", "longTarget", "shortStop", "shortTarget"):
+    blank["signal"][k] = None
+st = {}
+E.reconcile("tok", blank, st)
+joined = " ".join(str(c) for c in CALLS)
+check("a position with no derivable stop is called UNPROTECTED",
+      "UNPROTECTED" in joined)
+
+
+print("\n" + "═" * 74)
+print(f"  {passed} passed, {failed} failed")
+if findings:
+    print("\n  FINDINGS — each is a real bug to fix before going live:")
+    for f in findings:
+        print(f"    • {f}")
+print("═" * 74)
+sys.exit(1 if failed else 0)

@@ -1,0 +1,43 @@
+# /etc/systemd/system/fib-executor.service
+#
+#   systemctl daemon-reload
+#   systemctl enable --now fib-executor
+#   journalctl -u fib-executor -f
+#
+# Idles outside 09:15-15:30 IST Mon-Fri rather than being started and stopped on
+# a timer: a bot that is always running can answer /status at any hour, which is
+# exactly when you want to ask it.
+
+[Unit]
+Description=Fib bot executor (Nifty futures)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/root/fib-bot/executor.env
+ExecStart=/usr/bin/python3 /root/fib-bot/executor.py
+WorkingDirectory=/root/fib-bot
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Same hardening as the receiver, and the same two exceptions, both learned the
+# hard way: ProtectHome would mask /root and the service could not reach its own
+# working directory, and AF_UNIX is required or glibc cannot resolve DNS.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=false
+ReadWritePaths=/root/fib-bot
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target

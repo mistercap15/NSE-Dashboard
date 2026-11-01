@@ -1,0 +1,47 @@
+# ── test_order.py ── fires ONE testnet order to validate the fix
+import os
+from dotenv import load_dotenv
+from delta_rest_client import DeltaRestClient, OrderType
+
+load_dotenv()
+delta = DeltaRestClient(
+    base_url='https://cdn-ind.testnet.deltaex.org',
+    api_key=os.getenv('DELTA_API_KEY'),
+    api_secret=os.getenv('DELTA_API_SECRET'),
+)
+
+SYMBOL = 'ETHUSD'
+print("Getting product id...")
+ticker = delta.get_ticker(SYMBOL)
+pid = ticker.get('product_id')
+mark = float(ticker.get('mark_price', 0))
+print(f"product_id={pid}  mark_price={mark}")
+
+print("Setting leverage...")
+try:
+    delta.set_leverage(product_id=pid, leverage='50')
+    print("  leverage set ok")
+except Exception as e:
+    print(f"  leverage error: {e}")
+
+print("Placing MARKET BUY size=1...")
+try:
+    o = delta.place_order(product_id=pid, size=1, side='buy',
+                          order_type=OrderType.MARKET)
+    print(f"  ENTRY OK: {o}")
+except Exception as e:
+    print(f"  ENTRY FAILED: {e}")
+
+# stop ~2% below mark for a long
+sl_price = round(mark * 0.98, 1)
+print(f"Placing STOP at {sl_price}...")
+try:
+    s = delta.place_stop_order(product_id=pid, size=1, side='sell',
+                               order_type=OrderType.MARKET,
+                               stop_price=str(sl_price))
+    print(f"  STOP OK: {s}")
+except Exception as e:
+    print(f"  STOP FAILED: {e}")
+
+print("\nDone. Check the demo UI — you should see a position + a stop order.")
+print("Remember to manually close this test position in the UI afterward.")

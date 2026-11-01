@@ -1,0 +1,180 @@
+#!/usr/bin/env python3
+"""Exercises the receiver's handler against a live socket. Run: python3 test_receiver.py
+
+The Upstox profile lookup is the one thing that can't run here (it needs a real
+broker token), so it is monkeypatched — everything else is the real code path:
+real HTTP, real secret comparison, real atomic write, real file permissions.
+"""
+import json, os, shutil, tempfile, threading, urllib.error, urllib.request
+from datetime import datetime, timezone
+
+WORK = tempfile.mkdtemp(prefix="recv-test-")
+SECRET = "test-secret-do-not-use-in-production"
+ACCOUNT = "84BDRQ"
+
+os.environ.update(
+    BOT_SYNC_SECRET=SECRET, BOT_ACCOUNT_ID=ACCOUNT,
+    TOKEN_PATH=os.path.join(WORK, "fib-bot", ".upstox_token"),
+    RECEIVER_PORT="8799",
+)
+
+import token_receiver as R  # noqa: E402
+
+# Stand in for Upstox: whatever account the caller encoded into the fake token.
+R.upstox_account_id = lambda tok: (
+    None if tok.startswith("unverifiable") else tok.split(":")[0]
+)
+
+from http.server import ThreadingHTTPServer  # noqa: E402
+srv = ThreadingHTTPServer(("127.0.0.1", 8799), R.Handler)
+threading.Thread(target=srv.serve_forever, daemon=True).start()
+BASE = "http://127.0.0.1:8799"
+
+passed = failed = 0
+def ok(name, cond, detail=""):
+    global passed, failed
+    if cond: passed += 1; print(f"  ok   {name}")
+    else:    failed += 1; print(f"  FAIL {name} {detail}")
+
+def post(body, secret=SECRET, path="/sync-token", raw=None):
+    data = raw if raw is not None else json.dumps(body).encode()
+    req = urllib.request.Request(BASE + path, data=data, method="POST",
+                                 headers={"Content-Type": "application/json"})
+    if secret is not None:
+        req.add_header("X-Sync-Secret", secret)
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return r.status, json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        try:    return e.code, json.loads(e.read().decode())
+        except Exception: return e.code, {}
+
+def token_file_exists():
+    return os.path.exists(os.environ["TOKEN_PATH"])
+
+future = int(datetime.now(tz=timezone.utc).timestamp() * 1000) + 6 * 3600 * 1000
+past   = int(datetime.now(tz=timezone.utc).timestamp() * 1000) - 1000
+
+# ── 1. The secret gate, checked before anything else ────────────────────────
+code, _ = post({"token": f"{ACCOUNT}:tok", "expiresAt": future}, secret=None)
+ok("missing secret -> 403", code == 403, f"got {code}")
+ok("  ...and nothing written", not token_file_exists())
+
+code, _ = post({"token": f"{ACCOUNT}:tok", "expiresAt": future}, secret="wrong-secret")
+ok("wrong secret -> 403", code == 403, f"got {code}")
+ok("  ...and nothing written", not token_file_exists())
+
+# A near-miss must not leak timing/prefix information — compare_digest handles
+# it; this just confirms the near-miss is refused like any other.
+code, _ = post({"token": f"{ACCOUNT}:tok", "expiresAt": future}, secret=SECRET[:-1])
+ok("secret off by one char -> 403", code == 403, f"got {code}")
+
+# ── 2. Body validation ──────────────────────────────────────────────────────
+code, _ = post(None, raw=b"not json at all")
+ok("malformed json -> 400", code == 400, f"got {code}")
+code, _ = post({"expiresAt": future})
+ok("missing token -> 400", code == 400, f"got {code}")
+code, _ = post({"token": f"{ACCOUNT}:tok"})
+ok("missing expiresAt -> 400", code == 400, f"got {code}")
+code, _ = post(None, raw=b'{"token":"' + b"x" * 9000 + b'"}')
+ok("oversized body -> 400", code == 400, f"got {code}")
+ok("still nothing written", not token_file_exists())
+
+# ── 3. Expiry ───────────────────────────────────────────────────────────────
+code, _ = post({"token": f"{ACCOUNT}:tok", "expiresAt": past})
+ok("already-expired token -> 400", code == 400, f"got {code}")
+ok("  ...and nothing written", not token_file_exists())
+
+# ── 4. Identity, re-checked here and not merely trusted from the dashboard ──
+code, _ = post({"token": f"DAD123:tok", "expiresAt": future})
+ok("wrong account -> 403", code == 403, f"got {code}")
+ok("  ...and nothing written", not token_file_exists())
+
+code, _ = post({"token": "unverifiable:tok", "expiresAt": future})
+ok("account unverifiable -> 502 (fails closed)", code == 502, f"got {code}")
+ok("  ...and nothing written", not token_file_exists())
+
+# ── 5. The happy path ───────────────────────────────────────────────────────
+code, body = post({"token": f"{ACCOUNT}:real-token-value", "expiresAt": future})
+ok("valid sync -> 200", code == 200, f"got {code} {body}")
+ok("reports the account", body.get("account") == ACCOUNT, str(body))
+ok("token file now exists", token_file_exists())
+
+path = os.environ["TOKEN_PATH"]
+ok("file holds exactly the token",
+   open(path).read().strip() == f"{ACCOUNT}:real-token-value")
+ok("file is 0600 (owner-only)", oct(os.stat(path).st_mode)[-3:] == "600",
+   oct(os.stat(path).st_mode)[-3:])
+ok("parent dir is 0700", oct(os.stat(os.path.dirname(path)).st_mode)[-3:] == "700",
+   oct(os.stat(os.path.dirname(path)).st_mode)[-3:])
+
+meta = json.load(open(path + ".meta.json"))
+ok("expiry recorded alongside", meta.get("expiresAt") == future, str(meta))
+ok("meta is 0600", oct(os.stat(path + ".meta.json").st_mode)[-3:] == "600")
+
+# ── 6. Re-sync replaces cleanly, leaving no temp files behind ──────────────
+code, _ = post({"token": f"{ACCOUNT}:second-token", "expiresAt": future})
+ok("re-sync -> 200", code == 200, f"got {code}")
+ok("file replaced with the new token",
+   open(path).read().strip() == f"{ACCOUNT}:second-token")
+leftovers = [f for f in os.listdir(os.path.dirname(path)) if f.startswith(".token-")]
+ok("no temp files left behind", not leftovers, str(leftovers))
+
+# ── 7. Surface area ─────────────────────────────────────────────────────────
+code, _ = post({"token": f"{ACCOUNT}:tok", "expiresAt": future}, path="/other")
+ok("unknown path -> 404", code == 404, f"got {code}")
+with urllib.request.urlopen(BASE + "/health", timeout=5) as r:
+    ok("GET /health -> 200", r.status == 200)
+try:
+    urllib.request.urlopen(BASE + "/sync-token", timeout=5)
+    ok("GET on sync endpoint is not allowed", False)
+except urllib.error.HTTPError as e:
+    ok("GET on sync endpoint -> 404, not a sync", e.code == 404, f"got {e.code}")
+
+# ── 8. /token-status — the state both clients read ──────────────────────────
+def status(secret=SECRET):
+    req = urllib.request.Request(BASE + "/token-status")
+    if secret is not None:
+        req.add_header("X-Sync-Secret", secret)
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return r.status, json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        return e.code, {}
+
+code, _ = status(secret=None)
+ok("token-status without the secret -> 403", code == 403, f"got {code}")
+code, _ = status(secret="wrong")
+ok("token-status with a wrong secret -> 403", code == 403, f"got {code}")
+
+code, st = status()
+ok("token-status -> 200", code == 200, f"got {code}")
+ok("reports a token is present", st.get("present") is True, str(st))
+ok("reports the expiry it was synced with", st.get("expiresAt") == future, str(st))
+ok("reports the account", st.get("account") == ACCOUNT, str(st))
+ok("not expired while in date", st.get("expired") is False, str(st))
+ok("NEVER returns the token itself",
+   "token" not in json.dumps(st) and "second-token" not in json.dumps(st), str(st))
+
+# An expired token must read as expired rather than merely present, or the
+# clients would show a reassuring tick over a credential the bot cannot use.
+json.dump({"expiresAt": past, "account": ACCOUNT}, open(path + ".meta.json", "w"))
+_, st = status()
+ok("a past expiry reports expired", st.get("expired") is True, str(st))
+ok("  ...while still reporting the file is present", st.get("present") is True)
+
+# Metadata can go missing without the token being useless.
+os.unlink(path + ".meta.json")
+_, st = status()
+ok("token without metadata still reads present", st.get("present") is True, str(st))
+ok("  ...with an unknown expiry rather than a wrong one", st.get("expiresAt") is None, str(st))
+
+# No token at all is the state a fresh droplet is in.
+os.unlink(path)
+_, st = status()
+ok("no token file -> present false", st.get("present") is False, str(st))
+ok("  ...and not falsely expired", st.get("expired") is False, str(st))
+
+srv.shutdown(); shutil.rmtree(WORK, ignore_errors=True)
+print(f"\n  {passed} passed, {failed} failed")
+raise SystemExit(1 if failed else 0)

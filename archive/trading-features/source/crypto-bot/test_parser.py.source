@@ -1,0 +1,110 @@
+# ── test_parser.py ────────────────────────────────────────────────
+# Standalone parser test — NO trading, NO telegram, NO API.
+# Run: python test_parser.py
+
+import re
+
+SYMBOL_MAP = {
+    'ETH.P': 'ETHUSD', 'BTC.P': 'BTCUSD',
+    'ETH': 'ETHUSD',   'BTC': 'BTCUSD',
+}
+
+def parse_signal(text: str):
+    text = text.strip()
+
+    # ENTRY — long or short
+    m = re.search(r'Entered\s+(Long|Short)\s+in\s+([\w.]+)', text, re.I)
+    if m:
+        direction = m.group(1).lower()
+        symbol    = m.group(2).upper()
+        price = re.search(r'Entry\s+Price[:\s]+([0-9.]+)', text, re.I)
+        sl    = re.search(r'SL\s*[@:]\s*([0-9.]+)', text, re.I)
+        return {
+            'type': 'entry',
+            'direction': direction,
+            'symbol': symbol,
+            'delta_symbol': SYMBOL_MAP.get(symbol),
+            'entry': float(price.group(1)) if price else None,
+            'sl':    float(sl.group(1))    if sl    else None,
+        }
+
+    # SL UPDATE
+    m = re.search(r'SL\s+updated\s+for\s+([\w.]+)\s*[@:]\s*([0-9.]+)', text, re.I)
+    if m:
+        return {
+            'type': 'sl_update',
+            'symbol': m.group(1).upper(),
+            'delta_symbol': SYMBOL_MAP.get(m.group(1).upper()),
+            'sl': float(m.group(2)),
+        }
+
+    # EXIT
+    m = re.search(r'Exited\s+([\w.]+)', text, re.I)
+    if m:
+        return {
+            'type': 'exit',
+            'symbol': m.group(1).upper(),
+            'delta_symbol': SYMBOL_MAP.get(m.group(1).upper()),
+        }
+
+    return None
+
+
+# ── Real messages from your channel ───────────────────────────────
+TEST_MESSAGES = [
+    # long entry
+    ("🚀 Sky Strategy\n━━━━━━━━━━━━━━━━━━\n🟢 Entered Long in ETH.P\n\n"
+     "Entry Price: 1692.65\nSL @ 1646.8307",
+     {'type':'entry','direction':'long','delta_symbol':'ETHUSD','entry':1692.65,'sl':1646.8307}),
+
+    # short entry
+    ("🚀 Sky Strategy\n━━━━━━━━━━━━━━━━━━\n🔴 Entered Short in ETH.P\n\n"
+     "Entry Price: 1657.9\nSL @ 1690.29074",
+     {'type':'entry','direction':'short','delta_symbol':'ETHUSD','entry':1657.9,'sl':1690.29074}),
+
+    # SL updates
+    ("🔄 SL updated for ETH.P @ 1648.93763",
+     {'type':'sl_update','delta_symbol':'ETHUSD','sl':1648.93763}),
+    ("🔄 SL updated for ETH.P @ 1650.64926",
+     {'type':'sl_update','delta_symbol':'ETHUSD','sl':1650.64926}),
+
+    # exit
+    ("⚪ Exited ETH.P",
+     {'type':'exit','delta_symbol':'ETHUSD'}),
+
+    # BTC variants (confirm map works for both coins)
+    ("🟢 Entered Long in BTC.P\n\nEntry Price: 84210.5\nSL @ 82100.0",
+     {'type':'entry','direction':'long','delta_symbol':'BTCUSD','entry':84210.5,'sl':82100.0}),
+
+    # junk — must return None
+    ("🚀 Sky Strategy", None),
+    ("━━━━━━━━━━━━━━━━━━", None),
+    ("Good morning traders", None),
+    ("", None),
+]
+
+# ── Run tests ─────────────────────────────────────────────────────
+def check(expected, got):
+    if expected is None:
+        return got is None
+    if got is None:
+        return False
+    for k, v in expected.items():
+        if got.get(k) != v:
+            return False
+    return True
+
+passed = failed = 0
+for text, expected in TEST_MESSAGES:
+    got = parse_signal(text)
+    ok = check(expected, got)
+    tag = "✅ PASS" if ok else "❌ FAIL"
+    if ok: passed += 1
+    else:  failed += 1
+    first_line = text.split(chr(10))[0][:45] if text else "(empty)"
+    print(f"{tag} | {first_line}")
+    if not ok:
+        print(f"        expected: {expected}")
+        print(f"        got:      {got}")
+
+print(f"\n{passed} passed, {failed} failed")

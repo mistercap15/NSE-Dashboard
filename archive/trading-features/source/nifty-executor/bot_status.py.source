@@ -1,0 +1,249 @@
+#!/usr/bin/env python3
+"""Read-only status of the trading bots, for the dashboard and the phone app.
+
+WHAT THIS IS FOR. The dashboard pages could only ever show what the SIGNAL
+routes said. On 7 Sep 2026 that was the whole problem: the signals looked
+perfectly normal while the hourly bot had adopted the 5-min bot's position and
+both were bracketing the same lots. Nothing on any screen could have shown that,
+because the fault was in what the bots BELIEVED, not in what the market was
+doing. This serves what they actually believe.
+
+═══ THE SAFETY RULES THIS FILE OBEYS. REAL MONEY DEPENDS ON THEM. ═══
+
+1. IT NEVER WRITES ANYTHING. Not a state file, not a lock, not a temp file, not
+   a log to the bot's directory. Every open() below is mode "r". A test asserts
+   there is no write mode anywhere in this source.
+
+2. IT NEVER TAKES THE CONTRACT LOCK. contract_lock.read_claim() acquires an
+   flock to read the claim, which would — briefly, but really — be able to make
+   a bot wait on this process. So the claim file is read with a PLAIN open
+   instead. That is safe precisely because contract_lock writes it with
+   tmp + os.replace, which is atomic: a reader sees the old file or the new one,
+   never a half-written one. Do not "tidy" this into read_claim().
+
+3. IT NEVER IMPORTS THE EXECUTORS. Importing executor.py runs its module body —
+   it resolves paths, reads env, builds config. Harmless today, but it couples a
+   web-facing process to a trading process for no benefit. This reads JSON.
+
+4. IF IT DIES, NOTHING ELSE NOTICES. Separate process, separate systemd unit,
+   separate port from the token receiver — which is deliberately left alone,
+   because that one handles a live broker credential and is not worth
+   destabilising for a monitoring feature.
+
+5. IT BINDS LOOPBACK ONLY. Caddy terminates TLS in front of it, exactly as for
+   the token receiver. Do NOT change BIND_HOST to 0.0.0.0.
+
+6. IT REQUIRES THE SHARED SECRET, compared in constant time. Bot state says what
+   this account is holding and at what price; it is not public.
+
+DEPENDENCIES: standard library only, same reasoning as token_receiver.py.
+"""
+
+import hmac
+import json
+import logging
+import os
+import subprocess
+import sys
+from datetime import datetime, timedelta, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+BIND_HOST = "127.0.0.1"          # loopback only — Caddy is the public face
+BIND_PORT = int(os.environ.get("STATUS_PORT", "8788"))
+SYNC_SECRET = os.environ.get("BOT_SYNC_SECRET", "")
+BOT_DIR = os.environ.get("BOT_DIR", "/root/fib-bot")
+
+IST = timezone(timedelta(hours=5, minutes=30))
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
+                    stream=sys.stdout)
+log = logging.getLogger("bot_status")
+
+# name → (state file, switch file, systemd unit)
+BOTS = {
+    "hourly": ("executor_state.json",     "executor_state.switch.json",     "fib-executor"),
+    "fivemin": ("executor_5m_state.json", "executor_5m_state.switch.json",  "fib-5m-executor"),
+    "crypto": ("crypto_state.json",       "crypto_state.switch.json",       "crypto-executor"),
+}
+CLAIM_FILE = "nifty_contract.lock"
+
+# A bot writes its state at the end of every successful poll, i.e. every 15s
+# WHILE THE MARKET IS OPEN. Past this, the file is not evidence of anything
+# current — the same threshold coordination.py uses.
+STALE_S = 180
+
+# ...and outside market hours the Nifty bots deliberately idle without polling,
+# so their state files stop being written and go hours stale every single
+# evening. Flagging that as "the bot may be down" would cry wolf from 15:30
+# until 09:15 the next morning, and an alarm that is wrong most of the day is
+# an alarm nobody reads. Staleness is only meaningful when the bot is supposed
+# to be polling.
+#
+# The crypto bot is exempt: Delta trades 24/7 and it polls at all hours, so a
+# stale state file from it is a real signal at any time.
+SESSION_OPEN_MIN = 9 * 60 + 15
+SESSION_CLOSE_MIN = 15 * 60 + 30
+ALWAYS_ON = {"crypto"}
+
+
+def market_is_open(now=None):
+    """NSE regular session, IST. Mirrors market_is_open() in the executors."""
+    now = now or datetime.now(tz=IST)
+    if now.weekday() >= 5:
+        return False
+    minutes = now.hour * 60 + now.minute
+    return SESSION_OPEN_MIN <= minutes < SESSION_CLOSE_MIN
+
+
+def _read_json(path):
+    """(parsed, age_seconds) or (None, None). Read-only, and never raises.
+
+    Plain open, no locking — see safety rule 2. Both the state files and the
+    claim are written tmp-then-rename, so a reader cannot catch a partial write.
+    """
+    try:
+        mtime = os.path.getmtime(path)
+        with open(path, "r") as fh:            # "r" — see safety rule 1
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return None, None
+    return data, max(0.0, datetime.now().timestamp() - mtime)
+
+
+def _unit_active(unit):
+    """Whether systemd says the unit is running. Read-only query.
+
+    Worth having: a stopped bot and a quiet bot look identical from its state
+    file alone, and "why has it said nothing for an hour" is exactly the
+    question this endpoint exists to answer.
+    """
+    try:
+        out = subprocess.run(["systemctl", "is-active", unit],
+                             capture_output=True, text=True, timeout=5)
+        return out.stdout.strip() or "unknown"
+    except Exception:                                            # noqa: BLE001
+        return "unknown"
+
+
+def _describe(state, age, stale):
+    """One plain sentence about what a bot's state file says it is doing."""
+    if state is None:
+        return "no state file — it may never have run"
+    if stale:
+        return f"state is {int(age)}s stale — the bot may be down or faulting"
+    if state.get("entry_bar"):
+        return f"holding a position entered {state['entry_bar']}"
+    if state.get("entry_fill"):
+        return f"has a recorded fill at {(state.get('entry_fill') or {}).get('price')}"
+    if state.get("armed"):
+        return f"has a buy order armed at {(state.get('armed') or {}).get('entry')}"
+    return "flat — nothing open, nothing armed"
+
+
+def snapshot():
+    """Everything the screens need, in one read-only pass."""
+    out = {"at": datetime.now(tz=IST).isoformat(timespec="seconds"), "bots": {}}
+
+    session = market_is_open()
+    out["marketOpen"] = session
+
+    for name, (state_file, switch_file, unit) in BOTS.items():
+        state, age = _read_json(os.path.join(BOT_DIR, state_file))
+        switch, _ = _read_json(os.path.join(BOT_DIR, switch_file))
+        st = state or {}
+        # Only meaningful when the bot is supposed to be polling — see ALWAYS_ON.
+        watching = session or name in ALWAYS_ON
+        stale = bool(watching and age is not None and age > STALE_S)
+        out["bots"][name] = {
+            "service": _unit_active(unit),
+            "stateAgeSeconds": None if age is None else round(age, 1),
+            "stale": stale,
+            "idle": bool(not watching),
+            # The switch file is absent until the first /stop — that means
+            # running, which is what load_switch() in the executors decides too.
+            "enabled": True if not switch else bool(switch.get("enabled", True)),
+            "halted": bool(switch and switch.get("halted", False)),
+            "holding": bool(st.get("entry_bar")),
+            "armed": bool(st.get("armed")) and not st.get("entry_bar"),
+            "instrument": st.get("instrument"),
+            "entryPrice": st.get("entry_price"),
+            "entryBar": st.get("entry_bar"),
+            "stop": st.get("stop"),
+            "target": st.get("target"),
+            "barsHeld": st.get("bars"),
+            # A missing or corrupt state file is reported WHATEVER the session
+            # is doing. Only a bot that is readable, flat and legitimately
+            # idling gets the "market closed" line — otherwise a genuinely
+            # broken file would hide behind it every evening, which is the same
+            # class of mistake as flagging every evening as an outage.
+            "summary": ("market closed — idling, not polling"
+                        if state is not None and not watching and not st.get("entry_bar")
+                        else _describe(state, age, stale)),
+        }
+
+    claim, claim_age = _read_json(os.path.join(BOT_DIR, CLAIM_FILE))
+    out["claim"] = None if not claim else {
+        "owner": claim.get("owner"),
+        "instrument": claim.get("instrument"),
+        "holding": bool(claim.get("holding")),
+        "ageSeconds": None if claim_age is None else round(claim_age, 1),
+    }
+    return out
+
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "bot-status/1.0"
+
+    def _send(self, code, payload):
+        body = json.dumps(payload).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    # Tailscale Funnel mounts this service at /bot-status and STRIPS that prefix
+    # before proxying, so a public request for /bot-status arrives here as
+    # "GET /". Serving only the full path 404s every real request while working
+    # perfectly on loopback — which is exactly how it failed the first time.
+    # Both spellings are accepted so it works mounted or direct.
+    STATUS_PATHS = ("/", "/bot-status", "/bot-status/")
+
+    def do_GET(self):                                            # noqa: N802
+        path = self.path.split("?", 1)[0]
+        if path in ("/health", "/bot-status/health"):
+            return self._send(200, {"ok": True})
+        if path not in self.STATUS_PATHS:
+            return self._send(404, {"error": "not found"})
+
+        supplied = self.headers.get("X-Sync-Secret", "")
+        if not SYNC_SECRET or not hmac.compare_digest(supplied, SYNC_SECRET):
+            # Deliberately says nothing about which part was wrong.
+            return self._send(403, {"error": "forbidden"})
+
+        try:
+            return self._send(200, snapshot())
+        except Exception as exc:                                 # noqa: BLE001
+            # A monitoring endpoint must never take anything down with it.
+            log.exception("snapshot failed")
+            return self._send(500, {"error": str(exc)})
+
+    def do_POST(self):                                           # noqa: N802
+        # There is nothing to post here, and saying so explicitly is better than
+        # letting a future reader assume this endpoint might accept writes.
+        self._send(405, {"error": "this service is read-only"})
+
+    def log_message(self, fmt, *args):
+        log.info("%s %s", self.address_string(), fmt % args)
+
+
+def main():
+    if not SYNC_SECRET:
+        sys.exit("!!! BOT_SYNC_SECRET is not set — refusing to serve bot state unauthenticated.")
+    log.info("bot status on %s:%s, reading %s (read-only)", BIND_HOST, BIND_PORT, BOT_DIR)
+    ThreadingHTTPServer((BIND_HOST, BIND_PORT), Handler).serve_forever()
+
+
+if __name__ == "__main__":
+    main()

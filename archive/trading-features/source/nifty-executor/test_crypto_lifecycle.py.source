@@ -1,0 +1,389 @@
+#!/usr/bin/env python3
+"""
+Crypto Fib executor — full lifecycle in dry mode.
+
+  python3 test_crypto_lifecycle.py
+
+Scripts the two inputs (the signal, and what Delta says we hold) and runs the
+REAL reconcile() against them. No network, no keys, no orders. A failure here is
+a bug in the bot.
+"""
+import os, sys, tempfile
+from datetime import datetime, timedelta, timezone
+
+os.environ["CRYPTO_STATE"] = os.path.join(tempfile.mkdtemp(), "c.json")
+os.environ.setdefault("APP_PIN", "test")
+
+import crypto_executor as C
+import delta_api as dx
+
+IST = timezone(timedelta(hours=5, minutes=30))
+PID, LOTS = 27, 1
+ENTRY, STOP, TARGET = 78000.0, 76440.0, 80000.0     # ~2% stop, as the strategy gives
+
+CALLS: list = []
+passed = failed = 0
+C.tg = lambda t: CALLS.append(t)
+for _n in ("place_limit_buy", "place_limit_sell", "place_stop_market", "cancel_order",
+           "set_leverage"):
+    def _mk(n):
+        def f(*a, **k): CALLS.append(f"[REAL {n}]"); return {"id": 1}
+        return f
+    setattr(dx, _n, _mk(_n))
+# ABOVE the fib entry by default: the strategy rests a buy below the market and
+# waits for price to come DOWN to it, so that is the normal shape. The timeout
+# step overrides it, because an exit prices off wherever the market actually is.
+MARKET_ABOVE_ENTRY = 78500.0
+# A distinct sentinel, because ltp=None already means "use the default" and the
+# feed being unavailable is a different thing that needs testing on its own.
+NO_QUOTE = object()
+dx.last_price = lambda s: MARKET_ABOVE_ENTRY
+
+said = lambda *f: any(all(x.lower() in c.lower() for x in f) for c in CALLS)
+intended = lambda: [c for c in CALLS if c.startswith("WOULD")]
+
+def check(label, cond):
+    global passed, failed
+    if cond: passed += 1; print(f"  ok   {label}")
+    else:    failed += 1; print(f"  FAIL {label}")
+
+def order(side, oid, otype="limit", stop_price=None, limit_price=None):
+    return {"id": oid, "side": side, "order_type": otype,
+            "stop_price": stop_price, "limit_price": limit_price}
+
+def payload(entry_valid=True, as_of="b-01", last_close=78500.0):
+    return {"symbol": "BTCUSD",
+            "signal": {"entryValid": entry_valid, "fibEntry": ENTRY, "stopPrice": STOP,
+                       "targetPrice": TARGET, "asOf": as_of, "lastClose": last_close}}
+
+def step(n, title, desc, expectations, *, held=0, orders=None, state=None,
+         protect_only=False, ltp=None, **kw):
+    global passed, failed
+    CALLS.clear()
+    if ltp is NO_QUOTE:
+        dx.last_price = lambda s: None
+    elif ltp is not None:
+        dx.last_price = lambda s, _p=ltp: _p
+    else:
+        dx.last_price = lambda s: MARKET_ABOVE_ENTRY
+    dx.get_position = lambda p: held
+    dx.open_orders = lambda p: list(orders or [])
+    dx.client = lambda: (_ for _ in ()).throw(dx.DeltaError("no client in tests"))
+    st = state if state is not None else {}
+    C.reconcile(PID, payload(**kw), st, protect_only=protect_only)
+    print(f"\nSTEP {n} — {title}")
+    print(f"  input     {desc}")
+    acts = intended()
+    print(f"  intended  {acts[0] if acts else '(nothing)'}")
+    for a in acts[1:]: print(f"            {a}")
+    for note in [c for c in CALLS if not c.startswith(("WOULD", "[REAL"))]:
+        print(f"  said      {note.splitlines()[0]}")
+    for lbl, cond in expectations:
+        if cond(): passed += 1; print(f"  ✓ PASS    {lbl}")
+        else:      failed += 1; print(f"  ✗ FAIL    {lbl}")
+    if any(c.startswith("[REAL") for c in CALLS):
+        failed += 1; print("  ✗ FAIL    DRY MODE LEAKED A REAL ORDER")
+    return st
+
+print("=" * 72)
+print("  Crypto Fib executor — lifecycle (dry)")
+print(f"  network {dx.network().upper()} · LIVE {C.LIVE} · {C.SYMBOL} · {C.LEVERAGE}x")
+print("=" * 72)
+if C.LIVE: sys.exit("Refusing: this asserts on intentions, LIVE acts on them.")
+
+# ── LEVERAGE CEILING — the thing that killed the last bot ───────────────────
+print("\nSTEP 0 — LEVERAGE CEILING")
+for lev, ok_expected in ((1, True), (2, True), (3, False), (10, False), (50, False)):
+    try:
+        dx.assert_leverage(lev); got = True
+    except dx.DeltaError:
+        got = False
+    check(f"{lev}x {'allowed' if ok_expected else 'REFUSED'}", got == ok_expected)
+check("the ceiling is 2", dx.LEVERAGE_MAX == 2)
+check("testnet is the default network", dx.network() == "testnet")
+check("base url is a testnet host", "testnet" in dx.base_url())
+
+# ── LIFECYCLE ───────────────────────────────────────────────────────────────
+step(1, "STAND ASIDE", "signal not armed · flat",
+     [("intends nothing", lambda: not intended())], entry_valid=False)
+
+step("1b", "STAND ASIDE with a stale entry", "not armed · a resting buy",
+     [("cancels it", lambda: said("cancel the buy order", "no longer valid"))],
+     entry_valid=False, orders=[order("buy", 101, limit_price=ENTRY)])
+
+step(2, "ARMED", f"armed · flat · entry {ENTRY}",
+     [("rests a LIMIT buy at the fib entry", lambda: said("WOULD place BUY order for", str(ENTRY))),
+      ("not a stop-entry — this is a pullback", lambda: not said("stop-market buy")),
+      ("names the bracket", lambda: said(str(STOP)) and said(str(TARGET)))])
+
+st = step(3, "FILLED", f"position {LOTS} lot",
+          [("places a stop-market stop", lambda: said("WOULD place STOP-LOSS for", str(STOP))),
+           ("places a REDUCE-ONLY target", lambda: said("WOULD place TARGET for")),
+           ("announces the position", lambda: said("TRADE OPEN"))],
+          held=LOTS, as_of="b-02")
+check("records the entry bar", st.get("entry_bar") == "b-02")
+check("stores the bracket it entered with", st.get("stop") == STOP and st.get("target") == TARGET)
+
+step(4, "HOLDING", "position open · both brackets resting",
+     [("intends nothing further", lambda: not intended())],
+     held=LOTS, state=dict(st), as_of="b-03",
+     orders=[order("sell", 201, "stop_market", stop_price=STOP),
+             order("sell", 202, limit_price=TARGET)])
+
+# bar counting drives the 30h timeout
+stB = {}
+step("4b", "bar counting", "same bar polled twice", [], held=LOTS, state=stB, as_of="x1")
+step("4b", "bar counting", "a new bar arrives", [], held=LOTS, state=stB, as_of="x2")
+step("4b", "bar counting", "the same bar again", [], held=LOTS, state=stB, as_of="x2")
+check("a new bar advances the count, a repeat does not", stB.get("bars") == 1)
+
+st5 = {"entry_bar": "b0", "bars": C.TIMEOUT_BARS, "last_bar": "b0", "entry_price": ENTRY,
+       "stop": STOP, "target": TARGET}
+step(5, f"TIMEOUT ({C.TIMEOUT_BARS} bars ≈ 30h)", "neither stop nor target hit",
+     [("exits reduce-only", lambda: said("WOULD TIME LIMIT") and said("closing")),
+      ("prices off the MARKET (77500), not the entry (78000)",
+       lambda: any("77" in c for c in intended() if "TIME LIMIT" in c)),
+      ("cancels both brackets", lambda: said("cancel stop") and said("cancel target"))],
+     held=LOTS, state=st5, as_of="b0", ltp=77500.0,
+     orders=[order("sell", 201, "stop_market", stop_price=STOP),
+             order("sell", 202, limit_price=TARGET)])
+
+# ── EXITS + FUNDING ─────────────────────────────────────────────────────────
+st6 = {"entry_bar": "b0", "bars": 12, "last_bar": "b9", "entry_price": ENTRY,
+       "stop": STOP, "target": TARGET, "funding": -3.42}
+step(6, "POSITION CLOSED", "flat · a stale stop left behind",
+     [("reports the close", lambda: said("TRADE CLOSED")),
+      ("reports FUNDING PAID", lambda: said("funding paid", "-3.42")),
+      ("cancels the orphaned stop", lambda: said("cancel leftover"))],
+     held=0, state=st6, entry_valid=False,
+     orders=[order("sell", 201, "stop_market", stop_price=STOP)])
+# Everything about the finished trade goes, EXCEPT the bar it closed on — that
+# is what stops the still-ARMED signal being re-entered on the same bar.
+check("clears its tracking", set(st6) == {"traded_bar"})
+check("  ...remembering only the bar it traded", st6["traded_bar"] == "b-01")
+
+# ── ONE TRADE PER BAR ───────────────────────────────────────────────────────
+# 29 Aug 2026: 52 round trips in a few hours, 48 closing inside one bar,
+# because nothing stopped a re-entry the instant the position went flat.
+step("6b", "SAME BAR AFTER A CLOSE", "armed · flat · Already traded this hour b-01",
+     [("does NOT arm again", lambda: not said("WOULD place BUY order")),
+      ("says why, once", lambda: said("Already traded this hour", "b-01"))],
+     held=0, state={"traded_bar": "b-01"}, as_of="b-01")
+
+step("6c", "SAME BAR, STALE ENTRY RESTING", "a resting entry on a bar already traded",
+     [("pulls the resting entry", lambda: said("WOULD cancel the buy order", "already traded this hour")),
+      ("and still does not re-arm", lambda: not said("WOULD place BUY order"))],
+     held=0, state={"traded_bar": "b-01"}, as_of="b-01",
+     orders=[order("buy", 301, "limit", limit_price=ENTRY)])
+
+step("6d", "NEXT BAR", "armed · flat · the bar has moved on",
+     [("arms again on a NEW bar", lambda: said("WOULD place BUY order for"))],
+     held=0, state={"traded_bar": "b-01"}, as_of="b-02")
+
+# The guard must never touch a LIVE position — it sits in the flat path only.
+step("6e", "OPEN POSITION ON A TRADED BAR", "held 1 · traded_bar matches the current bar",
+     [("still brackets the open position", lambda: said("WOULD place STOP-LOSS")),
+      ("is not treated as a cooldown", lambda: not said("Already traded this hour"))],
+     held=1, state={"traded_bar": "b-01", "entry_bar": "b-01", "bars": 0,
+                    "stop": STOP, "target": TARGET}, as_of="b-01")
+
+# The steps above already announced an identical "place BUY order" intent, and
+# tg_once suppresses a repeat — which would make the next step look like it
+# armed nothing. Reset the announcement memory, not the behaviour.
+# ── A LIMIT BUY BELOW THE MARKET IS TAKEN, NOT REFUSED ──────────────────────
+# Mirrors the Nifty Fib bot. The bot used to refuse when price was already at or
+# below the fib level, by analogy from the inside-bar breakout guard. Wrong
+# analogy: a limit buy below the market fills at or BETTER than its level.
+# ETH backtest: 400 such trades, PF 3.02, 95% CI [2.34, 3.91].
+C._notified.clear()
+step("6f", "PRICE ALREADY BELOW THE ENTRY", "flat · armed · market below the fib entry",
+     [("the entry IS placed", lambda: said("WOULD place BUY order for")),
+      ("at the fib level, not chasing the market", lambda: said(str(ENTRY)))],
+     held=0, state={}, ltp=ENTRY - 200)
+
+C._notified.clear()
+step("6g", "PRICE EXACTLY AT THE ENTRY", "flat · armed · market exactly at the fib entry",
+     [("the entry IS placed", lambda: said("WOULD place BUY order for"))],
+     held=0, state={}, ltp=ENTRY)
+
+C._notified.clear()
+step("6h", "PRICE ABOVE THE ENTRY", "flat · armed · market above the fib entry",
+     [("unchanged — still rests the order", lambda: said("WOULD place BUY order for"))],
+     held=0, state={}, ltp=ENTRY + 500)
+
+C._notified.clear()
+step("6i", "NO LIVE PRICE", "flat · armed · feed unavailable",
+     [("no longer blocks the entry", lambda: said("WOULD place BUY order for"))],
+     held=0, state={}, ltp=NO_QUOTE)
+
+# ── THE STOP IS ANCHORED TO THE SIGNAL, NEVER TO THE FILL ───────────────────
+# The invariant that makes a better fill safe. This executor has no ATR and must
+# never derive a stop from where it actually got filled.
+CALLS.clear(); C._notified.clear()
+dx.get_position = lambda p: LOTS
+dx.open_orders = lambda p: []
+dx.last_price = lambda s: ENTRY - 400          # filled far below the fib entry
+st_anchor = {"armed": {"entry": ENTRY, "stop": STOP, "target": TARGET}}
+C.reconcile(PID, payload(as_of="b-01"), st_anchor)
+check("stop is the SIGNAL's fib-derived level, not derived from the fill",
+      st_anchor.get("stop") == STOP)
+check("  ...and that is the level actually sent to Delta",
+      any(f"at {STOP}" in str(c) for c in CALLS if "STOP" in str(c)))
+check("target is the SIGNAL's swing high, unchanged by the fill",
+      st_anchor.get("target") == TARGET)
+check("  ...and that is the level actually sent",
+      any(f"at {TARGET}" in str(c) for c in CALLS if "TARGET" in str(c)))
+dx.last_price = lambda s: MARKET_ABOVE_ENTRY
+
+# ── THE FRIDAY CLASS, CHECKED HERE TOO ──────────────────────────────────────
+# The Nifty bots left a position unmanaged because /stop and the session gate
+# skipped the whole poll, and because the bracket was read from a signal that
+# had drifted since the entry. Crypto runs 24/7 so there is no session gate,
+# but the other two apply.
+
+C._notified.clear()
+step("7a", "STOPPED WHILE HOLDING", "held 1 · /stop pressed · no bracket on the book",
+     [("an open position STILL gets its stop", lambda: said("WOULD place STOP-LOSS")),
+      ("and its target", lambda: said("WOULD place TARGET"))],
+     held=1, state={"entry_bar": "b-01", "bars": 0, "stop": STOP, "target": TARGET},
+     protect_only=True)
+
+C._notified.clear()
+step("7b", "STOPPED WHILE FLAT", "flat · armed signal · /stop pressed",
+     [("opens NOTHING", lambda: not said("WOULD place BUY order"))],
+     held=0, state={}, protect_only=True)
+
+# A restart after the fill: the position is noticed bars later, by which time
+# the signal has moved. The bracket must be the one the ENTRY was resting on.
+C._notified.clear()
+CALLS.clear()
+dx.get_position = lambda p: 1
+dx.open_orders = lambda p: []
+st = {"armed": {"entry": ENTRY, "stop": STOP, "target": TARGET}}
+C.reconcile(PID, payload(as_of="b-09"), st)
+check("a restart brackets from the ARMED levels, not the drifted signal",
+      st.get("stop") == STOP and st.get("target") == TARGET)
+
+# No armed levels and nothing derivable: naked, and it must say the word.
+C._notified.clear(); CALLS.clear()
+st2 = {}
+pl = payload(as_of="b-09"); pl["signal"]["stopPrice"] = None; pl["signal"]["targetPrice"] = None
+C.reconcile(PID, pl, st2)
+check("a position with no stop is called UNPROTECTED",
+      any("UNPROTECTED" in str(c) for c in CALLS))
+
+C._notified.clear()
+
+step(7, "READY AGAIN", "armed · flat · nothing resting",
+     [("arms a fresh entry", lambda: said("WOULD place BUY order for"))])
+
+# ── 24/7 — no session logic anywhere ────────────────────────────────────────
+print("\nSTEP 8 — 24/7 OPERATION")
+src = open(C.__file__).read()
+check("no market-hours gate", "market_is_open" not in src)
+check("no expiry / roll logic", "EXPIRY_BUFFER" not in src and "days_to_expiry" not in src)
+check("no weekday check", "weekday()" not in src)
+
+# ── ISOLATION from the live Nifty bots ──────────────────────────────────────
+print("\nSTEP 9 — ISOLATION FROM THE LIVE NIFTY BOTS")
+import executor as F, ib_executor as I
+check("separate state files", len({C.STATE_PATH, F.STATE_PATH, I.STATE_PATH}) == 3)
+check("separate Telegram env vars", "CRYPTO_TELEGRAM_BOT_TOKEN" in src
+      and "CRYPTO_TELEGRAM_BOT_TOKEN" not in open(F.__file__).read())
+check("separate LIVE flag", 'os.environ.get("CRYPTO_LIVE"' in src
+      and 'os.environ.get("CRYPTO_LIVE"' not in open(F.__file__).read())
+check("all three default to DRY", not C.LIVE and not F.LIVE and not I.LIVE)
+# Coupling, not vocabulary: the crypto bot may DISCUSS the Upstox bots in a
+# comment — the stop-gap check exists precisely because of what Upstox did —
+# but it must never import them or call their API.
+check("different exchange entirely",
+      "import upstox" not in src and "api.upstox.com" not in src)
+check("Nifty bots never import delta", "delta_api" not in open(F.__file__).read()
+      and "delta_api" not in open(I.__file__).read())
+check("crypto bot never imports upstox_orders", "upstox_orders" not in src)
+check("its own prefix", C.PREFIX.strip() == "[CRYPTO]")
+
+
+# ══ API CONTRACT — do our calls match the installed client? ═════════════════
+# Both live failures on the first testnet run were signature mismatches:
+# place_stop_order does not take reduce_only, and get_live_orders does not take
+# product_id. Neither was visible until a real order was attempted. Binding our
+# exact kwargs against the real signature catches that class of bug offline.
+print("\nSTEP 10 — DELTA CLIENT API CONTRACT")
+try:
+    import inspect
+    from delta_rest_client import DeltaRestClient, OrderType
+
+    def binds(method, **kw):
+        try:
+            inspect.signature(getattr(DeltaRestClient, method)).bind(None, **kw)
+            return True
+        except TypeError:
+            return False
+
+    check("place_order accepts the ENTRY call we make",
+          binds("place_order", product_id=1, size=1, side="buy",
+                order_type=OrderType.LIMIT, limit_price="1"))
+    check("place_order accepts reduce_only (used for target + timeout exit)",
+          binds("place_order", product_id=1, size=1, side="sell",
+                order_type=OrderType.LIMIT, limit_price="1", reduce_only="true"))
+    check("place_stop_order accepts the STOP call we make",
+          binds("place_stop_order", product_id=1, size=1, side="sell",
+                order_type=OrderType.MARKET, stop_price="1"))
+    check("place_stop_order does NOT take reduce_only — so orphaned stops MUST be cancelled",
+          not binds("place_stop_order", product_id=1, size=1, side="sell",
+                    order_type=OrderType.MARKET, stop_price="1", reduce_only="true"))
+    check("get_live_orders does NOT take product_id — we filter client-side",
+          not binds("get_live_orders", product_id=1))
+    check("get_live_orders takes no required args", binds("get_live_orders"))
+    check("cancel_order takes product_id + order_id", binds("cancel_order", product_id=1, order_id=2))
+    check("get_position takes product_id", binds("get_position", product_id=1))
+    check("set_leverage takes product_id + leverage", binds("set_leverage", product_id=1, leverage="2"))
+
+    # The consequence of the stop lacking reduce_only: the executor must cancel
+    # a stop it finds while flat, or it becomes an opening short.
+    check("the executor cancels an orphaned stop when flat",
+          "orphan-" in open(C.__file__).read() and 'resting["stop"]' in open(C.__file__).read())
+except ImportError:
+    print("  ⚠ SKIP    delta-rest-client not installed here")
+
+
+# ══ MAINNET GUARD — two keys, or it refuses ═════════════════════════════════
+print("\nSTEP 11 — MAINNET GUARD")
+_saved = (os.environ.get("DELTA_NETWORK"), os.environ.get("DELTA_ALLOW_MAINNET"))
+
+def _net(network=None, allow=None):
+    for k, v in (("DELTA_NETWORK", network), ("DELTA_ALLOW_MAINNET", allow)):
+        os.environ.pop(k, None)
+        if v is not None:
+            os.environ[k] = v
+    try:
+        dx.assert_network_permitted()
+        return "allowed"
+    except dx.DeltaError:
+        return "refused"
+
+check("nothing set -> testnet, allowed", _net() == "allowed" and dx.network() == "testnet")
+check("testnet explicitly -> allowed", _net("testnet") == "allowed")
+check("a misspelled network falls back to testnet", _net("mainnett") == "allowed"
+      and dx.network() == "testnet")
+check("MAINNET ALONE -> REFUSED", _net("mainnet") == "refused")
+check("mainnet + allow=no -> REFUSED", _net("mainnet", "no") == "refused")
+check("mainnet + allow=yes -> allowed (deliberate, two keys)",
+      _net("mainnet", "yes") == "allowed")
+check("allow=yes on its own changes nothing", _net(None, "yes") == "allowed"
+      and dx.network() == "testnet")
+
+for k, v in zip(("DELTA_NETWORK", "DELTA_ALLOW_MAINNET"), _saved):
+    os.environ.pop(k, None)
+    if v is not None:
+        os.environ[k] = v
+check("the executor calls the guard at startup",
+      "assert_network_permitted" in open(C.__file__).read())
+check("it refuses rather than warns",
+      "log.warning(\"DELTA_NETWORK=mainnet" not in open(C.__file__).read())
+
+print("\n" + "=" * 72)
+print(f"  {passed} passed, {failed} failed")
+print("=" * 72)
+sys.exit(1 if failed else 0)

@@ -1,0 +1,1390 @@
+#!/usr/bin/env python3
+"""
+Fib bot executor. Polls the dashboard's signal and keeps the exchange in the
+state that signal implies.
+
+IT SHIPS IN DRY MODE. With LIVE = False it decides everything exactly as it
+would live, logs and Telegrams each intended action prefixed 🧪, and places
+nothing. Turning it live is one flag and a restart, and that is deliberately a
+separate, deliberate act.
+
+THE EXCHANGE IS THE SOURCE OF TRUTH. Positions and resting orders are re-read
+from Upstox on every poll and never inferred from what this process did earlier.
+A restart, a crash, a manual order in the app, or a fill that happened while the
+process was down all make in-memory state wrong; the exchange's view is never
+wrong. The only thing persisted locally is the entry bar, because "how many bars
+have I held this" cannot be recovered from the exchange.
+
+WHAT IT WILL NOT DO:
+  • hold more than one position at a time
+  • open anything within EXPIRY_BUFFER_DAYS of contract expiry
+  • trade at all when the token is missing, expired, or rejected
+  • place a MARKET order — banned over the API, so exits are LIMIT through the
+    touch, and the stop is an SL-M that goes to market only once triggered
+"""
+
+import json
+import logging
+import os
+import sys
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from datetime import datetime, timedelta, timezone
+
+import contract_lock as lock
+import coordination as coord
+import upstox_orders as ux
+
+# ── CONFIG ───────────────────────────────────────────────────────────────────
+
+# Live trading is OFF unless the environment says otherwise. An env var rather
+# than an edit here on purpose: this file is tracked, so editing it would put a
+# local change in the way of every future `git pull`, and the one setting that
+# decides whether real money moves should not be something a merge can touch.
+#   FIB_LIVE=true in /root/fib-bot/executor.env, then restart.
+LIVE = os.environ.get("FIB_LIVE", "").strip().lower() in ("1", "true", "yes", "on")
+QUANTITY_LOTS = 1         # start at one lot; more is a separate decision
+# Two different jobs are being timed here, and the faster one sets the pace.
+#
+# DECIDING what orders should exist is an hourly question — the signal is
+# computed on closed hourly bars and cannot change more often than that, so 60s
+# was already 60 checks per bar.
+#
+# NOTICING A FILL is not. The exchange fills a stop-triggered entry the instant
+# price touches it, and the position has NO STOP until the next poll sees it and
+# places one. At 60s that window was up to a minute, which Nifty can move 20-50
+# points in. 15s bounds it to a quarter of that for four times the API calls of
+# something that was already trivial.
+POLL_SECONDS = 15
+
+SIGNAL_URL = os.environ.get("SIGNAL_URL", "https://nse-dashboard-gamma.vercel.app/api/fib/signal")
+DASHBOARD_URL = SIGNAL_URL.split("/api/")[0]
+APP_PIN = os.environ.get("APP_PIN", "")
+
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT = os.environ.get("TELEGRAM_CHAT_ID", "")
+
+STATE_PATH = os.environ.get("EXECUTOR_STATE", "/root/fib-bot/executor_state.json")
+# Other bots' state, READ-ONLY. See peer_claims_position(). This bot never
+# writes either file, and neither peer can affect its behaviour except by
+# claiming a position on this contract — the one thing it must know about.
+PEER_STATE = os.environ.get("PEER_STATE", "/root/fib-bot/ib_state.json")
+PEER_NAME = "the inside-bar bot"
+
+# The 5-minute gap-fill bot. It trades this same contract on this same account
+# whenever this bot is idle, so its held position has to be visible here for the
+# same reason the inside-bar bot's is: Upstox nets positions per contract, and
+# opening on top of one would leave both bots bracketing a combined quantity.
+#
+# The 5-min bot yields to this one in every other respect — it will not open
+# while this bot is armed or holding, and it cancels its own resting entry the
+# moment this bot shows life. This read is the other half of that rule: it stops
+# THIS bot opening on top of a 5-min position that is already filled.
+PEER_STATE_5M = os.environ.get("PEER_STATE_5M", "/root/fib-bot/executor_5m_state.json")
+PEER_NAME_5M = "the 5-min bot"
+
+# (path, name), checked in order. A missing file is silently no claim, so adding
+# a peer that is not running changes nothing.
+PEERS = ((PEER_STATE, PEER_NAME), (PEER_STATE_5M, PEER_NAME_5M))
+
+# The shared contract claim (contract_lock.py). It closes the one gap the peer
+# reads above cannot: both bots deciding to enter on the SAME tick, each having
+# just read the other as clear.
+#
+# THIS BOT FAILS OPEN ON IT, ALWAYS. If the claim cannot be read or written this
+# bot trades exactly as it did before the lock existed — see fail_open=True at
+# every call site. The lock is not permitted to become a new way for the live
+# bot to stop working; the 5-min bot fails CLOSED on the same fault, so a broken
+# lock degrades to "hourly trades, 5-min does not", never to "both trade".
+LOCK_PATH = os.environ.get("CONTRACT_LOCK", "/root/fib-bot/nifty_contract.lock")
+
+# Bars to hold before giving up on a trade that has neither stopped nor targeted.
+TIMEOUT_BARS = 30
+# Don't open anything this close to expiry — a position that has to be rolled
+# under time pressure is a worse problem than a trade not taken.
+EXPIRY_BUFFER_DAYS = 2
+# Exit urgency: MARKET is banned, so an urgent exit is a LIMIT this far THROUGH
+# the touch, which fills like a market order without being one.
+# Timeout exit. MARKET is banned over the API, so "get out now" is expressed as a
+# LIMIT priced THROUGH the touch — marketable, i.e. it crosses the spread and
+# fills against resting bids rather than joining the queue.
+#
+# Anchored to the CURRENT market, never to the entry price. The backtest closed a
+# timed-out trade at that bar's close, meaning "at roughly the price now". Pricing
+# off the entry gets both cases wrong: with price above entry it sells far too
+# cheap, and with price well below entry the limit sits above the market and may
+# never fill at all — leaving a position open that the strategy considers closed.
+TIMEOUT_CROSS_PCT = 0.15       # first attempt crosses this far through the bid
+TIMEOUT_CROSS_STEP = 0.15      # each retry crosses this much further
+TIMEOUT_CROSS_MAX_PCT = 0.60   # never cross further than this, whatever happens
+TIMEOUT_MAX_ATTEMPTS = 3       # then stop and shout rather than keep firing
+# A quote further than this from the last closed bar is not believed — a stale or
+# broken book must not be able to price an order absurdly far through the market.
+QUOTE_SANITY_PCT = 5.0
+
+IST = timezone(timedelta(hours=5, minutes=30))
+TAG_ENTRY, TAG_STOP, TAG_TARGET = "fibentry", "fibstop", "fibtarget"
+# The timeout exit gets its own tag. Reusing TAG_TARGET made the exit
+# indistinguishable from the profit target, so the bot could not tell whether
+# its own exit was still working and re-placed it every poll.
+TAG_EXIT = "fibexit"
+RESTING = ("open", "trigger pending", "open pending", "put order req received")
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
+                    stream=sys.stdout)
+log = logging.getLogger("executor")
+
+_lock = threading.Lock()
+_enabled = True           # /stop and /start flip this
+_halted = False           # /halt — the hard stop, places NOTHING
+_last = {}                # last snapshot, for /status
+
+
+# ── Telegram ─────────────────────────────────────────────────────────────────
+
+def tg(text: str) -> None:
+    """Best-effort notify. A Telegram outage must never stop the bot trading —
+    or, worse, stop it managing a position it already holds."""
+    prefix = "" if LIVE else "🧪 "
+    log.info("TG %s%s", prefix, text.replace("\n", " | "))
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT:
+        return
+    try:
+        body = json.dumps({"chat_id": TELEGRAM_CHAT, "text": prefix + text}).encode()
+        req = urllib.request.Request(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            data=body, headers={"Content-Type": "application/json", "User-Agent": ux.USER_AGENT})
+        urllib.request.urlopen(req, timeout=10).read()
+    except Exception as exc:                                    # noqa: BLE001
+        log.warning("telegram send failed: %s", exc)
+
+
+_notified: dict[str, str] = {}
+
+
+def tg_once(key: str, text: str) -> None:
+    """Notify only when a CONDITION CHANGES, not every time it is observed.
+
+    The poll loop runs each minute, so a persistent problem — no token, a
+    rejected token, an Upstox outage — would otherwise send the same alert ~390
+    times a session. That is not a louder warning, it is a quieter one: an alert
+    that fires constantly is one you learn to swipe away, and the whole point of
+    these is that you act on them.
+
+    Clears when the condition lifts, so the NEXT occurrence alerts again.
+
+    THE TEXT IS THE KEY. Suppression compares the whole string, so any value that
+    moves between polls — a live price, a quote, a countdown — defeats it
+    completely and restores the every-poll spam this exists to prevent. On 2 Sep
+    2026 an interpolated live price sent one message every 15 seconds until the
+    bot was stopped by hand. Interpolate only what is stable for the life of the
+    condition; put moving values in the log and in /status.
+    """
+    if _notified.get(key) == text:
+        return
+    _notified[key] = text
+    tg(text)
+
+
+# Conditions whose lifting is worth announcing: the ones that make you wonder
+# whether the bot is still working at all. A warning followed by silence reads
+# exactly the same whether the fault cleared or is still standing and suppressed
+# by tg_once — and the only way to tell them apart was to send /status, which you
+# have to know to do.
+#
+# Deliberately NOT every key. "rolled" and "expiry" are running commentary rather
+# than faults, the position closing is already reported by the exit message, and
+# "act:" keys are dry-run intent dedupes. Announcing those would add exactly the
+# noise tg_once exists to cut. Anything absent from here clears silently, as before.
+RECOVERED = {
+    "token": "Upstox login is working again",
+    "upstox": "Upstox connection is back to normal",
+    "signal": "The signal feed is back to normal",
+    "loop": "The bot is back to normal",
+    "exitstuck": "The exit order went through",
+    "foreign": "That trade is closed — this bot can trade again",
+    "adopted": "No longer holding a trade we could not account for",
+    "filled": "Buy-order record cleared",
+    "waiting5m": "The 5-min bot is flat — this bot can open again",
+}
+
+
+def tg_clear(key: str) -> None:
+    """Forget a condition, so its return is announced rather than swallowed.
+
+    If the condition was actually alerting, say that it lifted. Only the first
+    clear speaks — the key is gone afterwards, so the every-poll clear loop stays
+    silent. tg() swallows its own send failures, so this cannot disturb the poll
+    that called it.
+    """
+    if _notified.pop(key, None) is None:
+        return                                  # was not alerting; nothing to report
+    if key in RECOVERED:
+        tg(f"\u2705 {RECOVERED[key]}.")
+
+
+def telegram_listener() -> None:
+    """Long-polls for /stop, /start, /status, /orders. Runs in its own thread so a
+    wedged Telegram can never block the trading loop."""
+    if not TELEGRAM_TOKEN:
+        log.warning("no TELEGRAM_BOT_TOKEN — kill switch unavailable")
+        return
+    offset = None
+    while True:
+        try:
+            url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates?timeout=30"
+            if offset:
+                url += f"&offset={offset}"
+            req = urllib.request.Request(url, headers={"User-Agent": ux.USER_AGENT})
+            with urllib.request.urlopen(req, timeout=40) as res:
+                updates = json.loads(res.read().decode()).get("result", [])
+            for u in updates:
+                offset = u["update_id"] + 1
+                text = ((u.get("message") or {}).get("text") or "").strip().lower()
+                if text.startswith("/stop"):
+                    _set_enabled(False)
+                    tg("⛔ STOPPED. No new orders will be placed.\n"
+                       "Orders already placed stay live — cancel them in the app "
+                       "if that is not what you want.\n"
+                       "An OPEN position is still managed: its stop and target still go on. "
+                       "This only stops new entries.\n\n"
+                       "If you need it to place NOTHING AT ALL — including brackets — "
+                       "send /halt.")
+                elif text.startswith("/halt"):
+                    _set_halted(True)
+                    tg("🛑 HALTED. This bot will place NOTHING — no entries, no "
+                       "stop-losses, no targets, no exits.\n\n"
+                       "ANY OPEN POSITION IS NOW UNPROTECTED unless its orders are "
+                       "already on the book. That is the point of /halt: it hands "
+                       "control back to you completely. Check the app.\n\n"
+                       "/start to resume.")
+                elif text.startswith("/start"):
+                    _set_enabled(True)
+                    _set_halted(False)
+                    tg("▶️ STARTED. Resuming normal operation.")
+                elif text.startswith("/status"):
+                    tg(status_text())
+                elif text.startswith("/orders"):
+                    tg(orders_text())
+        except Exception as exc:                                # noqa: BLE001
+            log.warning("telegram poll failed: %s", exc)
+            time.sleep(5)
+
+
+# ── The kill switch, on disk ─────────────────────────────────────────────────
+#
+# /stop used to set a module global and nothing else. The units are
+# Restart=always, so a crash, a deploy, a reboot or a plain systemctl restart
+# cleared it and the bot came back TRADING — silently, because the only signal
+# was the ordinary "online" message, which looked identical either way. That
+# happened on 31 Aug: a restart re-enabled a bot that had been deliberately
+# stopped, and nothing said so.
+#
+# Deliberately NOT stored in the trade state file. That file is wiped by
+# state.clear() every time a position closes, which would re-enable a stopped
+# bot on the next exit — the same bug wearing a different hat. This sibling file
+# is written only by /stop and /start.
+SWITCH_PATH = os.path.splitext(STATE_PATH)[0] + ".switch.json"
+
+
+def load_halt() -> bool:
+    """Is the HARD stop set? Missing or unreadable means not halted.
+
+    /stop and /halt are different things and 7 Sep 2026 is why both exist.
+    /stop means "open nothing new" and deliberately keeps protecting an open
+    position — so when this bot was stuck re-sending a bracket the exchange kept
+    rejecting, /stop was working exactly as documented and the storm carried on
+    regardless. There was no way to say "place NOTHING, I will handle it".
+    Now there is.
+    """
+    try:
+        with open(SWITCH_PATH) as fh:
+            return bool(json.load(fh).get("halted", False))
+    except (OSError, ValueError):
+        return False
+
+
+def _write_switch(enabled: bool, halted: bool) -> None:
+    tmp = SWITCH_PATH + ".tmp"
+    try:
+        with open(tmp, "w") as fh:
+            json.dump({"enabled": enabled, "halted": halted,
+                       "at": datetime.now(tz=IST).strftime("%d %b %Y %H:%M IST")}, fh)
+        os.replace(tmp, SWITCH_PATH)
+    except OSError as exc:                                      # noqa: BLE001
+        log.error("could not persist the kill switch: %s", exc)
+
+
+def _set_halted(value: bool) -> None:
+    global _halted
+    with _lock:
+        _halted = value
+    _write_switch(load_switch(), value)
+
+
+def is_halted() -> bool:
+    with _lock:
+        return _halted
+
+
+def load_switch() -> bool:
+    """Enabled state from disk.
+
+    A missing or unreadable file means ENABLED — the bot has never been stopped,
+    or the file was lost. Refusing to trade because a status file will not parse
+    would be its own kind of failure, and the startup message says which state
+    was adopted either way.
+    """
+    try:
+        with open(SWITCH_PATH) as fh:
+            return bool(json.load(fh).get("enabled", True))
+    except (OSError, ValueError):
+        return True
+
+
+def save_switch(value: bool) -> None:
+    """Write to a temp file and rename, so a crash mid-write cannot leave a
+    truncated file that happens to read as enabled."""
+    tmp = SWITCH_PATH + ".tmp"
+    try:
+        with open(tmp, "w") as fh:
+            json.dump({"enabled": value, "halted": load_halt(),
+                       "at": datetime.now(tz=IST).strftime("%d %b %Y %H:%M IST")}, fh)
+        os.replace(tmp, SWITCH_PATH)
+    except OSError as exc:                                      # noqa: BLE001
+        log.error("could not persist the kill switch: %s", exc)
+
+
+def _set_enabled(value: bool) -> None:
+    """Flip the switch and persist it, so a restart cannot quietly undo it."""
+    global _enabled
+    with _lock:
+        _enabled = value
+    save_switch(value)
+
+
+def is_enabled() -> bool:
+    with _lock:
+        return _enabled
+
+
+def status_text() -> str:
+    """Two different questions, answered separately.
+
+    The old layout put "Signal: stand aside" on its own line while a position
+    was open, which reads as though the bot had given up on the live trade. It
+    had not — entryValid only ever governs whether a NEW entry may be opened.
+    So an open trade now leads, carries its own frozen bracket, and the signal
+    is explicitly labelled as being about new entries only.
+    """
+    with _lock:
+        s = dict(_last)
+    lines = [
+        # No test-tube here: tg() already prefixes every dry-mode message with
+        # one, and "🧪 Mode: 🧪 DRY" reads like a bug.
+        f"Mode: {'🔴 LIVE — REAL MONEY' if LIVE else 'TEST MODE — places no real orders'}",
+        f"Switch: {'✅ running' if _enabled else '⛔ PAUSED — stays paused even after a restart'}",
+        f"Market: {'open' if market_is_open() else 'closed'}",
+    ]
+    if not s:
+        lines.append("No poll has completed yet.")
+        return "\n".join(lines)
+
+    lines.append(f"Contract: {s.get('symbol') or '—'}")
+
+    qty = s.get("position_qty") or 0
+    if qty:
+        held = f"📈 TRADE OPEN — bought {qty} at {s.get('position_price') or '—'}"
+        if s.get("bars_held") is not None:
+            held += f"  ·  hour {s['bars_held']} of {TIMEOUT_BARS}"
+        lines += [
+            held,
+            f"   stop-loss {s.get('bracket_stop') or '—'}  ·  "
+            f"target {s.get('bracket_target') or '—'}   (set when the trade opened)",
+            f"   order numbers: stop={s.get('stop_order') or '—'}  target={s.get('target_order') or '—'}",
+            f"New trades: {'ready when the price comes' if s.get('entry_valid') else 'waiting for a setup'}"
+            f"  — this does NOT affect the open trade above",
+        ]
+    else:
+        lines += [
+            "No open trade",
+            f"New trades: {'ready when the price comes' if s.get('entry_valid') else 'waiting for a setup'}",
+            f"   buy order waiting: {s.get('entry_order') or '—'}",
+        ]
+    lines += [
+        f"   signal right now: buy at {s.get('fib_entry') or '—'}  ·  "
+        f"stop-loss {s.get('stop') or '—'}  ·  target {s.get('target') or '—'}",
+        f"Token: {s.get('token') or 'unknown'}",
+        f"Last poll: {s.get('at') or '—'}",
+        "",
+        "/orders to see live orders · /stop to pause · /start to resume",
+    ]
+    return "\n".join(lines)
+
+
+OUR_TAGS = (TAG_ENTRY, TAG_STOP, TAG_TARGET, TAG_EXIT)
+
+
+def orders_text() -> str:
+    """Every order our tags own, exactly as the exchange reports it now.
+
+    /status prints order IDs; this prints what those IDs actually ARE — type,
+    side, trigger and limit. That is the thing you want when a stop looks wrong,
+    and reading it off the exchange rather than off our own state is the point:
+    an order edited by hand in the Upstox app shows up here as it really is.
+    """
+    try:
+        token = ux.load_token()
+    except Exception as exc:                                    # noqa: BLE001
+        return f"Could not load the token: {exc}"
+    if not token:
+        return "No Upstox token — cannot read the order book."
+    try:
+        book = ux.get_order_book(token)
+    except Exception as exc:                                    # noqa: BLE001
+        return f"Could not read the order book: {exc}"
+
+    ours = [o for o in book or [] if (o.get("tag") or "").lower() in OUR_TAGS]
+    if not ours:
+        return "No orders from this bot on the book today."
+
+    ours.sort(key=lambda o: o.get("order_timestamp") or "")
+    lines = ["Orders from this bot today (live from the exchange):"]
+    for o in ours:
+        bits = [f"{(o.get('tag') or '').lower():<9}",
+                f"{(o.get('transaction_type') or '?'):<4}",
+                f"{int(o.get('quantity') or 0):>3}",
+                (o.get("order_type") or "?").upper()]
+        if o.get("trigger_price"):
+            bits.append(f"trig {o['trigger_price']}")
+        if o.get("price"):
+            bits.append(f"lim {o['price']}")
+        bits.append(f"· {o.get('status') or '?'}")
+        if o.get("average_price"):
+            bits.append(f"filled @ {o['average_price']}")
+        lines.append("  " + " ".join(bits))
+        # A stop-limit whose limit sits far from its trigger is the failure this
+        # whole change exists to prevent, so say so rather than making it a
+        # spot-the-difference exercise.
+        if (o.get("tag") or "").lower() == TAG_STOP and o.get("trigger_price") and o.get("price"):
+            gap = abs(float(o["trigger_price"]) - float(o["price"]))
+            if gap > 5:
+                lines.append(f"      ⚠️ limit is {gap:.2f} from the trigger")
+    return "\n".join(lines)
+
+
+# ── Local state (only what the exchange cannot tell us) ──────────────────────
+
+def load_state() -> dict:
+    try:
+        with open(STATE_PATH) as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return {}
+
+
+def save_state(state: dict) -> None:
+    tmp = STATE_PATH + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(state, fh)
+    os.replace(tmp, STATE_PATH)
+
+
+# ── Dashboard ────────────────────────────────────────────────────────────────
+
+_session = {"token": None}
+
+
+def dashboard_login() -> str | None:
+    """The signal endpoint sits behind the app's PIN gate, so the droplet holds
+    a PIN and mints its own session — the same one the phone uses. Sessions die
+    at 03:30 IST like everything else, so a 401 simply re-logs in."""
+    if not APP_PIN:
+        log.error("APP_PIN is not set — cannot read the signal")
+        return None
+    try:
+        body = json.dumps({"pin": APP_PIN}).encode()
+        req = urllib.request.Request(f"{DASHBOARD_URL}/api/auth/login", data=body, method="POST",
+                                     headers={"Content-Type": "application/json",
+                                              "User-Agent": ux.USER_AGENT})
+        with urllib.request.urlopen(req, timeout=20) as res:
+            _session["token"] = json.loads(res.read().decode()).get("token")
+        return _session["token"]
+    except Exception as exc:                                    # noqa: BLE001
+        log.error("dashboard login failed: %s", exc)
+        return None
+
+
+def fetch_signal() -> dict | None:
+    for attempt in (1, 2):
+        token = _session["token"] or dashboard_login()
+        if not token:
+            return None
+        try:
+            req = urllib.request.Request(SIGNAL_URL, headers={
+                "Authorization": f"Bearer {token}", "Accept": "application/json",
+                "User-Agent": ux.USER_AGENT})
+            with urllib.request.urlopen(req, timeout=30) as res:
+                return json.loads(res.read().decode())
+        except urllib.error.HTTPError as exc:
+            if exc.code == 401 and attempt == 1:
+                _session["token"] = None          # session lapsed — re-login once
+                continue
+            log.error("signal fetch HTTP %s", exc.code)
+            return None
+        except Exception as exc:                                # noqa: BLE001
+            log.error("signal fetch failed: %s", exc)
+            return None
+    return None
+
+
+# ── Market clock ─────────────────────────────────────────────────────────────
+
+def market_is_open(now=None) -> bool:
+    now = now or datetime.now(tz=IST)
+    if now.weekday() >= 5:
+        return False
+    minutes = now.hour * 60 + now.minute
+    return 9 * 60 + 15 <= minutes <= 15 * 60 + 30
+
+
+def days_to_expiry(expiry_ms: int, now=None) -> float:
+    now = now or datetime.now(tz=IST)
+    return (datetime.fromtimestamp(expiry_ms / 1000, tz=IST) - now).total_seconds() / 86400
+
+
+# ── Exchange view ────────────────────────────────────────────────────────────
+
+def position_qty(positions: list, instrument_key: str) -> tuple[int, float | None]:
+    for p in positions or []:
+        if p.get("instrument_token") == instrument_key:
+            qty = int(p.get("quantity") or 0)
+            # Upstox reports average_price 0.0 on short-term-positions for
+            # product "D" — verified on a real filled position, where
+            # average_price was 0.0 while buy_price held the true 24379.8. That
+            # zero is what put "IN POSITION 65 @ 0.0" in Telegram and then
+            # froze into state["entry_price"], where the exit summary reads it.
+            avg = p.get("average_price") or None
+            if not avg:
+                avg = (p.get("buy_price") if qty >= 0 else p.get("sell_price")) or None
+            return qty, avg
+    return 0, None
+
+
+def resting_orders(book: list, instrument_key: str) -> dict:
+    """Our resting orders, keyed by role. Identified by the tag we set, so an
+    order placed by hand in the app is never mistaken for one of ours."""
+    found = {TAG_ENTRY: None, TAG_STOP: None, TAG_TARGET: None, TAG_EXIT: None}
+    for o in book or []:
+        if o.get("instrument_token") != instrument_key:
+            continue
+        if (o.get("status") or "").lower() not in RESTING:
+            continue
+        tag = (o.get("tag") or "").lower()
+        if tag in found and found[tag] is None:
+            found[tag] = o
+    return found
+
+
+def completed_orders(book: list, instrument_key: str) -> dict:
+    """Our bracket orders that FILLED, keyed by role.
+
+    resting_orders() deliberately ignores anything not live, but a closed
+    position's story is written in the order that completed: the target filling
+    is a win, the stop filling is a loss. Without this the bot can only report
+    "flat", which tells you nothing about whether it made money.
+    """
+    # TAG_ENTRY is here for the ownership gate, not for the exit story: a filled
+    # entry of ours is the proof that the account's position is this bot's and
+    # not the inside-bar bot's. describe_exit() only ever reads stop/target.
+    found = {TAG_ENTRY: None, TAG_STOP: None, TAG_TARGET: None, TAG_EXIT: None}
+    for o in book or []:
+        if o.get("instrument_token") != instrument_key:
+            continue
+        if (o.get("status") or "").lower() != "complete":
+            continue
+        tag = (o.get("tag") or "").lower()
+        if tag in found and found[tag] is None:
+            found[tag] = o
+    return found
+
+
+def describe_exit(filled: dict, entry_price: float | None, bars: int) -> str:
+    """Say what actually happened, in money, not just that a position ended."""
+    target, stop = filled.get(TAG_TARGET), filled.get(TAG_STOP)
+    hit = target or stop
+    won = target is not None
+
+    if not hit:
+        # Closed some other way: a timeout exit, or squared off by hand in the
+        # app. Reporting a win or a loss here would be a guess.
+        return f"✅ TRADE CLOSED after {bars} hours (not by the stop-loss or target)."
+
+    px = hit.get("average_price") or hit.get("price")
+    qty = int(hit.get("quantity") or 0)
+    line = "✅ WIN — target reached" if won else "🛑 LOSS — stop-loss hit"
+    if px:
+        line += f" at {px}"
+    if px and entry_price:
+        pts = px - entry_price
+        line += f" · {pts:+.1f} pts"
+        if qty:
+            line += f" · ₹{pts * qty:+,.0f}"
+    return f"{line} · held {bars} bars."
+
+
+def live_reference_price(token, instrument_key, fallback_close):
+    """What the market is RIGHT NOW, or (None, reason) if it cannot be trusted.
+
+    Factored out of marketable_exit_price so the exit and the stop-breach check
+    below agree on one definition of "the market", including the sanity rule
+    that a quote wildly away from the last bar is not believed.
+    """
+    ref, source = None, "last closed bar"
+    try:
+        q = ux.get_quote(token, instrument_key) or {}
+        bid = ((q.get("depth") or {}).get("buy") or [{}])[0].get("price")
+        if bid:
+            ref, source = float(bid), "bid"
+        elif q.get("last_price"):
+            ref, source = float(q["last_price"]), "last traded"
+    except Exception as exc:                                    # noqa: BLE001
+        log.warning("no quote (%s) — falling back to the bar close", exc)
+
+    if ref and fallback_close:
+        if abs(ref - fallback_close) / fallback_close * 100 > QUOTE_SANITY_PCT:
+            log.warning("quote %s is >%.1f%% from bar close %s — ignoring it",
+                        ref, QUOTE_SANITY_PCT, fallback_close)
+            ref, source = fallback_close, "last closed bar (quote rejected)"
+    ref = ref or fallback_close
+    if not ref:
+        return None, "no reference price"
+    return ref, source
+
+
+def stop_level_gone(ref, stop) -> bool:
+    """Has the market already passed the level this stop was meant to defend?
+
+    A long is protected by a SELL stop BELOW it. Once price is at or under that
+    level the stop is not late, it is USELESS: the exchange either refuses a
+    SELL trigger above the market, or triggers it instantly into a limit that
+    sits above the market and never fills. Either way the position is naked
+    while the loss runs.
+
+    This is not hypothetical. 8 Sep 2026 the 5-min bot held overnight with a
+    stop at 23716.74; on 9 Sep the market opened at 23674 and the bot re-placed
+    that same stop. Planned loss 31 points; actual 217, because nothing ever
+    exited. The hourly bot shares this code and holds overnight BY DESIGN, so it
+    meets this every time it carries a trade through a night.
+
+    Returns False whenever `ref` is missing — an unknown market must never be
+    read as a breach, or a quote outage would exit a healthy position.
+    """
+    try:
+        return bool(ref) and bool(stop) and float(ref) <= float(stop)
+    except (TypeError, ValueError):
+        return False
+
+
+def marketable_exit_price(token, instrument_key, fallback_close, tick, attempt=0):
+    """A SELL limit priced to fill now, anchored to the live market.
+
+    Prefers the best bid — that is the price a seller can actually hit — and
+    falls back to last traded, then to the last closed bar if there is no quote
+    at all. Crosses further on each retry, but never beyond
+    TIMEOUT_CROSS_MAX_PCT, and refuses a quote that disagrees wildly with the
+    last bar so a broken book cannot price the order into nonsense.
+
+    Returns (price, source) so the notification can say what it was priced off.
+    """
+    ref, source = live_reference_price(token, instrument_key, fallback_close)
+    if not ref:
+        return None, "no reference price"
+
+    cross = min(TIMEOUT_CROSS_PCT + TIMEOUT_CROSS_STEP * attempt, TIMEOUT_CROSS_MAX_PCT)
+    return ux.round_to_tick(ref * (1 - cross / 100), tick), f"{source} {ref} − {cross:.2f}%"
+
+
+# ── The state machine ────────────────────────────────────────────────────────
+
+def blocked_by_rejections(book, instrument_key: str, tag: str, label: str) -> bool:
+    """True when the exchange has refused this order enough times to stop trying.
+
+    Placed in front of every order this bot sends. Without it a rejection is
+    invisible to the poll loop — a rejected order is not RESTING, so the next
+    poll sees no bracket and sends the same order again, for ever. On 7 Sep 2026
+    that produced 50 rejected orders in eleven minutes and drowned out the one
+    line that mattered, which was the exchange saying the account was short of
+    margin.
+    """
+    n = coord.rejected_count(book, instrument_key, tag)
+    if n < coord.REJECT_LIMIT:
+        return False
+    why = coord.last_rejection(book, instrument_key, tag) or "no reason given"
+    tg_once(f"rej:{tag}",
+            f"🛑 GIVING UP on the {label} — the exchange has rejected it {n} times today.\n\n"
+            f"Its words: “{why}”\n\n"
+            f"Re-sending the same order every poll will not fix that, so this bot has "
+            f"stopped trying. IT IS NOT RETRYING AND THE {label.upper()} IS NOT ON THE "
+            f"BOOK — deal with this by hand in the app.")
+    return True
+
+
+def act(key: str, what: str, fn, *args, **kwargs):
+    """Every real-money action goes through here, so DRY mode cannot leak an
+    order through a path someone forgot to guard.
+
+    DRY and LIVE notify differently, and deliberately so:
+
+      • LIVE  — every call is a thing that HAPPENED. All of them are reported;
+                suppressing a repeat would hide a genuine second attempt, such as
+                a retry after a rejection.
+      • DRY   — nothing is placed, so the condition that prompted the action is
+                still true on the next poll and stays true forever. Reporting it
+                each time turns one decision into ~390 identical messages a
+                session. It is announced when the intent CHANGES instead, which
+                is the actual news: a different price, a different action.
+
+    `key` separates concurrent intents, so a pending stop and a pending target
+    do not overwrite each other and alternate.
+    """
+    if not LIVE:
+        tg_once(f"act:{key}", f"WOULD {what}")
+        return None
+    tg(what)
+    return fn(*args, **kwargs)
+
+
+def _resting_qty(order: dict) -> int:
+    """Quantity on a resting order, or 0 when the book does not report one.
+
+    0 means UNKNOWN, and the resize path treats unknown as "leave it alone".
+    Resizing an order whose current size cannot be read would be guessing at
+    the one number that must not be guessed at.
+    """
+    try:
+        return int(order.get("quantity") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def peer_claims_position(instrument_key: str) -> dict | None:
+    """Does the OTHER bot's state file say it is holding this contract?
+
+    The order book only goes back to today, so a filled entry stops being
+    evidence the moment the date rolls. A state file does not — the other bot
+    writes entry_bar and instrument when it adopts a position and clears them
+    when it closes, and that survives restarts, weekends and everything else.
+
+    This is the only attribution signal that outlives the session, which is
+    exactly what a position held overnight needs.
+
+    Checks every peer in PEERS. An unreadable or missing file is not a claim, so
+    a peer that has never run is indistinguishable from one that is flat — which
+    is correct, and is why adding the 5-min bot here cannot change this bot's
+    behaviour while that bot is idle or absent.
+    """
+    for path, name in PEERS:
+        try:
+            with open(path) as fh:
+                st = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(st, dict) or not st.get("entry_bar"):
+            continue
+        if st.get("instrument") and st["instrument"] != instrument_key:
+            continue
+        return {"who": name, "side": "LONG" if st.get("long", True) else "SHORT",
+                "qty": None, "price": st.get("entry_price"), "at": st.get("entry_bar")}
+    return None
+
+
+def foreign_owner(book: list, instrument_key: str, our_tags: tuple) -> dict | None:
+    """Which other bot's filled entry is behind the position on this instrument.
+
+    We share one Upstox account, so the order book is the only place that
+    records who opened what — the position endpoint nets everything into a
+    single number with no attribution. Reading the tag off the filled entry
+    turns "almost certainly the other bot's" into a fact worth printing.
+
+    Returns stable facts only: name, side, quantity, price, time. NOTHING that
+    changes bar to bar, because tg_once re-sends whenever the text differs and
+    a live level would turn one notice into one per bar.
+    """
+    # THE MAP LIVES IN coordination.TAG_OWNER, NOT HERE. A private copy is what
+    # caused 7 Sep 2026: the 5-min bot was added, this map was not updated, its
+    # "f5entry" fill was unrecognised, and this bot adopted the 5-min's position
+    # and bracketed it. See the note on TAG_OWNER.
+    for o in book or []:
+        if o.get("instrument_token") != instrument_key:
+            continue
+        if (o.get("status") or "").lower() != "complete":
+            continue
+        tag = (o.get("tag") or "").lower()
+        if tag in our_tags or not coord.owner_of(tag):
+            continue
+        stamp = (o.get("order_timestamp") or "")[11:16]      # HH:MM, or ""
+        return {
+            "who": coord.owner_of(tag),
+            "side": "LONG" if (o.get("transaction_type") or "").upper() == "BUY" else "SHORT",
+            "qty": int(o.get("quantity") or 0),
+            "price": o.get("average_price") or o.get("price"),
+            "at": stamp,
+        }
+    return None
+
+
+def standing_down_text(owner: dict | None, held: int, symbol: str, what_we_pull: str) -> str:
+    """Why this bot is sitting out, in words that answer the question directly.
+
+    The old text led with "NOT this bot's position", which says what is not
+    happening before it says what is.
+    """
+    if owner:
+        line = f"It is {owner['side']} {owner['qty']} @ {owner['price']}"
+        if owner["at"]:
+            line += f", entered {owner['at']}"
+        head = f"🚫 Not trading — {owner['who']} has a position open."
+    else:
+        line = f"It is {abs(held)} lots, and no tagged entry from either bot explains it"
+        head = "🚫 Not trading — a position is open that this bot did not place."
+    return (f"{head}\n\n"
+            f"{line}, on {symbol}.\n"
+            f"Both bots trade this same contract on one Upstox account, and Upstox nets "
+            f"positions per contract — so if this bot entered too, the two trades would "
+            f"collapse into a single number and each bot would place a bracket sized for "
+            f"the other's lots as well as its own.\n\n"
+            f"So: {what_we_pull} No new entries until that position closes. "
+            f"You will get a message the moment it does.")
+
+
+def reconcile(token: str, payload: dict, state: dict,
+              protect_only: bool = False) -> dict:
+    contract = payload.get("contract") or {}
+    signal = payload.get("signal") or {}
+    key = contract.get("instrumentKey")
+    lot = int(contract.get("lotSize") or 0)
+    qty = QUANTITY_LOTS * lot
+
+
+    # WHICH CONTRACT ARE WE MANAGING? Not necessarily the one the signal names.
+    #
+    # The dashboard now rolls to the next contract a few days before expiry, so a
+    # position opened on the expiring month is still open while the signal has
+    # already moved on. Matching positions against the SIGNAL's key would then
+    # find nothing, the bot would believe it was flat, and it would open a second
+    # position — leaving the first one unmanaged with an orphaned stop on a
+    # contract nothing is watching.
+    #
+    # So the contract is pinned at entry and used until the position closes.
+    # Pinned at adoption, else the contract our own entry filled on, else the
+    # signal's. The middle term matters near expiry: the signal rolls to the
+    # next month while a position sits on the old one, and looking only at the
+    # signal's contract would report flat and hide it.
+    pos_key = (state.get("instrument")
+               or (state.get("entry_fill") or {}).get("instrument")
+               or key)
+    rolled_away = bool(state.get("instrument")) and state["instrument"] != key
+
+    positions = ux.get_positions(token)
+    book = ux.get_order_book(token)
+    held, avg = position_qty(positions, pos_key)
+    resting = resting_orders(book, pos_key)
+
+    entry_valid = bool(signal.get("entryValid"))
+    fib_entry, stop, target = signal.get("fibEntry"), signal.get("stopPrice"), signal.get("targetPrice")
+    tick = contract.get("tickSize") or 5
+    dte = days_to_expiry(contract.get("expiry") or 0)
+
+    snapshot = {
+        "at": datetime.now(tz=IST).strftime("%d %b %H:%M IST"),
+        "instrument": pos_key,
+        "symbol": contract.get("tradingSymbol"), "position_qty": held, "position_price": avg,
+        "entry_valid": entry_valid, "fib_entry": fib_entry, "stop": stop, "target": target,
+        "entry_order": (resting[TAG_ENTRY] or {}).get("order_id"),
+        "stop_order": (resting[TAG_STOP] or {}).get("order_id"),
+        "target_order": (resting[TAG_TARGET] or {}).get("order_id"),
+        "token": "ok", "bars_held": None,
+    }
+
+    # /halt means place NOTHING. Checked here, before every path below that can
+    # send an order — including the bracket paths that /stop deliberately leaves
+    # running.
+    if is_halted():
+        snapshot["note"] = "HALTED — placing nothing"
+        return snapshot
+
+    # ── IS THIS POSITION EVEN OURS? ──────────────────────────────────────────
+    # The mirror of the gate in ib_executor. Upstox nets positions per
+    # instrument across the ACCOUNT, and the inside-bar bot trades the same
+    # NIFTY future with the same token, so a position it opens appears here
+    # identically to one of ours. Adopting it would mean bracketing, counting
+    # bars against, and eventually exiting somebody else's trade.
+    #
+    # Ownership comes from state we wrote at our own fill (survives restarts and
+    # overnight holds), or our tagged entry completing in today's book.
+    filled_book = completed_orders(book, pos_key)
+
+    # ── REMEMBER OUR OWN FILL, THE MOMENT IT IS VISIBLE ──────────────────────
+    # Same reasoning as ib_executor: this loop only runs during market hours, a
+    # fill in the closing minutes may never show up in get_positions before the
+    # close, and Upstox purges order details overnight (a next-day lookup
+    # returns 404 Order not found). The order book DOES show the fill on the
+    # day, so the memory is written then and carried in the state file.
+    mine = filled_book.get(TAG_ENTRY)
+    if mine and not state.get("entry_fill"):
+        armed = state.get("armed") or {}
+        state["entry_fill"] = {
+            "order_id": mine.get("order_id"),
+            "price": mine.get("average_price") or mine.get("price"),
+            "instrument": mine.get("instrument_token") or pos_key,
+            "stop": armed.get("stop"),
+            "target": armed.get("target"),
+            "at": signal.get("asOf"),
+        }
+        tg_once("filled",
+                f"✅ BUY ORDER FILLED at {state['entry_fill']['price']} on {pos_key}.\n"
+                f"Saved: stop-loss {state['entry_fill']['stop']}, "
+                f"target {state['entry_fill']['target']}. If the market closes before "
+                f"they are placed, they go on at the next open.")
+
+    owns = bool(state.get("entry_bar")) or bool(mine) or bool(state.get("entry_fill"))
+
+    # See the long note in ib_executor: attribution is positive-evidence-only,
+    # and an unclaimed position is ADOPTED rather than abandoned. A filled entry
+    # ages out of the order book overnight; a held position does not.
+    # Three sources, and the CLAIM is the one that does not depend on timing.
+    # The order-book and state-file checks can both come up empty in the seconds
+    # between another bot's fill and its next poll — which is exactly the window
+    # the 7 Sep adoption happened in. The claim is written before the order is
+    # placed, so it is already there.
+    claim = lock.read_claim(LOCK_PATH)
+    claimed_by_peer = bool(claim and claim.get("owner") != "hourly"
+                           and (not claim.get("instrument") or claim["instrument"] == pos_key))
+    foreign = foreign_owner(book, pos_key, OUR_TAGS) or peer_claims_position(pos_key)
+    if not foreign and claimed_by_peer:
+        foreign = {"who": lock.describe(claim).split(" holds")[0].split(" has")[0],
+                   "side": "LONG", "qty": None, "price": None, "at": None}
+
+    if held > 0 and not owns and not foreign:
+        tg_once("adopted",
+                f"⚠️ TAKING OVER {held} on {pos_key}. No buy order of ours filled TODAY and the "
+                f"inside-bar bot does not claim it — but nothing says it is anyone else's "
+                f"either, and a trade with no stop-loss is the worse risk.\nMost likely ours "
+                f"from a previous session. Adding a stop-loss and target now; check the app if that looks "
+                f"wrong.")
+        owns = True
+    else:
+        tg_clear("adopted")
+
+    if held > 0 and not owns:
+        tg_once("foreign", standing_down_text(
+            foreign, held,
+            contract.get("tradingSymbol") or pos_key,
+            "this bot is not managing or exiting that position."))
+        snapshot["note"] = "foreign position — stood down"
+        return snapshot
+    tg_clear("foreign")
+
+    # ── IN A POSITION ────────────────────────────────────────────────────────
+    if held > 0:
+        # Refresh the claim as HOLDING. `holding` is what stops the other bot
+        # preempting a real position, so it is asserted here — where a filled
+        # position is a fact read from the exchange — and nowhere else.
+        lock.claim(LOCK_PATH, "hourly", pos_key, holding=True, position_open=held > 0, fail_open=True)
+        # Count bars from the signal's own clock, not the wall clock: sessions
+        # have gaps and holidays, so elapsed time is not elapsed bars.
+        as_of = signal.get("asOf")
+        if not state.get("entry_bar"):
+            state["entry_bar"] = as_of
+            state["bars"] = 0
+            state["entry_price"] = avg
+            state["instrument"] = key
+            # THE BRACKET BELONGS TO THIS TRADE, so it is frozen here.
+            #
+            # signal["stopPrice"] is recomputed from ATR on every new bar and
+            # drifts constantly — on 27 Aug it went 24267.58 → 24263.51 →
+            # 24263.98 while a position was open. Reading it live meant that if
+            # a stop ever went missing (cancelled by hand, rejected, partially
+            # filled) the replacement went in at whatever the signal said THEN,
+            # silently re-risking a trade at a level nobody chose. The crypto
+            # and inside-bar bots already freeze theirs; this one did not.
+            # Our own recorded fill first — those are the levels THIS trade was
+            # entered on and they survive the weekend; then the live signal.
+            fill = state.get("entry_fill") or {}
+            state["stop"] = fill.get("stop") or stop
+            state["target"] = fill.get("target") or target
+            if fill.get("price"):
+                state["entry_price"] = fill["price"]
+            tg(f"📈 TRADE OPEN — bought {held} at {avg}.\n"
+               # state[...], not the local signal values — with a remembered
+               # fill these differ, and the message must name the levels the
+               # orders actually go in at.
+               f"Stop-loss and target for this trade: stop {state['stop']}, "
+               f"target {state['target']}.")
+        elif as_of and as_of != state.get("last_bar"):
+            state["bars"] = int(state.get("bars", 0)) + 1
+        state["last_bar"] = as_of
+        snapshot["bars_held"] = state.get("bars", 0)
+
+        # Holding a contract the signal has already rolled past. The position is
+        # still managed — the stop and target are the ones it was entered with —
+        # but it now has a deadline the signal will not warn about, so say so.
+        # Silence here would look identical to a normal hold right up to expiry.
+        if rolled_away:
+            tg_once("rolled", f"⚠️ Holding {state.get('instrument')} but the signal has moved to "
+                              f"{key}. Looking after this trade until its stop-loss or target; no new "
+                              f"trades until it closes. It must be out before expiry.")
+
+        # A stop is not optional. If one is missing the position is naked, and
+        # that is the single worst state this bot can be in.
+        # Frozen at entry — deliberately NOT signal["stopPrice"]. See above.
+        held_stop, held_target = state.get("stop"), state.get("target")
+        snapshot["bracket_stop"], snapshot["bracket_target"] = held_stop, held_target
+
+        # ── BRACKETS COVER WHAT IS HELD, NOT WHAT WAS INTENDED ───────────────
+        # These used to be sized `qty` — QUANTITY_LOTS * lot, a constant 65
+        # computed before the position was ever read. Upstox fills large futures
+        # orders in pieces, and the inside-bar bot has logged 1, 3 and 4 lot
+        # fills against a 5 lot intent, so "intended" and "held" are routinely
+        # different numbers.
+        #
+        # A 65 lot stop on a 32 lot position does not merely over-hedge: neither
+        # Upstox stops nor targets carry reduce_only, so when it fires 32 lots
+        # close and 33 OPEN A NAKED SHORT, on a bot that then believes itself
+        # flat. `held` is read from the exchange every poll, and the enclosing
+        # branch is `if held > 0`, so it is positive by construction — this is
+        # the crypto bot's pattern, and identical to the inside-bar bot's
+        # abs(held) for a book that only ever goes long.
+        # ── HAS THE MARKET ALREADY PASSED THE STOP? ──────────────────────────
+        # Decided before the brackets, because if the level is gone there is no
+        # point placing a stop that cannot work and then cancelling it. This bot
+        # holds overnight BY DESIGN — 30 hourly bars is about four sessions — so
+        # it meets a gap every time it carries a trade through a night, and this
+        # is the path that answers it.
+        ref, ref_src = live_reference_price(token, pos_key, signal.get("lastClose"))
+        breached = stop_level_gone(ref, held_stop)
+        timed_out = state.get("bars", 0) >= TIMEOUT_BARS
+        exiting = timed_out or breached
+
+        if not exiting and not resting[TAG_STOP] and held_stop:
+            # Trigger and limit are both reported, and both are the ROUNDED
+            # values actually sent — the message used to print the raw stop,
+            # which never matched what sat on the book.
+            trig = ux.round_to_tick(held_stop, tick)
+            lim = ux.stop_limit_price(trig, "SELL", tick_paise=tick)
+            if blocked_by_rejections(book, pos_key, TAG_STOP, "stop-loss"):
+                pass
+            else:
+                act("stop", f"place STOP-LOSS for {held} — triggers at {trig}, sells at {lim}",
+                ux.place_sl, token, pos_key, held, trig, "SELL", "D", TAG_STOP, lim, tick)
+        elif (resting[TAG_STOP] and held_stop
+              and _resting_qty(resting[TAG_STOP]) not in (0, held)):
+            # THE REST OF THE FILL LANDED. The bracket was placed against the
+            # first partial and the "is one already resting?" guard would leave
+            # it there forever, covering part of the position. Resize it to what
+            # is actually held — shrinking as well as growing, since a partial
+            # exit leaves the mirror problem.
+            trig = ux.round_to_tick(held_stop, tick)
+            lim = ux.stop_limit_price(trig, "SELL", tick_paise=tick)
+            act("stop-resize",
+                f"adjust the stop-loss size from "
+                f"{_resting_qty(resting[TAG_STOP])} to {held} (position changed)",
+                ux.modify_order, token, resting[TAG_STOP]["order_id"],
+                price=lim, trigger_price=trig, quantity=held, order_type="SL")
+
+        if not exiting and not resting[TAG_TARGET] and held_target:
+            tgt = ux.round_to_tick(held_target, tick)
+            if blocked_by_rejections(book, pos_key, TAG_TARGET, "target"):
+                pass
+            else:
+                act("target", f"place TARGET for {held} at {tgt}",
+                ux.place_limit_sell, token, pos_key, held, tgt, "D", TAG_TARGET)
+        elif (resting[TAG_TARGET] and held_target
+              and _resting_qty(resting[TAG_TARGET]) not in (0, held)):
+            tgt = ux.round_to_tick(held_target, tick)
+            act("target-resize",
+                f"adjust the target size from "
+                f"{_resting_qty(resting[TAG_TARGET])} to {held} (position changed)",
+                ux.modify_order, token, resting[TAG_TARGET]["order_id"],
+                price=tgt, quantity=held, order_type="LIMIT")
+
+        if exiting:
+            why = (f"STOP ALREADY PASSED — the market is {ref} ({ref_src}) and this "
+                   f"trade's stop is {held_stop}. A sell-stop above the market cannot "
+                   f"protect anything, so this bot is CLOSING the position instead"
+                   if breached else
+                   f"TIME LIMIT after {state['bars']} hours")
+            # Brackets go FIRST. While the stop and target are still working, an
+            # exit crossing the spread could race them and leave a partial or a
+            # doubled exit.
+            for role in (TAG_STOP, TAG_TARGET):
+                if resting[role]:
+                    act(f"cancel-{role}", f"cancel {role} {resting[role]['order_id']} "
+                        f"({'stop-passed' if breached else 'time-limit'} exit)",
+                        ux.cancel_order, token, resting[role]["order_id"])
+
+            attempts = int(state.get("exit_attempts", 0))
+            working = resting[TAG_EXIT]
+
+            if working:
+                # An exit is on the book and we are STILL holding, so it has not
+                # filled. Re-price it further through the market rather than
+                # leaving it to sit.
+                if attempts >= TIMEOUT_MAX_ATTEMPTS:
+                    tg_once("exitstuck",
+                            f"‼️ {'STOP-PASSED' if breached else 'TIME-LIMIT'} EXIT DID NOT FILL "
+                            f"after {attempts} attempts on {pos_key}. "
+                            f"Still holding {held} at {avg}. Order {working['order_id']} is working "
+                            f"at {working.get('price')}. PLEASE CLOSE THIS BY HAND — close it in "
+                            f"the Upstox app.")
+                    snapshot["note"] = "timeout exit unfilled — manual intervention"
+                    return snapshot
+                act("timeout-cancel", f"cancel the unfilled exit order and try again at a better price",
+                    ux.cancel_order, token, working["order_id"])
+
+            px, basis = marketable_exit_price(token, pos_key, signal.get("lastClose"), tick, attempts)
+            if px is None:
+                tg_once("exitstuck",
+                        f"‼️ {why} on {pos_key} but no price to work from — cannot place an exit. "
+                        f"Still holding {held} at {avg}. PLEASE CLOSE THIS BY HAND.")
+                snapshot["note"] = "timeout exit — no reference price"
+                return snapshot
+
+            # `held`, not `qty` — an exit sized 65 against a 32 lot position
+            # closes it and opens a 33 lot short.
+            act("timeout", f"{why} — closing {held} at {px} "
+                           f"(priced to fill straight away, based on {basis}; try {attempts + 1})",
+                ux.place_limit_sell, token, pos_key, held, px, "D", TAG_EXIT)
+            state["exit_attempts"] = attempts + 1
+            # Deliberately NOT marked closed here. The position is only ever
+            # considered flat when get_positions says so on a later poll, which
+            # is the same source-of-truth rule the rest of the bot follows.
+        return snapshot
+
+    # ── FLAT ─────────────────────────────────────────────────────────────────
+    if state.get("entry_bar"):
+        tg(describe_exit(completed_orders(book, key),
+                         state.get("entry_price"), state.get("bars", 0)))
+        state.clear()
+        tg_clear("exitstuck")
+        # New trade, new intents: forget what was announced for the last one.
+        for k in [k for k in _notified if k.startswith("act:")]:
+            tg_clear(k)
+
+    # A fill we recorded but whose position we never saw, on a bar that has
+    # since moved on: closed out of hours or by hand. The bar check is what
+    # separates that from the same-poll race, where the recorded bar IS the
+    # current one. Without it the record would pin pos_key forever and the bot
+    # would ignore its next fill.
+    stale_fill = state.get("entry_fill")
+    if stale_fill and stale_fill.get("at") != signal.get("asOf"):
+        tg(f"ℹ️ The buy order recorded at {stale_fill.get('price')} is no longer open and this "
+           f"bot never managed it — closed outside market hours, or by hand. Clearing it "
+           f"and trading normally.")
+        state.pop("entry_fill", None)
+        tg_clear("filled")
+
+    # A stop or target left resting with no position can OPEN a reversed one:
+    # Upstox has no reduce_only, so these are plain opposite-side orders.
+    for role in (TAG_STOP, TAG_TARGET, TAG_EXIT):
+        if resting[role]:
+            act(f"orphan-{role}", f"cancel leftover {role} order — no trade is open, so it could accidentally start one",
+                ux.cancel_order, token, resting[role]["order_id"])
+
+    # The dashboard has rolled and we still hold the old month: manage it, open
+    # nothing. Cleared automatically when the position closes and state resets.
+    if rolled_away:
+        tg_once("rolled", f"⏸ Holding {state.get('instrument')} while the signal has moved to "
+                          f"{key}. Managing the open position; no new trades until it closes.")
+        snapshot["note"] = "mid-roll — managing the previous contract"
+        return snapshot
+    tg_clear("rolled")
+
+    if dte <= EXPIRY_BUFFER_DAYS:
+        if resting[TAG_ENTRY]:
+            act("expiry-cancel", f"cancel the buy order — only {dte:.1f} days to expiry",
+                ux.cancel_order, token, resting[TAG_ENTRY]["order_id"])
+        # Say so, once. Silence here is indistinguishable from a broken bot, and
+        # this state can last two full days — long enough to wonder. tg_once
+        # because the alternative is ~800 identical messages over that window.
+        tg_once("expiry", f"⏸ Not trading — {contract.get('tradingSymbol')} expires in "
+                          f"{dte:.1f} days (we stop {EXPIRY_BUFFER_DAYS} days before). No new trades "
+                          f"until it moves to the next contract, even if the signal looks good.")
+        snapshot["note"] = f"{dte:.1f}d to expiry — not opening"
+        return snapshot
+    tg_clear("expiry")
+
+    # Kill switch: everything above this point protects a position that
+    # already exists — brackets, orphan cleanup, exits. Everything below can
+    # OPEN one. /stop draws the line exactly here.
+    #
+    # Resting orders are deliberately left alone, as the /stop message has
+    # always promised; this only stops new ones being created.
+    if protect_only:
+        snapshot["note"] = "stopped — protecting only, opening nothing"
+        return snapshot
+
+    if not entry_valid:
+        if resting[TAG_ENTRY]:
+            act("stale-cancel", f"cancel the buy order — the signal is no longer valid",
+                ux.cancel_order, token, resting[TAG_ENTRY]["order_id"])
+        else:
+            # Flat, nothing resting, no setup: release the contract so the 5-min
+            # bot can use the idle time. That is the entire point of it.
+            lock.release(LOCK_PATH, "hourly")
+        return snapshot
+
+    if not fib_entry or not qty:
+        return snapshot
+
+    # Claim the contract before placing anything. This is refused in exactly one
+    # case — the 5-min bot holds a FILLED position — because preempting that is
+    # the double position the whole mechanism exists to prevent. A 5-min entry
+    # merely RESTING is preempted silently; it cancels its own order when it
+    # sees the claim is no longer its.
+    #
+    # fail_open=True: a broken lock never blocks this bot.
+    granted, blocker = lock.claim(LOCK_PATH, "hourly", pos_key, holding=False, position_open=held > 0, fail_open=True)
+    if not granted:
+        tg_once("waiting5m",
+                f"⏸ Waiting — {lock.describe(blocker)}.\n\n"
+                f"Both bots trade this contract on one Upstox account and Upstox nets "
+                f"positions, so opening now would leave two trades collapsed into one "
+                f"number with two brackets on it. This bot has priority for NEW trades "
+                f"and will take the setup as soon as that position closes — it does not "
+                f"close it early.")
+        snapshot["note"] = "waiting for the 5-min bot to be flat"
+        return snapshot
+    tg_clear("waiting5m")
+
+    want = ux.round_to_tick(fib_entry, tick)
+    existing = resting[TAG_ENTRY]
+
+    # The bracket this resting entry belongs to. Snapshotted every poll while
+    # the order sits there, so whenever it fills — including in the closing
+    # minutes, after this loop's last look of the session — the levels it was
+    # entered on are already on disk. The inside-bar bot calls this "armed";
+    # same idea, one entry instead of two.
+    state["armed"] = {"entry": want, "stop": stop, "target": target}
+
+    # ── A LIMIT BUY BELOW THE MARKET IS A GOOD FILL, NOT AN IMPOSSIBLE ONE ───
+    # This used to refuse to place an entry when price was already at or below
+    # the fib level, on the reasoning that the order would fill instantly rather
+    # than on a pullback. That was wrong, and wrong by a specific mistake:
+    # reasoning by analogy from the inside-bar breakout guard. The comment even
+    # said so.
+    #
+    # The two cases are opposites. A STOP entry triggered after price has gapped
+    # past its level fills at whatever price now exists — worse than the level,
+    # sometimes far worse. A LIMIT buy resting below the market fills at the
+    # market, which for a buy is at or BETTER than the level. Nothing impossible
+    # happens; you simply get a deeper pullback than you asked for.
+    #
+    # Backtest, 5.6 years of NIFTY: these were 44 of 85 trades and the BEST ones
+    # in the strategy — PF 3.95 against 2.23 for the rest, averaging 158 points
+    # against 97, at the same 66% win rate. Refusing them removed more than half
+    # the trades and roughly two thirds of the profit.
+    #
+    # The one concern that did survive is handled by doing nothing: the stop is a
+    # FIXED level from the signal, so a better fill makes risk tighter, not the
+    # stop closer to noise in any way the strategy did not intend. See the note
+    # at state["stop"] — the bot has no ATR and cannot recompute a stop from a
+    # fill even if asked to.
+
+
+    if not existing:
+        if blocked_by_rejections(book, pos_key, TAG_ENTRY, "buy order"):
+            return snapshot
+        act("entry", f"place BUY order for {qty} at {want} (stop-loss {stop}, target {target})",
+            ux.place_limit_buy, token, key, qty, want, "D", TAG_ENTRY)
+    elif abs(float(existing.get("price") or 0) - want) >= (tick / 100.0):
+        act("entry", f"move the buy order from {existing.get('price')} to {want}",
+            ux.modify_order, token, existing["order_id"], price=want, quantity=qty)
+    return snapshot
+
+
+# ── Main loop ────────────────────────────────────────────────────────────────
+
+def poll_once(protect_only: bool = False) -> None:
+    global _last
+    state = load_state()
+
+    try:
+        token = ux.load_token()
+    except ux.TokenUnavailable as exc:
+        tg_once("token", f"🔑 CANNOT TRADE — {exc}\nSync a fresh token from the dashboard.")
+        with _lock:
+            _last = {"at": datetime.now(tz=IST).strftime("%d %b %H:%M IST"), "token": str(exc)}
+        return
+
+    payload = fetch_signal()
+    if not payload:
+        log.warning("no signal this poll")
+        return
+    if not payload.get("tokenValid") or not payload.get("signal"):
+        # Logging alone made this invisible: from the outside a bot that cannot
+        # read its signal looks exactly like a bot with nothing to do.
+        tg_once("signal", f"🔑 NO SIGNAL — not trading.\n"
+                          f"{payload.get('error') or 'The dashboard reports no usable Upstox token.'}")
+        log.info("signal unavailable: %s", payload.get("error"))
+        return
+
+    try:
+        snapshot = reconcile(token, payload, state, protect_only=protect_only)
+    except ux.UpstoxError as exc:
+        if exc.is_auth:
+            tg_once("token", "🔑 TOKEN REJECTED mid-session. No new orders will be placed.\n"
+                             "Orders already placed — including any stop-loss — remain live.\n"
+                             "Sync a fresh token from the dashboard.")
+        else:
+            tg_once("upstox", f"⚠️ Upstox error: {exc}")
+        return
+
+    # A clean poll means any previous fault has cleared, so let it announce
+    # itself if it comes back.
+    tg_clear("token")
+    tg_clear("upstox")
+    tg_clear("loop")
+    tg_clear("signal")
+
+    save_state(state)
+    with _lock:
+        _last = snapshot
+
+
+def main() -> None:
+    # Adopt the switch as it was left. Announcing which state was adopted is the
+    # whole point: before this, a restart that silently re-enabled a stopped bot
+    # produced exactly the same "online" line as a normal start.
+    global _enabled, _halted
+    _enabled = load_switch()
+    _halted = load_halt()
+    switch_line = ("🛑 HALTED — placing nothing at all until /start" if _halted else
+                   "✅ RUNNING — trading normally" if _enabled else
+                   "⛔ PAUSED — you paused me earlier and I stayed paused through the "
+                   "restart. I will look after any open trade but start no new ones. "
+                   "Send /start to resume.")
+    tg(f"🤖 online — {'LIVE (real money)' if LIVE else 'TEST MODE'}, {QUANTITY_LOTS} lot, "
+       f"checking every {POLL_SECONDS}s\n{switch_line}")
+    threading.Thread(target=telegram_listener, daemon=True).start()
+
+    while True:
+        try:
+            if not market_is_open():
+                time.sleep(POLL_SECONDS)
+                continue
+            # See ib_executor: stopped means open nothing, not abandon an
+            # open position.
+            poll_once(protect_only=not is_enabled())
+        except Exception as exc:                                # noqa: BLE001
+            log.exception("poll failed")
+            tg_once("loop", f"⚠️ executor error: {exc}")
+        time.sleep(POLL_SECONDS)
+
+
+if __name__ == "__main__":
+    main()

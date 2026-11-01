@@ -1,0 +1,106 @@
+# Inside-bar bot — dry shadow run
+
+The scripted tests prove the bot decides correctly against inputs *I* wrote. This
+checklist proves it decides correctly against inputs the **market** writes, which
+is the only thing that can catch a wrong assumption about real data.
+
+Run it over 3–5 live sessions before considering `IB_LIVE=true`.
+
+## Before each session
+
+```bash
+# 1. sync a fresh token from the dashboard (it dies at 03:30 IST)
+# 2. on the droplet, after 09:15 IST:
+cd /root/fib-bot
+set -a; . ./ib_executor.env; set +a
+python3 preflight.py                    # 10 checks — shared with the Fib bot
+systemctl status fib-ib-executor --no-pager | head -4
+```
+
+Then in Telegram, to the **IB bot** (`@khilan_ib_bot`, messages prefixed `[IB]`):
+
+```
+/status
+```
+
+Expect `Mode: DRY (places nothing)`, `Switch: running`, `Market: open`.
+
+## During the session — what to verify
+
+Tick these off as they occur. Not everything happens every day; a week should
+cover all of it.
+
+- [ ] **It finds real inside bars.** When `/inside-bar` on the web shows
+      `WATCHING BREAKOUT`, `/status` on the IB bot reports the same mother levels.
+      *If the bot and the screen disagree, one of them is reading a different bar
+      — that is the single most important thing this checklist catches.*
+
+- [ ] **Mother levels match the screen exactly.** Compare `Mother: low / high` from
+      `/status` against the two stat cards on `/inside-bar`. They come from the
+      same endpoint, so any difference means a caching or timing bug.
+
+- [ ] **It arms the correct direction.** On a break upward you want
+      `[IB] 🧪 WOULD place ENTRY SL-M BUY … trigger <mother high>`; downward, `SELL`
+      at the mother low. Cross-check the trigger against the screen's LONG/SHORT
+      card.
+
+- [ ] **The bracket it names is right.** The `WOULD place ENTRY` message states the
+      stop and target it would use. For a long, stop = mother low and target =
+      mother high + 5× range. For a short, mirrored.
+
+- [ ] **The 15:15 stub is handled.** The last hourly bar of the day opens 15:15 and
+      closes at 15:30, not 16:15. After the close, `/status` should show a bar
+      timestamped `15:15` — not the 14:15 bar, and not a bar still forming.
+
+- [ ] **It goes quiet outside market hours.** No messages between 15:30 and 09:15.
+      `/status` still answers, showing `Market: closed`.
+
+- [ ] **A stale breakout is not chased.** If a breakout happened and the bot did
+      not arm, check `/inside-bar` shows `TOO LATE` on that side. Not arming is
+      correct there — the move already left the level.
+
+- [ ] **A voided setup is respected.** If a single bar engulfs both mother
+      extremes, the screen shows `NO SETUP` with "direction is unknowable" and the
+      bot arms nothing. Rare; worth catching if it happens.
+
+- [ ] **The expiry guard fires on the roll.** Two days before expiry you should get
+      one `⏸ Standing aside — … expires in …` message and nothing further until
+      the new contract. Exactly one message, not one per minute.
+
+- [ ] **Alerts do not repeat.** If the token lapses mid-session you should get
+      *one* `🔑 CANNOT TRADE`, not one every minute.
+
+- [ ] **The kill switch works cold.** Send `/stop`, confirm the reply, wait a poll,
+      then `/start`. Do this at least once when you have *not* just restarted the
+      service.
+
+## Isolation checks — do these at least once
+
+- [ ] `/stop` on the **IB** bot leaves the **Fib** bot running (`/status` on the
+      Fib bot still says running, and it keeps posting).
+- [ ] `systemctl restart fib-ib-executor` does not interrupt the Fib bot —
+      `systemctl status fib-executor` uptime keeps climbing through it.
+- [ ] Both bots report the same token expiry, since they share one token file.
+
+## Sizing question to answer before going live
+
+Not a correctness check — a risk one, and it needs live data to answer:
+
+- [ ] **How wide are real mother bars?** The first live setup had a 40-point range,
+      giving a 40-point stop and a 200-point target. If that is typical, the bot
+      trades often with tight stops, and the 5× target has to land often enough to
+      pay for the losses. Note the range of every setup you see.
+- [ ] **How often does it arm?** Count setups per session. Materially more than the
+      Fib bot means materially more exposure.
+- [ ] **Could both bots be positioned at once?** They trade the same instrument on
+      one account. Two lots, possibly opposite directions, is a position you should
+      choose deliberately rather than discover.
+
+## Then, and only then
+
+```bash
+echo "IB_LIVE=true" >> /root/fib-bot/ib_executor.env
+systemctl restart fib-ib-executor
+```
+
+Confirm Telegram says `mode LIVE` with **no** 🧪 prefix.

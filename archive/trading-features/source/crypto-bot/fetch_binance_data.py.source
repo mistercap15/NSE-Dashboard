@@ -1,0 +1,606 @@
+#!/usr/bin/env python3
+"""
+fetch_binance_data.py -- Download Binance USDT-M PERPETUAL FUTURES OHLCV +
+funding-rate history via ccxt, save as backtest-ready CSVs, and run data
+integrity checks.
+
+This fetches DERIVATIVES data (ccxt exchange id `binanceusdm`), NOT spot.
+The perpetual symbols are "ETH/USDT:USDT" / "BTC/USDT:USDT" -- the ":USDT"
+suffix means "linear swap settled in USDT". Verified against live markets:
+both resolve to type='swap', linear=True, contract=True (ids ETHUSDT/BTCUSDT).
+
+Outputs (in the script's own directory):
+    eth_1h.csv  eth_15m.csv  eth_1d.csv     time,open,high,low,close,volume
+    btc_1h.csv  btc_15m.csv  btc_1d.csv
+    eth_funding.csv  btc_funding.csv        time,funding_rate
+
+Usage:
+    pip install ccxt
+    python3 fetch_binance_data.py                  # download everything (overwrite)
+    python3 fetch_binance_data.py --skip-existing  # keep files already on disk
+    python3 fetch_binance_data.py --check-only     # re-run integrity checks, no download
+    python3 fetch_binance_data.py --start 2021-01-01
+"""
+
+import argparse
+import csv
+import os
+import statistics
+import sys
+import time
+from datetime import datetime, timezone
+
+try:
+    import ccxt
+except ImportError:
+    sys.exit("ccxt is not installed.  Run:  pip install ccxt")
+
+
+# ─────────────────────────── CONFIGURATION ───────────────────────────
+
+# ccxt symbol -> output filename prefix
+SYMBOLS = {
+    "ETH/USDT:USDT": "eth",
+    "BTC/USDT:USDT": "btc",
+}
+
+TIMEFRAMES = ["1h", "15m", "1d"]
+
+DEFAULT_START = "2020-01-01"
+
+# Binance futures klines: the documented cap is 1500, but ccxt/the endpoint
+# returned exactly 1000 rows when asked for 1500 during verification. We use
+# the OBSERVED cap. Paginating on an assumed-but-wrong page size is the classic
+# source of silent gaps, so we never assume a full page was returned -- we
+# always advance from the last timestamp actually received.
+OHLCV_LIMIT = 1000
+FUNDING_LIMIT = 1000
+
+MAX_RETRIES = 5          # per page, on network/rate-limit errors
+RETRY_BACKOFF = 2.0      # seconds, doubled each attempt
+
+# Spike detection: flag a candle whose high/low deviates more than this
+# fraction from the median close of the surrounding candles.
+SPIKE_THRESHOLD = 0.50   # 50%
+SPIKE_WINDOW = 5         # candles either side used to build the local median
+
+OUT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Milliseconds per candle, per timeframe. Used for pagination, gap detection
+# and expected-row-count maths.
+TF_MS = {
+    "15m": 15 * 60 * 1000,
+    "1h": 60 * 60 * 1000,
+    "1d": 24 * 60 * 60 * 1000,
+}
+
+FUNDING_INTERVAL_MS = 8 * 60 * 60 * 1000   # perpetual funding: every ~8h
+
+
+# ─────────────────────────── SMALL HELPERS ───────────────────────────
+
+def ms_to_str(ms):
+    """Epoch milliseconds -> 'YYYY-MM-DD HH:MM:SS' in UTC."""
+    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def str_to_ms(datestr):
+    """'YYYY-MM-DD' -> epoch milliseconds (UTC midnight)."""
+    dt = datetime.strptime(datestr, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    return int(dt.timestamp() * 1000)
+
+
+def fmt_duration(ms):
+    """Human-readable duration for gap reporting."""
+    mins = ms / 60000
+    if mins < 60:
+        return f"{mins:.0f}m"
+    if mins < 1440:
+        return f"{mins / 60:.1f}h"
+    return f"{mins / 1440:.1f}d"
+
+
+def retry_call(fn, description):
+    """
+    Call fn() with exponential backoff on transient errors.
+    Permanent errors (bad symbol, auth) are raised immediately -- retrying
+    those just wastes time and hides the real problem.
+    """
+    for attempt in range(MAX_RETRIES):
+        try:
+            return fn()
+        except (ccxt.BadSymbol, ccxt.AuthenticationError, ccxt.NotSupported):
+            raise
+        except ccxt.BaseError as e:
+            if attempt == MAX_RETRIES - 1:
+                raise
+            wait = RETRY_BACKOFF * (2 ** attempt)
+            print(f"      ! {description} failed ({type(e).__name__}: {str(e)[:90]}) "
+                  f"- retry {attempt + 1}/{MAX_RETRIES - 1} in {wait:.0f}s")
+            time.sleep(wait)
+
+
+# ─────────────────────────── OHLCV DOWNLOAD ───────────────────────────
+
+def fetch_ohlcv_all(exchange, symbol, timeframe, since_ms, until_ms):
+    """
+    Page through fetch_ohlcv from since_ms to until_ms.
+
+    Pagination rule: after each page we resume from
+    (last returned timestamp + one timeframe), NOT from
+    (since + limit * timeframe). If the exchange returns a short page or skips
+    a delisted stretch, resuming from the actual last row keeps us aligned --
+    this is the part that must be right or you get gaps.
+
+    Returns a list of [ts, o, h, l, c, v], ascending, de-duplicated.
+    """
+    tf_ms = TF_MS[timeframe]
+    candles = {}          # ts -> row, de-dupes across overlapping pages
+    since = since_ms
+    pages = 0
+    # ccxt's rateLimit is the exchange's advertised min gap between calls.
+    sleep_s = max(exchange.rateLimit / 1000.0, 0.05)
+
+    while since < until_ms:
+        batch = retry_call(
+            lambda: exchange.fetch_ohlcv(symbol, timeframe, since=since, limit=OHLCV_LIMIT),
+            f"fetch_ohlcv {symbol} {timeframe} @ {ms_to_str(since)}",
+        )
+        pages += 1
+
+        if not batch:
+            # No data at this point in time. Could be the end of history, or a
+            # genuine hole. Step forward a whole page and probe again rather
+            # than stopping -- stopping here would silently truncate the file.
+            probe = since + OHLCV_LIMIT * tf_ms
+            if probe >= until_ms:
+                break
+            since = probe
+            time.sleep(sleep_s)
+            continue
+
+        for row in batch:
+            if row[0] <= until_ms:
+                candles[row[0]] = row
+
+        last_ts = batch[-1][0]
+        next_since = last_ts + tf_ms
+
+        # Guard against a non-advancing loop (exchange repeatedly returning
+        # the same first row would otherwise spin forever).
+        if next_since <= since:
+            next_since = since + tf_ms
+        since = next_since
+
+        if pages % 10 == 0:
+            print(f"      ... {len(candles):>6} candles, at {ms_to_str(last_ts)}")
+
+        time.sleep(sleep_s)
+
+    print(f"      {pages} requests -> {len(candles)} unique candles")
+    return [candles[k] for k in sorted(candles)]
+
+
+def fetch_funding_all(exchange, symbol, since_ms, until_ms):
+    """
+    Page through fetch_funding_rate_history (~1 entry per 8h per perpetual).
+
+    Funding timestamps carry a few ms of drift (e.g. ...08:00:00.014Z), so we
+    snap each one down to the whole second before formatting, and key the
+    de-dupe dict on the raw ms.
+    """
+    rates = {}
+    since = since_ms
+    pages = 0
+    sleep_s = max(exchange.rateLimit / 1000.0, 0.05)
+
+    while since < until_ms:
+        batch = retry_call(
+            lambda: exchange.fetch_funding_rate_history(symbol, since=since, limit=FUNDING_LIMIT),
+            f"fetch_funding_rate_history {symbol} @ {ms_to_str(since)}",
+        )
+        pages += 1
+
+        if not batch:
+            probe = since + FUNDING_LIMIT * FUNDING_INTERVAL_MS
+            if probe >= until_ms:
+                break
+            since = probe
+            time.sleep(sleep_s)
+            continue
+
+        for entry in batch:
+            ts = entry.get("timestamp")
+            rate = entry.get("fundingRate")
+            if ts is None or rate is None or ts > until_ms:
+                continue
+            rates[ts] = float(rate)
+
+        last_ts = batch[-1]["timestamp"]
+        next_since = last_ts + 1        # +1ms; funding spacing is not exact
+        if next_since <= since:
+            next_since = since + FUNDING_INTERVAL_MS
+        since = next_since
+        time.sleep(sleep_s)
+
+    print(f"      {pages} requests -> {len(rates)} funding entries")
+    return [(k, rates[k]) for k in sorted(rates)]
+
+
+# ─────────────────────────── CSV WRITING ───────────────────────────
+
+def write_ohlcv_csv(path, rows):
+    """Write time,open,high,low,close,volume with UTC 'YYYY-MM-DD HH:MM:SS'."""
+    with open(path, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["time", "open", "high", "low", "close", "volume"])
+        for ts, o, h, l, c, v in rows:
+            w.writerow([ms_to_str(ts), o, h, l, c, v])
+
+
+def write_funding_csv(path, rows):
+    with open(path, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["time", "funding_rate"])
+        for ts, rate in rows:
+            # snap sub-second drift down to the whole second
+            w.writerow([ms_to_str(ts - (ts % 1000)), f"{rate:.8f}"])
+
+
+def read_ohlcv_csv(path):
+    """Read a previously written CSV back into [ts, o, h, l, c, v] rows."""
+    rows = []
+    with open(path, newline="") as f:
+        for rec in csv.DictReader(f):
+            dt = datetime.strptime(rec["time"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+            rows.append([
+                int(dt.timestamp() * 1000),
+                float(rec["open"]), float(rec["high"]), float(rec["low"]),
+                float(rec["close"]), float(rec["volume"]),
+            ])
+    return rows
+
+
+# ─────────────────────────── INTEGRITY CHECKS ───────────────────────────
+
+def check_ohlcv(rows, timeframe):
+    """
+    Run every integrity check over one OHLCV series.
+    Returns a dict of findings -- nothing is dropped or silently repaired here;
+    problems are reported so they can be judged before use.
+    """
+    tf_ms = TF_MS[timeframe]
+    out = {
+        "rows": len(rows),
+        "first": None, "last": None,
+        "expected": 0, "missing": 0, "gaps": [],
+        "duplicates": 0, "out_of_order": 0,
+        "bad_candles": [], "spikes": [],
+        "min_price": None, "max_price": None,
+    }
+    if not rows:
+        return out
+
+    ts = [r[0] for r in rows]
+    out["first"], out["last"] = ms_to_str(ts[0]), ms_to_str(ts[-1])
+
+    # --- duplicates / ordering (should be zero: we de-dupe and sort on write)
+    out["duplicates"] = len(ts) - len(set(ts))
+    out["out_of_order"] = sum(1 for i in range(len(ts) - 1) if ts[i + 1] <= ts[i])
+
+    # --- expected vs actual candle count, and where the holes are
+    out["expected"] = int((ts[-1] - ts[0]) / tf_ms) + 1
+    out["missing"] = out["expected"] - out["rows"]
+    for i in range(len(ts) - 1):
+        delta = ts[i + 1] - ts[i]
+        if delta > tf_ms:
+            out["gaps"].append({
+                "after": ms_to_str(ts[i]),
+                "before": ms_to_str(ts[i + 1]),
+                "missing": int(delta / tf_ms) - 1,
+                "span": delta,
+            })
+    out["gaps"].sort(key=lambda g: g["missing"], reverse=True)
+
+    # --- structurally impossible candles
+    for i, (t, o, h, l, c, v) in enumerate(rows):
+        why = []
+        if h < l:  why.append("high<low")
+        if h < o:  why.append("high<open")
+        if h < c:  why.append("high<close")
+        if l > o:  why.append("low>open")
+        if l > c:  why.append("low>close")
+        if o <= 0 or h <= 0 or l <= 0 or c <= 0:
+            why.append("non-positive price")
+        if v < 0:  why.append("negative volume")
+        if why:
+            out["bad_candles"].append({"i": i, "time": ms_to_str(t), "why": ",".join(why),
+                                       "ohlc": (o, h, l, c)})
+
+    # --- spike detection: high/low vs median close of surrounding candles
+    closes = [r[4] for r in rows]
+    n = len(rows)
+    for i in range(n):
+        lo_i, hi_i = max(0, i - SPIKE_WINDOW), min(n, i + SPIKE_WINDOW + 1)
+        neighbours = closes[lo_i:i] + closes[i + 1:hi_i]
+        if len(neighbours) < 3:
+            continue
+        ref = statistics.median(neighbours)
+        if ref <= 0:
+            continue
+        high, low = rows[i][2], rows[i][3]
+        if high > ref * (1 + SPIKE_THRESHOLD):
+            out["spikes"].append({"time": ms_to_str(rows[i][0]), "kind": "high",
+                                  "value": high, "ref": ref,
+                                  "dev": (high - ref) / ref})
+        elif low < ref * (1 - SPIKE_THRESHOLD):
+            out["spikes"].append({"time": ms_to_str(rows[i][0]), "kind": "low",
+                                  "value": low, "ref": ref,
+                                  "dev": (low - ref) / ref})
+
+    # --- price sanity range (across all OHLC values, not just close)
+    lows = [r[3] for r in rows]
+    highs = [r[2] for r in rows]
+    out["min_price"], out["max_price"] = min(lows), max(highs)
+    return out
+
+
+def print_ohlcv_report(name, rep):
+    print(f"\n  {name}")
+    if rep["rows"] == 0:
+        print("      !! NO DATA")
+        return
+    print(f"      rows      : {rep['rows']:,}")
+    print(f"      range     : {rep['first']}  ->  {rep['last']}  (UTC)")
+    print(f"      price     : min {rep['min_price']:,.2f}   max {rep['max_price']:,.2f}")
+
+    if rep["duplicates"] or rep["out_of_order"]:
+        print(f"      !! ORDERING: {rep['duplicates']} duplicate timestamps, "
+              f"{rep['out_of_order']} out-of-order rows")
+
+    if rep["missing"] == 0:
+        print(f"      candles   : {rep['rows']:,} of {rep['expected']:,} expected  -- COMPLETE, no gaps")
+    else:
+        print(f"      !! GAPS   : {rep['rows']:,} of {rep['expected']:,} expected "
+              f"-- {rep['missing']:,} candles MISSING ({rep['missing'] / rep['expected'] * 100:.3f}%)")
+        print(f"      !! largest gaps ({min(5, len(rep['gaps']))} of {len(rep['gaps'])}):")
+        for g in rep["gaps"][:5]:
+            print(f"           {g['missing']:>5} missing  ({fmt_duration(g['span'])})  "
+                  f"between {g['after']} and {g['before']}")
+
+    if rep["bad_candles"]:
+        print(f"      !! BAD CANDLES: {len(rep['bad_candles'])} rows violate OHLC relations")
+        for b in rep["bad_candles"][:5]:
+            o, h, l, c = b["ohlc"]
+            print(f"           {b['time']}  {b['why']}   O={o} H={h} L={l} C={c}")
+    else:
+        print("      ohlc      : all rows structurally valid (high>=low, high>=o/c, low<=o/c)")
+
+    if rep["spikes"]:
+        print(f"      !! SPIKES : {len(rep['spikes'])} candles deviate >{SPIKE_THRESHOLD:.0%} "
+              f"from surrounding median")
+        for s in rep["spikes"][:5]:
+            print(f"           {s['time']}  {s['kind']}={s['value']:,.2f} vs "
+                  f"local median {s['ref']:,.2f}  ({s['dev']:+.1%})")
+    else:
+        print(f"      spikes    : none (no candle deviates >{SPIKE_THRESHOLD:.0%} from neighbours)")
+
+
+def check_funding(rows):
+    out = {"rows": len(rows), "first": None, "last": None,
+           "avg": None, "min": None, "max": None, "min_t": None, "max_t": None,
+           "gaps": [], "annualised": None}
+    if not rows:
+        return out
+    ts = [r[0] for r in rows]
+    rates = [r[1] for r in rows]
+    out["first"], out["last"] = ms_to_str(ts[0]), ms_to_str(ts[-1])
+    out["avg"] = statistics.mean(rates)
+    out["min"], out["max"] = min(rates), max(rates)
+    out["min_t"] = ms_to_str(ts[rates.index(out["min"])])
+    out["max_t"] = ms_to_str(ts[rates.index(out["max"])])
+    # ~3 funding payments per day -> rough annualised carry
+    out["annualised"] = out["avg"] * 3 * 365
+    # allow generous tolerance: funding stamps drift by seconds
+    for i in range(len(ts) - 1):
+        delta = ts[i + 1] - ts[i]
+        if delta > FUNDING_INTERVAL_MS * 1.5:
+            out["gaps"].append({"after": ms_to_str(ts[i]), "before": ms_to_str(ts[i + 1]),
+                                "span": delta})
+    out["gaps"].sort(key=lambda g: g["span"], reverse=True)
+    return out
+
+
+def print_funding_report(name, rep):
+    print(f"\n  {name}")
+    if rep["rows"] == 0:
+        print("      !! NO DATA")
+        return
+    print(f"      rows      : {rep['rows']:,}   (one per ~8h funding window)")
+    print(f"      range     : {rep['first']}  ->  {rep['last']}  (UTC)")
+    print(f"      average   : {rep['avg']:+.6%} per 8h   "
+          f"(~{rep['annualised']:+.2%}/yr if held continuously)")
+    print(f"      min       : {rep['min']:+.6%}  on {rep['min_t']}")
+    print(f"      max       : {rep['max']:+.6%}  on {rep['max_t']}")
+    if rep["gaps"]:
+        print(f"      !! GAPS   : {len(rep['gaps'])} intervals longer than 12h")
+        for g in rep["gaps"][:5]:
+            print(f"           {fmt_duration(g['span'])}  between {g['after']} and {g['before']}")
+    else:
+        print("      spacing   : regular, no funding window missing")
+
+
+# ─────────────────────────── MAIN ───────────────────────────
+
+def main():
+    ap = argparse.ArgumentParser(description="Fetch Binance USDT-M perpetual OHLCV + funding data")
+    ap.add_argument("--start", default=DEFAULT_START, help="start date YYYY-MM-DD (default 2020-01-01)")
+    ap.add_argument("--skip-existing", action="store_true",
+                    help="leave files that already exist on disk untouched")
+    ap.add_argument("--check-only", action="store_true",
+                    help="skip downloading; only re-run integrity checks on existing CSVs")
+    args = ap.parse_args()
+
+    since_ms = str_to_ms(args.start)
+    now_ms = int(time.time() * 1000)
+
+    print("=" * 78)
+    print("  BINANCE USDT-M PERPETUAL FUTURES  ->  BACKTEST CSVs")
+    print("=" * 78)
+    print(f"  requested start : {args.start}")
+    print(f"  end             : {ms_to_str(now_ms)} (now, UTC)")
+    print(f"  output dir      : {OUT_DIR}")
+    print(f"  mode            : "
+          f"{'check-only' if args.check_only else ('skip-existing' if args.skip_existing else 'overwrite')}")
+
+    exchange = None
+    if not args.check_only:
+        # `binanceusdm` == Binance USDT-margined FUTURES (derivatives), not spot.
+        exchange = ccxt.binanceusdm({"enableRateLimit": True})
+        print("\n  loading markets ...")
+        exchange.load_markets()
+
+        # Verify each symbol really is a linear perpetual swap before we fetch.
+        print(f"  {len(exchange.markets)} futures markets loaded")
+        for sym in SYMBOLS:
+            m = exchange.markets.get(sym)
+            if m is None:
+                sys.exit(f"  !! symbol {sym} not found on binanceusdm")
+            if not (m["swap"] and m["linear"]):
+                sys.exit(f"  !! {sym} is not a linear perpetual swap (type={m['type']})")
+            print(f"    {sym:<16} id={m['id']:<10} type={m['type']} linear={m['linear']} "
+                  f"contract={m['contract']}  OK")
+        print(f"  exchange rateLimit: {exchange.rateLimit} ms between calls")
+
+    ohlcv_reports = {}
+    funding_reports = {}
+    earliest = {}     # symbol -> earliest timestamp actually returned
+
+    # ---------- OHLCV ----------
+    print("\n" + "-" * 78)
+    print("  DOWNLOADING OHLCV")
+    print("-" * 78)
+    for symbol, prefix in SYMBOLS.items():
+        for tf in TIMEFRAMES:
+            fname = f"{prefix}_{tf}.csv"
+            path = os.path.join(OUT_DIR, fname)
+
+            if args.check_only or (args.skip_existing and os.path.exists(path)):
+                if not os.path.exists(path):
+                    print(f"\n  {fname}: no file on disk, skipping")
+                    continue
+                action = "checking existing" if args.check_only else "exists, skipping download"
+                print(f"\n  {fname}: {action}")
+                rows = read_ohlcv_csv(path)
+            else:
+                print(f"\n  {symbol}  {tf}  ->  {fname}")
+                rows = fetch_ohlcv_all(exchange, symbol, tf, since_ms, now_ms)
+                if rows:
+                    # The final candle of the series is still forming -- its
+                    # high/low/close will change. Including it makes the last
+                    # bar of every backtest wrong, so drop it.
+                    last_open = rows[-1][0]
+                    if last_open + TF_MS[tf] > now_ms:
+                        dropped = ms_to_str(last_open)
+                        rows = rows[:-1]
+                        print(f"      dropped incomplete final candle ({dropped})")
+                write_ohlcv_csv(path, rows)   # plain overwrite -> re-runnable
+                print(f"      wrote {len(rows):,} rows to {fname}")
+
+            if rows:
+                earliest.setdefault(symbol, rows[0][0])
+                earliest[symbol] = min(earliest[symbol], rows[0][0])
+            ohlcv_reports[fname] = check_ohlcv(rows, tf)
+
+    # ---------- FUNDING ----------
+    print("\n" + "-" * 78)
+    print("  DOWNLOADING FUNDING RATE HISTORY")
+    print("-" * 78)
+    for symbol, prefix in SYMBOLS.items():
+        fname = f"{prefix}_funding.csv"
+        path = os.path.join(OUT_DIR, fname)
+
+        if args.check_only or (args.skip_existing and os.path.exists(path)):
+            if not os.path.exists(path):
+                print(f"\n  {fname}: no file on disk, skipping")
+                continue
+            print(f"\n  {fname}: {'checking existing' if args.check_only else 'exists, skipping download'}")
+            rows = []
+            with open(path, newline="") as f:
+                for rec in csv.DictReader(f):
+                    dt = datetime.strptime(rec["time"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+                    rows.append((int(dt.timestamp() * 1000), float(rec["funding_rate"])))
+        else:
+            print(f"\n  {symbol}  funding  ->  {fname}")
+            rows = fetch_funding_all(exchange, symbol, since_ms, now_ms)
+            write_funding_csv(path, rows)
+            print(f"      wrote {len(rows):,} rows to {fname}")
+
+        funding_reports[fname] = check_funding(rows)
+
+    # ---------- INTEGRITY REPORT ----------
+    print("\n" + "=" * 78)
+    print("  DATA INTEGRITY REPORT -- OHLCV")
+    print("=" * 78)
+    for fname, rep in ohlcv_reports.items():
+        print_ohlcv_report(fname, rep)
+
+    print("\n" + "=" * 78)
+    print("  DATA INTEGRITY REPORT -- FUNDING")
+    print("=" * 78)
+    for fname, rep in funding_reports.items():
+        print_funding_report(fname, rep)
+
+    # ---------- EARLIEST AVAILABLE ----------
+    if earliest:
+        print("\n" + "=" * 78)
+        print("  EARLIEST DATA ACTUALLY RETURNED (vs requested start)")
+        print("=" * 78)
+        for symbol, ts in earliest.items():
+            note = "at/after requested start" if ts <= since_ms + TF_MS["1d"] else \
+                   "LATER than requested -- history does not go back that far"
+            print(f"    {symbol:<16} {ms_to_str(ts)}   ({note})")
+
+    # ---------- FINAL SUMMARY ----------
+    print("\n" + "=" * 78)
+    print("  SUMMARY")
+    print("=" * 78)
+    print(f"  {'file':<18}{'rows':>10}  {'first':<20}{'last':<20}{'status'}")
+    print("  " + "-" * 74)
+
+    problem_files = []
+    for fname, rep in ohlcv_reports.items():
+        issues = []
+        if rep["missing"] > 0:            issues.append(f"{rep['missing']} MISSING")
+        if rep["bad_candles"]:            issues.append(f"{len(rep['bad_candles'])} BAD")
+        if rep["spikes"]:                 issues.append(f"{len(rep['spikes'])} SPIKE")
+        if rep["duplicates"]:             issues.append(f"{rep['duplicates']} DUP")
+        status = "clean" if not issues else " / ".join(issues)
+        if issues:
+            problem_files.append((fname, issues))
+        print(f"  {fname:<18}{rep['rows']:>10,}  {str(rep['first']):<20}{str(rep['last']):<20}{status}")
+
+    for fname, rep in funding_reports.items():
+        issues = [f"{len(rep['gaps'])} GAPS"] if rep["gaps"] else []
+        status = "clean" if not issues else " / ".join(issues)
+        if issues:
+            problem_files.append((fname, issues))
+        print(f"  {fname:<18}{rep['rows']:>10,}  {str(rep['first']):<20}{str(rep['last']):<20}{status}")
+
+    print()
+    if problem_files:
+        print("  " + "!" * 74)
+        print("  !!  DATA QUALITY PROBLEMS FOUND -- DO NOT TRUST A BACKTEST ON THESE FILES")
+        print("  !!  UNTIL YOU HAVE LOOKED AT EACH ONE:")
+        for fname, issues in problem_files:
+            print(f"  !!      {fname:<18} {' / '.join(issues)}")
+        print("  !!  See the detailed report above for exact timestamps.")
+        print("  " + "!" * 74)
+    else:
+        print("  ALL FILES CLEAN: no gaps, no duplicate timestamps, no malformed")
+        print("  candles, no price spikes beyond threshold. Safe to backtest.")
+    print()
+
+
+if __name__ == "__main__":
+    main()

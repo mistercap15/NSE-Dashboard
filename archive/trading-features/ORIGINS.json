@@ -1,0 +1,24 @@
+{
+  "archivedOn": "2026-11-01",
+  "timezone": "Asia/Kolkata",
+  "projects": {
+    "nse-dashboard": {
+      "repository": "https://github.com/mistercap15/NSE-Dashboard",
+      "sourceCommit": "9cd432570f7d0c258747947d6409ac231faedfea"
+    },
+    "nse-mobile": {
+      "repository": "https://github.com/mistercap15/nse-mobile",
+      "sourceCommit": "68c94cd0522e6f300d0f77ba562cb09f7822bceb"
+    },
+    "nifty-executor": {
+      "repository": "https://github.com/mistercap15/nifty-executor",
+      "sourceCommit": "73c8ff915676e54cd4f04567d272becd66dd1af0"
+    },
+    "crypto-bot": {
+      "repository": null,
+      "sourceCommit": null,
+      "note": "Local non-Git research source only; production crypto executor is in nifty-executor."
+    }
+  },
+  "note": "These are local source revisions at archival time, not verified deployed droplet revisions. Shared dependencies not in the manifest can be recovered from these repositories/revisions. Secrets and destroyed-host runtime state are not included."
+}

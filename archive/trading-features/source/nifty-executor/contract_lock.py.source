@@ -1,0 +1,259 @@
+"""One-writer claim on a Nifty contract, shared by the hourly and 5-minute bots.
+
+WHAT THIS CLOSES. coordination.py checks three sources and refuses to open when
+any of them shows the hourly alive. That handles every case where one bot is
+already active — but not the instant where NEITHER is, and both decide to enter
+on the same tick. Each reads "clear", each places a limit order, and two orders
+rest at different prices on a contract that nets. Narrow, but real, and the only
+fix is a claim both bots pass through before placing anything.
+
+WHY A FILE AND NOT A DATABASE. Both processes are on one droplet, so an flock on
+a local file is exactly the right primitive: kernel-enforced, released
+automatically if a process dies, and needing no service that could itself be
+down. The flock is held only for the microseconds of a read-modify-write; the
+CLAIM itself is a JSON record that outlives it, because a claim has to survive a
+restart and an flock cannot.
+
+THE ASYMMETRY THAT MAKES THIS SAFE. The two bots fail in OPPOSITE directions,
+deliberately:
+
+  • the HOURLY FAILS OPEN. If the lock cannot be read or written — permissions,
+    a full disk, a corrupt file — it trades exactly as it did before this module
+    existed. It is the validated real-money bot and no coordination mechanism is
+    allowed to become a new way for it to stop working.
+  • the 5-MINUTE FAILS CLOSED. The same fault makes it stand down.
+
+So a broken lock degrades to "hourly trades, 5-min does not", which is the
+system's normal resting state anyway. It cannot degrade to "both trade".
+
+FIRST COME, FIRST SERVED — AND THE SENIOR BOT WAITS. This is the part that was
+wrong first time round, so it is worth stating plainly.
+
+The original design let the hourly PREEMPT a 5-min claim that was only a resting
+entry. test_entry_race.py raced two real executors and both placed an entry in
+60 of 60 rounds: preemption takes the claim, but the other bot's ORDER is
+already on the exchange and only comes off at its next poll, up to 15s later.
+Two limit orders then rest on a contract that nets. You cannot make preemption
+atomic with another process's cancellation.
+
+So whoever claims first keeps it until they release, and the other bot waits.
+Priority is expressed everywhere else instead — the 5-min refuses to open on any
+sign of hourly life, so it rarely holds the claim when the hourly wants it — and
+a stale claim from a dead bot is broken by CLAIM_STALE_S, so nothing is held
+hostage.
+"""
+
+from __future__ import annotations
+
+import fcntl
+import json
+import os
+import time
+from contextlib import contextmanager
+
+# Lower number wins. The hourly is the senior, validated, real-money bot.
+# Kept for describe() and for callers that want to reason about seniority. It is
+# deliberately NOT used to preempt a live claim — see the long note in claim().
+PRIORITY = {"hourly": 0, "5m": 1}
+
+# A claim whose holder has not refreshed for this long is treated as abandoned.
+# Both bots refresh every poll (15s), so this is twenty missed polls — long
+# enough to survive a restart or a slow API call, short enough that a genuinely
+# dead process does not hold the contract hostage for a session.
+CLAIM_STALE_S = 300
+
+# A claim that is HOLDING a position, when the caller cannot tell us whether the
+# position still exists. Deliberately longer than a weekend plus a holiday: the
+# thing it guards against is a second position on a contract that already has
+# one, and no missed trade is worth that.
+HOLDING_STALE_S = 5 * 24 * 3600
+
+
+@contextmanager
+def _mutex(path: str):
+    """Serialise the read-modify-write below across both processes.
+
+    Held for microseconds. The lock file is separate from the claim file so that
+    truncating or rewriting the claim can never disturb the mutex, and so a
+    reader that only wants to look does not have to create the claim.
+    """
+    fd = os.open(path + ".mutex", os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
+def _read(path: str) -> dict | None:
+    try:
+        with open(path) as fh:
+            rec = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    return rec if isinstance(rec, dict) and rec.get("owner") else None
+
+
+def _write(path: str, rec: dict) -> None:
+    tmp = f"{path}.{os.getpid()}.tmp"
+    with open(tmp, "w") as fh:
+        json.dump(rec, fh)
+    os.replace(tmp, path)          # atomic; a reader never sees a half-written claim
+
+
+def read_claim(path: str) -> dict | None:
+    """Whoever currently holds the contract, or None. Never raises."""
+    try:
+        with _mutex(path):
+            return _read(path)
+    except OSError:
+        return None
+
+
+def is_stale(rec: dict | None, now: float | None = None,
+             position_open: bool | None = None) -> bool:
+    """Has this claim been abandoned?
+
+    TIME ALONE IS THE WRONG TEST FOR A CLAIM THAT IS HOLDING A POSITION, and
+    getting that wrong was a live bug. The Nifty bots stop polling at 15:30, so
+    they stop refreshing their claims — but a position they are holding does NOT
+    evaporate at the close. It carries overnight. On 8 Sep the 5-min bot filled
+    at 15:14, and by that evening its claim was four hours old and therefore
+    "stale", so the hourly could have taken the contract out from under a real
+    open position at the next morning's open. Two of the three other guards are
+    also weakest overnight: the order book is purged, so attribution by tag is
+    gone by morning, leaving only the peer state file.
+
+    So a claim that says `holding` expires on EVIDENCE, not on a clock:
+
+      position_open=True   → never stale. There is real exposure behind it.
+      position_open=False  → stale, BUT ONLY once it is older than the ordinary
+                             clock. Not immediately: Upstox's position endpoint
+                             lags a fill by seconds, so "claim says holding,
+                             account says flat" is the NORMAL state in the
+                             moment right after the other bot fills — and
+                             expiring the claim there would let this bot open on
+                             top of a position that is about to appear. Waiting
+                             out CLAIM_STALE_S means the owner has had many
+                             polls to either confirm or release it.
+      position_open=None   → fall back to the clock, for callers that cannot
+                             see the exchange. Conservative: a holding claim is
+                             given a much longer horizon than a resting one,
+                             because the cost of expiring it wrongly is a second
+                             position and the cost of honouring it too long is a
+                             missed trade.
+    """
+    if not rec:
+        return True
+    try:
+        age = (time.time() if now is None else now) - float(rec.get("at") or 0)
+    except (TypeError, ValueError):
+        return True
+
+    if rec.get("holding"):
+        if position_open is True:
+            return False
+        if position_open is False:
+            # A leftover, but only once the owner has had time to clear it.
+            # See the note above on fill lag — this must not be immediate.
+            return age > CLAIM_STALE_S
+        return age > HOLDING_STALE_S
+    return age > CLAIM_STALE_S
+
+
+def claim(path: str, owner: str, instrument: str, *, holding: bool = False,
+          fail_open: bool = False, now: float | None = None,
+          position_open: bool | None = None) -> tuple[bool, dict | None]:
+    """Take or refresh the claim on `instrument`.
+
+    Returns (granted, blocking_claim). `blocking_claim` is the other bot's record
+    when refused, so the caller can say who is in the way rather than just that
+    something is.
+
+    `holding=True` means this bot has a FILLED position, not merely an order
+    resting. It is the flag that stops the hourly preempting a real 5-minute
+    trade, so it must be passed honestly.
+
+    `position_open` says whether the exchange currently shows a position on this
+    contract. Pass it wherever it is known: it is what stops a holding claim
+    being expired by a clock while the position it names is still open, and what
+    lets a leftover claim be cleared the moment the position is gone.
+
+    `fail_open=True` (the hourly) turns any filesystem failure into a grant —
+    see the asymmetry note at the top. `fail_open=False` (the 5-minute) turns it
+    into a refusal.
+    """
+    ts = time.time() if now is None else now
+    mine = {"owner": owner, "instrument": instrument, "holding": bool(holding),
+            "pid": os.getpid(), "at": ts}
+    try:
+        with _mutex(path):
+            cur = _read(path)
+
+            # Free, abandoned, ours, or a claim on a different contract: take it.
+            if (cur is None
+                    or is_stale(cur, ts, position_open)
+                    or cur.get("owner") == owner
+                    or (cur.get("instrument") and cur["instrument"] != instrument)):
+                _write(path, mine)
+                return True, None
+
+            # Held by the other bot. IT KEEPS IT. THE SENIOR BOT WAITS.
+            #
+            # An earlier version let the hourly PREEMPT a claim that was "only a
+            # resting entry", on the reasoning that the junior bot would notice
+            # it had lost the claim and cancel that order. test_entry_race.py
+            # then raced two real executors and BOTH placed an entry in 60 of 60
+            # rounds, because that reasoning has a hole you cannot close:
+            #
+            #   preemption takes the CLAIM, but the other bot's ORDER is already
+            #   on the exchange. It only comes off at that bot's next poll — up
+            #   to 15 seconds later — and for those 15 seconds two limit orders
+            #   rest on a contract that nets. Making preemption atomic with the
+            #   other process's cancellation is not possible across processes.
+            #
+            # So the rule is first-come-first-served, and priority is expressed
+            # everywhere EXCEPT here: the 5-min bot refuses to open whenever the
+            # hourly shows any sign of life, so in practice it rarely holds the
+            # claim when the hourly wants it. When it does, the hourly waits —
+            # which is one of the two options the brief allowed, and the only
+            # one that actually guarantees the invariant.
+            #
+            # A claim whose owner has died is handled above by is_stale(), so a
+            # crashed bot cannot hold the contract hostage.
+            return False, cur
+    except OSError:
+        return (True, None) if fail_open else (False, None)
+
+
+def release(path: str, owner: str) -> bool:
+    """Give up the claim, but only if it is ours.
+
+    Guarded so a bot that has been preempted cannot delete the claim that
+    replaced it — without this, the 5-min releasing on its way out would hand a
+    freshly-preempted contract back to nobody while the hourly believed it held it.
+    """
+    try:
+        with _mutex(path):
+            cur = _read(path)
+            if cur and cur.get("owner") != owner:
+                return False
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            return True
+    except OSError:
+        return False
+
+
+def describe(rec: dict | None) -> str:
+    """One human line about a claim, for a Telegram message."""
+    if not rec:
+        return "nobody holds the contract"
+    who = {"hourly": "the hourly bot", "5m": "the 5-min bot"}.get(rec.get("owner"), rec.get("owner"))
+    what = "holds a filled position" if rec.get("holding") else "has an entry order out"
+    return f"{who} {what} on {rec.get('instrument')}"

@@ -1,0 +1,72 @@
+# ⚠️ NOT IN USE. The droplet does NOT run Caddy.
+#
+# Checked 7 Sep 2026: caddy is inactive, /etc/caddy does not exist, and the
+# public ingress is TAILSCALE FUNNEL:
+#
+#     https://fib-bot.tail84d40d.ts.net   (Funnel on)
+#       /             -> http://127.0.0.1:8787   token receiver
+#       /bot-status   -> http://127.0.0.1:8788   read-only bot status
+#
+#     tailscale serve status          # see the mapping
+#     tailscale serve --bg --set-path=/bot-status http://127.0.0.1:8788
+#
+# Tailscale terminates TLS with its own certificate, so the reasoning below
+# about Let's Encrypt and DuckDNS no longer applies to this deployment. The file
+# is kept only because it documents that reasoning if the ingress is ever moved
+# back to Caddy — it is NOT deployed and editing it changes nothing.
+#
+# (If ts.net does not resolve for you, that is your resolver: it resolves via
+# Cloudflare DNS and fails on some ISP resolvers. It is not the droplet.)
+#
+# /etc/caddy/Caddyfile
+#
+# Caddy terminates TLS and proxies to the receiver on loopback. It obtains and
+# renews a Let's Encrypt certificate automatically — nothing to configure beyond
+# the hostname, and nothing to remember to renew.
+#
+# REPLACE nse-fib-bot.duckdns.org with your own free DuckDNS subdomain pointed
+# at 139.59.33.81 (or any subdomain you already own). Let's Encrypt validates
+# over HTTP/HTTPS, so ports 80 and 443 must both be reachable:
+#
+#   ufw allow 80/tcp && ufw allow 443/tcp
+#
+# A bare IP cannot be used: Let's Encrypt does not issue certificates for IP
+# addresses, and without a certificate the token would cross the internet in
+# plaintext. Some hostname is required — but it need not be a purchased one.
+#
+# DO NOT use nip.io or sslip.io here, however tempting. They resolve instantly
+# with no signup (139.59.33.81.nip.io already points at this droplet), but
+# neither is on the Public Suffix List, so every nip.io subdomain in the world
+# shares ONE Let's Encrypt rate-limit bucket of 50 certificates per week. It is
+# realistically always exhausted, and Caddy fails at issuance rather than at
+# DNS — which looks like a Caddy bug and isn't. duckdns.org IS on the list, so
+# each subdomain gets its own bucket.
+
+nse-fib-bot.duckdns.org {
+	encode gzip
+
+	# Only the sync endpoint and a health probe are reachable from outside.
+	# Anything else is refused at the edge so it never reaches Python.
+	@allowed path /sync-token /token-status /health
+	handle @allowed {
+		reverse_proxy 127.0.0.1:8787
+	}
+
+	# Read-only bot state for the dashboard and the phone app. A SEPARATE
+	# service on a separate port (fib-bot-status.service) — the receiver above
+	# handles a live broker credential and is not extended for a monitoring
+	# feature. That service can write nothing at all; the kernel enforces it.
+	handle /bot-status {
+		reverse_proxy 127.0.0.1:8788
+	}
+	handle {
+		respond "not found" 404
+	}
+
+	# Caddy logs the path and status but never request bodies, so the token is
+	# not written to disk here. Do not add a body-logging directive.
+	log {
+		output file /var/log/caddy/bot-access.log
+		format console
+	}
+}

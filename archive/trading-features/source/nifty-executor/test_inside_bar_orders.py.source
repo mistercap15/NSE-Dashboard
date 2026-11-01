@@ -1,0 +1,167 @@
+#!/usr/bin/env python3
+"""
+Proves the four order shapes the inside-bar bot needs, against the real API,
+WITHOUT taking a position.
+
+  python3 test_inside_bar_orders.py
+
+The Fib bot only ever rests a LIMIT buy. This bot enters on BREAKOUTS, which
+needs stop-TRIGGERED entries — and MARKET is banned over the API — so it uses
+order shapes nothing in this system has executed before. A silent incompatibility
+here costs real money, and it would surface at the worst moment: a breakout
+firing with an entry the exchange refuses, or worse, a fill with a protective
+stop the exchange refuses.
+
+FOUR SHAPES, and note two pairs are structurally identical — which is itself
+worth knowing, because it means the ONLY thing distinguishing a short entry from
+a long's protective stop is the tag:
+
+  long entry     SL-M BUY,  trigger ABOVE  (buy the break upward)
+  short stop     SL-M BUY,  trigger ABOVE  (cover if a short goes wrong)
+  short entry    SL-M SELL, trigger BELOW  (sell the break downward)
+  long stop      SL-M SELL, trigger BELOW  (exit if a long goes wrong)
+
+Each is placed far enough out that it cannot trigger, read back to confirm the
+exchange accepted it, and cancelled immediately.
+"""
+import argparse
+import logging
+import sys
+from datetime import datetime, timedelta, timezone
+
+import instruments
+import test_order as T
+import upstox_orders as ux
+
+IST = timezone(timedelta(hours=5, minutes=30))
+DISTANCE_PCT = 5.0
+LOTS = 1
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+
+def probe(token, label, purpose, place, expect):
+    """Place, confirm the exchange took it, always cancel. Returns a result row."""
+    print(f"\n── {label}")
+    print(f"   {purpose}")
+    try:
+        oid = place()
+    except ux.UpstoxError as exc:
+        print(f"   ✗ REJECTED: {exc}  (code={exc.code}, http={exc.status})")
+        return {"label": label, "ok": False, "detail": f"rejected: {exc.code or exc.status}"}
+    print(f"   ✓ placed: {oid}")
+
+    detail, ok = "", False
+    try:
+        st = ux.get_order_status(token, oid)
+        status = (st.get("status") or "").lower()
+        detail = (f"sent SL-M → exchange shows order_type={st.get('order_type')} "
+                  f"trigger={st.get('trigger_price')} price={st.get('price')} status={status}")
+        print(f"   {detail}")
+        if status in expect:
+            print(f"   ✓ resting as expected ({status})")
+            ok = True
+        elif status == "complete":
+            print("   ⚠ IT FILLED — square off manually in the Upstox app NOW.")
+        else:
+            print(f"   ⚠ unexpected status {status!r}, wanted one of {expect}")
+    except ux.UpstoxError as exc:
+        print(f"   ⚠ could not read back: {exc}")
+
+    try:
+        ux.cancel_order(token, oid)
+        final = (ux.get_order_status(token, oid).get("status") or "").lower()
+        print(f"   ✓ cancelled ({final})")
+        if final not in ("cancelled", "cancel pending"):
+            print(f"   ⚠ expected cancelled — check {oid} in the app")
+            ok = False
+    except ux.UpstoxError as exc:
+        print(f"   ✗ CANCEL FAILED: {exc}\n     Cancel {oid} manually in the Upstox app NOW.")
+        ok = False
+    return {"label": label, "ok": ok, "detail": detail}
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--distance", type=float, default=DISTANCE_PCT)
+    ap.add_argument("--force", action="store_true")
+    args = ap.parse_args()
+
+    try:
+        token = ux.load_token()
+    except ux.TokenUnavailable as exc:
+        print(f"✗ {exc}")
+        return 1
+
+    want = T.expected_account()
+    account = ux.get_profile(token).get("user_id")
+    if want and account != want:
+        print(f"✗ token is for {account}, expected {want}. Nothing sent.")
+        return 1
+    print(f"✓ account {account}")
+
+    if not T.market_is_open() and not args.force:
+        print(f"✗ NSE is closed ({datetime.now(tz=IST):%a %H:%M IST}). Stop-triggered orders "
+              "behave differently after hours — run during the session.")
+        return 1
+
+    contract = instruments.current_contract(instruments.fetch_master())
+    key, lot = contract["instrument_key"], int(contract["lot_size"])
+    qty, tick = LOTS * lot, contract.get("tick_size") or 5
+    ltp = ux.get_quote(token, key).get("last_price")
+    if not ltp:
+        print("✗ no last price — cannot price safely.")
+        return 1
+
+    above = ux.round_to_tick(ltp * (1 + args.distance / 100), tick)
+    below = ux.round_to_tick(ltp * (1 - args.distance / 100), tick)
+
+    print(f"✓ {contract['trading_symbol']} ({key}), lot {lot}, last {ltp}")
+    print("\n" + "─" * 68)
+    print("  ABOUT TO PLACE FOUR REAL ORDERS (none can trigger or fill)")
+    print(f"    1. LONG ENTRY   SL-M BUY  {qty} @ trigger {above}  (+{args.distance}%)")
+    print(f"    2. SHORT STOP   SL-M BUY  {qty} @ trigger {above}  (+{args.distance}%)")
+    print(f"    3. SHORT ENTRY  SL-M SELL {qty} @ trigger {below}  (−{args.distance}%)")
+    print(f"    4. LONG STOP    SL-M SELL {qty} @ trigger {below}  (−{args.distance}%)")
+    print(f"    account {account} · each cancelled immediately after")
+    print("─" * 68)
+    if input("  Type PLACE to continue: ").strip() != "PLACE":
+        print("Aborted — nothing sent.")
+        return 1
+
+    results = [
+        probe(token, "1. LONG ENTRY — SL-M BUY above",
+              "buy the break upward through the mother high",
+              lambda: ux.place_sl_m(token, key, qty, above, "BUY", "D", "ibtestentryL"),
+              ("trigger pending", "open", "open pending")),
+        probe(token, "2. SHORT STOP — SL-M BUY above",
+              "cover a short if price runs back through the mother high",
+              lambda: ux.place_sl_m(token, key, qty, above, "BUY", "D", "ibteststopS"),
+              ("trigger pending", "open", "open pending")),
+        probe(token, "3. SHORT ENTRY — SL-M SELL below",
+              "sell the break downward through the mother low",
+              lambda: ux.place_sl_m(token, key, qty, below, "SELL", "D", "ibtestentryS"),
+              ("trigger pending", "open", "open pending")),
+        probe(token, "4. LONG STOP — SL-M SELL below",
+              "exit a long if price falls back through the mother low",
+              lambda: ux.place_sl_m(token, key, qty, below, "SELL", "D", "ibteststopL"),
+              ("trigger pending", "open", "open pending")),
+    ]
+
+    print("\n" + "═" * 68)
+    for r in results:
+        print(f"  {'✓' if r['ok'] else '✗'} {r['label']}")
+        if r["detail"]:
+            print(f"      {r['detail']}")
+    okc = sum(1 for r in results if r["ok"])
+    print(f"\n  {okc}/4 order shapes verified")
+    if okc == 4:
+        print("  ✓ Every order the inside-bar bot can place works from this droplet.")
+        return 0
+    print("  ✗ DO NOT GO LIVE. A shape that fails here is a breakout the bot cannot")
+    print("    enter, or worse, a position it cannot protect.")
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

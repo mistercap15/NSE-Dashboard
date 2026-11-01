@@ -1,0 +1,139 @@
+"""The kill switch must survive a restart, for all three executors.
+
+31 Aug 2026: /stop set a module global and nothing else. The units are
+Restart=always, so a restart cleared it and the bot came back trading — with an
+"online" message identical to a normal start, so nothing said so.
+
+A restart is simulated the only way that is honest here: re-import the module in
+a fresh interpreter state, exactly as systemd would, and check what it adopts
+from disk. Asserting on a variable this process already holds would prove
+nothing about a restart.
+"""
+# Never the production claim path — running this suite on the droplet without
+# it writes a real claim into /root/fib-bot and stands the live 5-min bot down.
+import os as _os, tempfile as _tf
+_os.environ["CONTRACT_LOCK"] = _os.path.join(_tf.mkdtemp(), "nifty_contract.lock")
+
+import importlib
+import json
+import os
+import sys
+import tempfile
+
+sys.path.insert(0, "/Users/khilanpatel/Desktop/Live Projects/nifty-executor")
+
+passed = failed = 0
+
+
+def check(label, cond, detail=""):
+    global passed, failed
+    if cond:
+        passed += 1
+        print(f"  ok   {label}")
+    else:
+        failed += 1
+        print(f"  FAIL {label}  {detail}")
+
+
+BOTS = [
+    ("executor",        "EXECUTOR_STATE",    "FIB_LIVE"),
+    ("ib_executor",     "IB_STATE",          "IB_LIVE"),
+    ("crypto_executor", "CRYPTO_STATE",      "CRYPTO_LIVE"),
+    ("executor_5m",     "EXECUTOR_5M_STATE", "FIB5M_LIVE"),
+]
+
+
+STATE_ENV = {b[0]: b[1] for b in BOTS}
+
+
+class BannerCaptured(Exception):
+    """Raised from the stubbed tg() to stop main() after its first message.
+    main() is an infinite poll loop; without this the test never returns."""
+
+
+def fresh(mod_name, state_path):
+    """Import the module as a restart would, pointed at a scratch state file."""
+    os.environ[STATE_ENV[mod_name]] = state_path
+    sys.modules.pop(mod_name, None)
+    return importlib.import_module(mod_name)
+
+
+def banner_of(mod):
+    """Whatever main() announces on startup, without letting it start."""
+    sent = []
+
+    def cap(text):
+        sent.append(text)
+        raise BannerCaptured
+    mod.tg = cap
+    try:
+        mod.main()
+    except BannerCaptured:
+        pass
+    except Exception as exc:                                     # noqa: BLE001
+        sent.append(f"[main aborted: {type(exc).__name__}]")
+    return " ".join(sent)
+
+
+for mod_name, state_env, live_env in BOTS:
+    print(f"\n══ {mod_name} ══")
+    tmpdir = tempfile.mkdtemp()
+    state_path = os.path.join(tmpdir, "state.json")
+    os.environ[state_env] = state_path
+    os.environ.pop(live_env, None)          # keep every bot in DRY for this test
+
+    M = fresh(mod_name, state_path)
+
+    # A bot that has never been stopped starts enabled.
+    check("no switch file -> starts ENABLED", M.is_enabled() is True)
+
+    # /stop must reach the disk, not just the global.
+    M._set_enabled(False)
+    check("/stop writes the switch to disk", os.path.exists(M.SWITCH_PATH))
+    on_disk = None
+    try:
+        with open(M.SWITCH_PATH) as fh:
+            on_disk = json.load(fh).get("enabled")
+    except (OSError, ValueError):
+        pass                # report it below rather than crashing the run
+    check("  ...as enabled=false", on_disk is False, f"read {on_disk!r}")
+
+    # THE RESTART. Fresh import, same disk.
+    M2 = fresh(mod_name, state_path)
+    check("after a RESTART it comes back STOPPED", M2.load_switch() is False)
+    check("  ...and load_switch is what main() adopts",
+          M2.load_switch() is False)
+
+    # /start must clear it just as durably.
+    M2._set_enabled(True)
+    M3 = fresh(mod_name, state_path)
+    check("/start persists too — restart comes back ENABLED", M3.load_switch() is True)
+
+    # A corrupt or truncated file must not wedge the bot off.
+    with open(M3.SWITCH_PATH, "w") as fh:
+        fh.write("{ this is not json")
+    M4 = fresh(mod_name, state_path)
+    check("an unreadable switch file falls back to ENABLED", M4.load_switch() is True)
+
+    # The switch file must NOT live in the trade state file, which is wiped on
+    # every position close — that would re-enable a stopped bot on the next exit.
+    check("switch is a separate file from trade state",
+          M4.SWITCH_PATH != M4.STATE_PATH)
+
+    # Startup message must name the state. This is the fix for "the only signal
+    # looked identical either way".
+    M4._set_enabled(False)
+    M5 = fresh(mod_name, state_path)
+    banner = banner_of(M5)
+    check("startup ANNOUNCES the kill switch is active",
+          "PAUSED" in banner, banner[:160])
+    check("  ...and says how to resume", "/start" in banner, banner[:160])
+
+    M5._set_enabled(True)
+    M6 = fresh(mod_name, state_path)
+    banner2 = banner_of(M6)
+    check("enabled startup says RUNNING",
+          "RUNNING" in banner2, banner2[:160])
+
+print(f"\n  {passed} passed, {failed} failed")
+sys.exit(1 if failed else 0)

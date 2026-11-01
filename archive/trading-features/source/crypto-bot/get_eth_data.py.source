@@ -1,0 +1,56 @@
+# ── get_eth_data.py ── pulls ETH historical candles from Delta → CSV
+import os, csv, time
+from dotenv import load_dotenv
+from delta_rest_client import DeltaRestClient
+
+load_dotenv()
+delta = DeltaRestClient(
+    base_url='https://cdn-ind.testnet.deltaex.org',
+    api_key=os.getenv('DELTA_API_KEY'),
+    api_secret=os.getenv('DELTA_API_SECRET'),
+)
+
+import requests
+from datetime import datetime, timezone
+
+# April 1 2026 → now, in unix seconds
+start = int(datetime(2026, 4, 1, tzinfo=timezone.utc).timestamp())
+end   = int(datetime.now(timezone.utc).timestamp())
+
+# Delta candle endpoint. resolution '1h'. symbol ETHUSD.
+url = 'https://cdn-ind.testnet.deltaex.org/v2/history/candles'
+all_rows = []
+# Delta returns limited candles per call; page through in ~10-day chunks
+chunk = 10 * 24 * 3600
+s = start
+while s < end:
+    e = min(s + chunk, end)
+    params = {'resolution':'1h','symbol':'ETHUSD','start':s,'end':e}
+    try:
+        r = requests.get(url, params=params, timeout=15)
+        data = r.json().get('result', [])
+        all_rows.extend(data)
+        print(f"  {datetime.utcfromtimestamp(s).date()} → {len(data)} candles")
+    except Exception as ex:
+        print(f"  chunk {s} failed: {ex}")
+    s = e
+    time.sleep(0.3)
+
+# de-dup by time
+seen = set(); clean = []
+for c in all_rows:
+    if c['time'] not in seen:
+        seen.add(c['time']); clean.append(c)
+clean.sort(key=lambda x: x['time'])
+
+with open('eth_candles.csv','w',newline='') as f:
+    w = csv.writer(f)
+    w.writerow(['time_utc','open','high','low','close','volume'])
+    for c in clean:
+        w.writerow([
+            datetime.utcfromtimestamp(c['time']).strftime('%Y-%m-%d %H:%M:%S'),
+            c['open'], c['high'], c['low'], c['close'], c.get('volume',0)
+        ])
+
+print(f"\nSaved {len(clean)} hourly candles to eth_candles.csv")
+print(f"Range: {datetime.utcfromtimestamp(clean[0]['time'])} → {datetime.utcfromtimestamp(clean[-1]['time'])}")

@@ -1,0 +1,42 @@
+# /etc/systemd/system/crypto-executor.service
+#
+#   systemctl daemon-reload
+#   systemctl enable --now crypto-executor
+#   journalctl -u crypto-executor -f
+#
+# Always on — crypto trades 24/7, so unlike the Nifty units there is no session
+# to idle outside of. Entirely independent of fib-executor and fib-ib-executor:
+# restarting or crashing this one does nothing to them.
+
+[Unit]
+Description=Crypto swing-Fib executor (Delta TESTNET)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/root/fib-bot/crypto_executor.env
+ExecStart=/usr/bin/python3 /root/fib-bot/crypto_executor.py
+WorkingDirectory=/root/fib-bot
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Same hardening as the other units, including the two exceptions learned the
+# hard way: ProtectHome would mask /root, and AF_UNIX is needed for DNS.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=false
+ReadWritePaths=/root/fib-bot
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target

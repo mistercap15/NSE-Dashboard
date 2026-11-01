@@ -1,0 +1,151 @@
+#!/usr/bin/env python3
+"""
+Proves the two exit orders work against the real API, WITHOUT taking a position.
+
+  python3 test_brackets.py
+
+test_order.py proved a LIMIT BUY places and cancels. It proved nothing about the
+other two calls, and those are the ones that matter more:
+
+  • place_sl_m       — the protective stop. If this is ever rejected, the bot
+                       holds a position with nothing under it.
+  • place_limit_sell — the target, and the only way out in a hurry since MARKET
+                       orders are banned over the API.
+
+Both were written from documentation and had never executed. SL-M in particular
+has different validation from LIMIT: price 0, a trigger_price, and
+market_protection -1.
+
+Each order is placed far enough away that it cannot trigger or fill, read back to
+confirm the exchange accepted it, and cancelled immediately.
+"""
+import argparse
+import logging
+import sys
+from datetime import datetime, timedelta, timezone
+
+import instruments
+import test_order as T
+import upstox_orders as ux
+
+IST = timezone(timedelta(hours=5, minutes=30))
+DISTANCE_PCT = 5.0
+LOTS = 1
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+
+def probe(token, label, key, qty, place, read_expect, tag):
+    """Place one order, confirm the exchange took it, then always cancel."""
+    print(f"\n── {label} " + "─" * (56 - len(label)))
+    try:
+        order_id = place()
+    except ux.UpstoxError as exc:
+        print(f"  ✗ REJECTED: {exc}  (code={exc.code}, http={exc.status})")
+        return False
+    print(f"  ✓ placed: {order_id}")
+
+    ok = False
+    try:
+        st = ux.get_order_status(token, order_id)
+        status = (st.get("status") or "").lower()
+        print(f"    status={status}  type={st.get('order_type')}  "
+              f"price={st.get('price')}  trigger={st.get('trigger_price')}  tag={st.get('tag')!r}")
+        if status in read_expect:
+            print(f"  ✓ resting as expected ({status})")
+            ok = True
+        elif status == "complete":
+            print("  ⚠ IT FILLED — square off manually in the Upstox app NOW.")
+        else:
+            print(f"  ⚠ unexpected status {status!r} (wanted one of {read_expect})")
+    except ux.UpstoxError as exc:
+        print(f"  ⚠ could not read it back: {exc}")
+
+    try:
+        ux.cancel_order(token, order_id)
+        final = (ux.get_order_status(token, order_id).get("status") or "").lower()
+        print(f"  ✓ cancelled (final status: {final})")
+        if final not in ("cancelled", "cancel pending"):
+            print(f"  ⚠ expected cancelled — check the app for {order_id}")
+            ok = False
+    except ux.UpstoxError as exc:
+        print(f"  ✗ CANCEL FAILED: {exc}")
+        print(f"    Cancel {order_id} manually in the Upstox app NOW.")
+        return False
+    return ok
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--distance", type=float, default=DISTANCE_PCT)
+    ap.add_argument("--force", action="store_true")
+    args = ap.parse_args()
+
+    try:
+        token = ux.load_token()
+    except ux.TokenUnavailable as exc:
+        print(f"✗ {exc}")
+        return 1
+
+    want = T.expected_account()
+    account = ux.get_profile(token).get("user_id")
+    if want and account != want:
+        print(f"✗ token is for {account}, expected {want}. Nothing sent.")
+        return 1
+    print(f"✓ account {account}")
+
+    if not T.market_is_open() and not args.force:
+        print(f"✗ NSE is closed ({datetime.now(tz=IST):%a %H:%M IST}). "
+              "SL-M orders behave differently after hours — run during the session.")
+        return 1
+
+    contract = instruments.current_contract(instruments.fetch_master())
+    key, lot = contract["instrument_key"], int(contract["lot_size"])
+    qty = LOTS * lot
+    tick = contract.get("tick_size") or 5
+    ltp = ux.get_quote(token, key).get("last_price")
+    if not ltp:
+        print("✗ no last price — cannot price safely.")
+        return 1
+
+    # A stop for a long sits BELOW the market and triggers on a fall; a target
+    # sits ABOVE and fills on a rise. Both are placed a long way out so neither
+    # can happen in the seconds they exist.
+    trigger = ux.round_to_tick(ltp * (1 - args.distance / 100), tick)
+    target = ux.round_to_tick(ltp * (1 + args.distance / 100), tick)
+
+    print(f"✓ {contract['trading_symbol']} ({key}), lot {lot}, last {ltp}")
+    print("\n" + "─" * 62)
+    print("  ABOUT TO PLACE TWO REAL ORDERS (neither can fill)")
+    print(f"    1. SL-M SELL  {qty} @ trigger {trigger}   ({args.distance}% BELOW {ltp})")
+    print(f"    2. LIMIT SELL {qty} @ {target}   ({args.distance}% ABOVE {ltp})")
+    print(f"    account {account} · each cancelled immediately after")
+    print("─" * 62)
+    if input("  Type PLACE to continue: ").strip() != "PLACE":
+        print("Aborted — nothing sent.")
+        return 1
+
+    results = []
+    results.append(probe(
+        token, "SL-M stop (the protective order)", key, qty,
+        lambda: ux.place_sl_m(token, key, qty, trigger, "SELL", "D", "fibstoptest"),
+        ("trigger pending", "open", "open pending"), "fibstoptest"))
+
+    results.append(probe(
+        token, "LIMIT SELL (the target / urgent exit)", key, qty,
+        lambda: ux.place_limit_sell(token, key, qty, target, "D", "fibtgttest"),
+        ("open", "open pending"), "fibtgttest"))
+
+    print("\n" + "═" * 62)
+    if all(results):
+        print("  ✓ Both bracket orders place, rest and cancel correctly.")
+        print("    The stop the bot puts under a live position will work.")
+        return 0
+    print("  ✗ At least one bracket order did NOT behave as expected.")
+    print("    Do NOT go live until this is understood — a rejected stop means")
+    print("    a position with nothing under it.")
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

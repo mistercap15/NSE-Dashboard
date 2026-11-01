@@ -1,0 +1,211 @@
+#!/usr/bin/env python3
+"""When the market has already passed the stop, EXIT — do not place the stop.
+
+THE EVENT THIS COMES FROM. 8 Sep 2026 the 5-min bot held overnight with a stop
+at 23716.74. On 9 Sep the market opened at 23674 — 42.7 points below it — and
+the bot re-placed that same stop: a SELL trigger above the market, which the
+exchange either refuses or triggers instantly into a limit that sits above the
+market and never fills. Nothing exited. Planned loss 31 points (₹1,986); actual
+217 points (₹14,124), and still open when it was found.
+
+THE HOURLY BOT HAS THE SAME CODE AND HOLDS OVERNIGHT BY DESIGN — 30 hourly bars
+is about four sessions — so it meets this every time it carries a trade through
+a night. Squaring off, which fixed the 5-min, is not available to it: holding
+overnight IS its strategy. It has to survive the gap instead of avoiding it.
+
+Both bots are tested here, with Tuesday's real numbers on the 5-min side.
+"""
+import json
+import os
+import sys
+import tempfile
+from datetime import datetime, timedelta, timezone
+
+TMP = tempfile.mkdtemp()
+os.environ.update({
+    "EXECUTOR_STATE": os.path.join(TMP, "h.json"),
+    "EXECUTOR_5M_STATE": os.path.join(TMP, "f.json"),
+    "HOURLY_STATE": os.path.join(TMP, "h.json"),
+    "PEER_STATE": os.path.join(TMP, "ib.json"),
+    "PEER_STATE_5M": os.path.join(TMP, "f5peer.json"),
+    "CONTRACT_LOCK": os.path.join(TMP, "lock"),
+    "APP_PIN": "test", "SIGNAL_URL": "http://localhost/api/fib/signal",
+})
+
+sys.path.insert(0, "/Users/khilanpatel/Desktop/Live Projects/nifty-executor")
+
+import executor as H
+import executor_5m as F
+import upstox_orders as ux
+
+# The 5-min bot is intraday now; these tests are about the GAP, not the clock.
+F.past_no_entry_cutoff = lambda now=None: False
+F.must_square_off = lambda now=None: False
+
+IST = timezone(timedelta(hours=5, minutes=30))
+KEY = "NSE_FO|68407"
+LOT = 65
+
+CALLS: list = []
+PLACED: list = []
+passed = failed = 0
+
+
+def check(label, cond, detail=""):
+    global passed, failed
+    if cond:
+        passed += 1
+        print(f"  ok   {label}")
+    else:
+        failed += 1
+        print(f"  FAIL {label}   {detail}")
+
+
+H.tg = F.tg = lambda t: CALLS.append(t)
+for _n in ("place_limit_buy", "place_limit_sell", "place_sl", "place_sl_m",
+           "cancel_order", "modify_order"):
+    def _mk(n):
+        def f(*a, **k):
+            PLACED.append((n, a, k))
+            return f"OID-{n}"
+        return f
+    setattr(ux, _n, _mk(_n))
+
+for _p in ("PEER_STATE", "PEER_STATE_5M"):
+    json.dump({}, open(os.environ[_p], "w"))
+
+
+def payload(mod, entry, stop, target, last_close):
+    exp = int((datetime.now(tz=IST) + timedelta(days=18)).timestamp() * 1000)
+    return {"tokenValid": True, "error": None,
+            "contract": {"instrumentKey": KEY, "lotSize": LOT, "tickSize": 10,
+                         "tradingSymbol": "NIFTY FUT 29 SEP 26", "expiry": exp},
+            "signal": {"entryValid": False, "fibEntry": entry, "stopPrice": stop,
+                       "targetPrice": target, "asOf": "d2", "lastClose": last_close}}
+
+
+def run(mod, *, entry, stop, target, market, book=None, quote=True, bars=3,
+        last_close=None):
+    """One poll, holding a long, with the market wherever we say it is."""
+    CALLS.clear(); PLACED.clear()
+    try:
+        os.remove(os.environ["CONTRACT_LOCK"])
+    except OSError:
+        pass
+    ux.get_positions = lambda t: [{"instrument_token": KEY, "quantity": LOT,
+                                   "average_price": entry, "last_price": market}]
+    bk = list(book or [])
+    if not any((o.get("tag") or "") == mod.TAG_ENTRY for o in bk):
+        bk.append({"instrument_token": KEY, "tag": mod.TAG_ENTRY, "status": "complete",
+                   "order_id": "E1", "price": entry, "average_price": entry})
+    ux.get_order_book = lambda t: bk
+    if quote:
+        ux.get_quote = lambda t, k: {"depth": {"buy": [{"price": market}]},
+                                     "last_price": market}
+    else:
+        def _boom(*a, **k):
+            raise RuntimeError("quote endpoint down")
+        ux.get_quote = _boom
+    st = {"entry_bar": "2026-09-08T15:05:00+05:30", "instrument": KEY,
+          "entry_price": entry, "stop": stop, "target": target, "bars": bars,
+          "entry_fill": {"price": entry, "stop": stop, "target": target, "at": "d1"}}
+    mod.reconcile("tok", payload(mod, entry, stop, target,
+                                 market if last_close is None else last_close), st)
+    return st
+
+
+def stops():
+    return [p for p in PLACED if p[0] == "place_sl"]
+
+
+def exits(mod):
+    return [p for p in PLACED if p[0] == "place_limit_sell" and p[1][5] == mod.TAG_EXIT]
+
+
+def targets(mod):
+    return [p for p in PLACED if p[0] == "place_limit_sell" and p[1][5] == mod.TAG_TARGET]
+
+
+print("═" * 78)
+print("  A stop below the market protects. A stop ABOVE it does not.")
+print("═" * 78)
+H.LIVE = F.LIVE = True
+try:
+    # ── TUESDAY, on the 5-min bot, with the real numbers ─────────────────────
+    print("\n── 9 Sep 2026, replayed: entry 23747.3, stop 23716.74, opened 23674 ──")
+    run(F, entry=23747.3, stop=23716.74, target=23783.3, market=23674.0,
+        last_close=23747.3)
+    check("it does NOT place the dead stop", not stops(), PLACED)
+    check("it EXITS instead", len(exits(F)) == 1, PLACED)
+    check("  ...priced at or below the market", exits(F)[0][1][3] <= 23674.0, PLACED)
+    check("  ...for the whole position", exits(F)[0][1][2] == LOT, PLACED)
+    check("  ...and no target either — it is leaving, not managing",
+          not targets(F), PLACED)
+    check("it says the stop was already passed",
+          any("STOP ALREADY PASSED" in c for c in CALLS), CALLS[:1])
+    check("  ...quoting both numbers so the reason is checkable",
+          any("23674" in c and "23716.74" in c for c in CALLS), CALLS[:1])
+
+    # ── THE HOURLY, which cannot square off because it holds by design ───────
+    print("\n── the hourly bot, same situation ──")
+    run(H, entry=24100.0, stop=24010.0, target=24350.0, market=23880.0,
+        last_close=24100.0)
+    check("it does NOT place the dead stop", not stops(), PLACED)
+    check("it EXITS instead", len(exits(H)) == 1, PLACED)
+    check("  ...priced at or below the market", exits(H)[0][1][3] <= 23880.0, PLACED)
+    check("it says why", any("STOP ALREADY PASSED" in c for c in CALLS), CALLS[:1])
+
+    # A stop that IS resting but cannot fill must also be cleared out of the way.
+    run(H, entry=24100.0, stop=24010.0, target=24350.0, market=23880.0,
+        last_close=24100.0,
+        book=[{"instrument_token": KEY, "tag": H.TAG_STOP, "status": "open",
+               "order_id": "DEAD-1", "price": 24009.0, "trigger_price": 24010.0}])
+    check("a stop already on the book but unfillable is cancelled first",
+          any("DEAD-1" in str(p[1]) for p in PLACED if p[0] == "cancel_order"), PLACED)
+    check("  ...and the exit follows it", len(exits(H)) == 1, PLACED)
+
+    # ── AND IT MUST NOT FIRE NORMALLY ────────────────────────────────────────
+    print("\n── the ordinary case must be untouched ──")
+    for mod, name in ((H, "hourly"), (F, "5-min")):
+        run(mod, entry=24100.0, stop=24010.0, target=24350.0, market=24080.0,
+            last_close=24100.0)
+        check(f"{name}: market above the stop → the stop IS placed", len(stops()) == 1, PLACED)
+        check(f"  ...at the frozen level, unchanged",
+              stops()[0][1][3] == ux.round_to_tick(24010.0, 10), PLACED)
+        check(f"  ...and the target too", len(targets(mod)) == 1, PLACED)
+        check(f"  ...and it does NOT exit", not exits(mod), PLACED)
+
+    # Right AT the level counts as gone: a stop at the market triggers instantly
+    # into a limit that may not fill, which is the same trap.
+    run(H, entry=24100.0, stop=24010.0, target=24350.0, market=24010.0,
+        last_close=24100.0)
+    check("market exactly AT the stop → treated as gone, exits", len(exits(H)) == 1, PLACED)
+
+    # ── FAIL SAFE: an unknown market is NOT a breach ─────────────────────────
+    print("\n── an unknown market must never be read as a breach ──")
+    # Quote endpoint down, and the last bar is ABOVE the stop → behave as before.
+    run(H, entry=24100.0, stop=24010.0, target=24350.0, market=23880.0,
+        quote=False, last_close=24090.0)
+    check("no quote, last bar above the stop → places the stop as before",
+          len(stops()) == 1, PLACED)
+    check("  ...and does not exit on a guess", not exits(H), PLACED)
+
+    check("stop_level_gone(None, stop) is False", H.stop_level_gone(None, 24010.0) is False)
+    check("stop_level_gone(ref, None) is False", H.stop_level_gone(23880.0, None) is False)
+    check("stop_level_gone on junk is False", H.stop_level_gone("x", 24010.0) is False)
+    check("stop_level_gone below → True", H.stop_level_gone(23880.0, 24010.0) is True)
+    check("stop_level_gone above → False", H.stop_level_gone(24080.0, 24010.0) is False)
+
+    # A quote wildly away from the last bar is not believed — otherwise one bad
+    # tick would flatten a healthy position.
+    print("\n── a broken quote cannot flatten a healthy trade ──")
+    run(H, entry=24100.0, stop=24010.0, target=24350.0, market=1.0,
+        last_close=24090.0)
+    check("a quote 100% away from the last bar is rejected → no exit",
+          not exits(H), PLACED)
+    check("  ...and the stop goes on normally", len(stops()) == 1, PLACED)
+finally:
+    H.LIVE = F.LIVE = False
+
+print(f"\n  {passed} passed, {failed} failed")
+sys.exit(1 if failed else 0)

@@ -1,0 +1,293 @@
+#!/usr/bin/env python3
+"""
+Receives the trading account's Upstox access token pushed from the dashboard and
+writes it where the executor can read it.
+
+WHY THIS EXISTS. Upstox issues no refresh token and every access token dies at
+03:30 IST, so an unattended bot needs a fresh one each morning. The dashboard has
+the token (you logged in there); this server is the thing that catches it.
+
+WHAT IT REFUSES. Everything it isn't certain about:
+  • wrong or missing shared secret          -> 403, body never even read
+  • an already-expired token                -> 400
+  • a token that isn't the trading account  -> 403
+The dashboard already checks the account before pushing. This checks it AGAIN,
+from the droplet's own registered IP, because the two checks fail differently:
+Vercel's can be defeated by anything that spoofs the sync call, and this one
+cannot be reached without the secret. Neither alone is enough.
+
+DEPENDENCIES: none. Standard library only, deliberately — this handles a live
+broker credential and every dependency is attack surface it doesn't need.
+
+TLS: this server binds 127.0.0.1 and speaks plain HTTP. That is not a downgrade;
+Caddy terminates TLS in front of it and proxies over loopback. The only plaintext
+hop is inside the machine and never touches a network interface. Do NOT change
+BIND_HOST to 0.0.0.0 — that would expose the receiver directly and make the hop
+a real one.
+"""
+
+import hmac
+import json
+import logging
+import os
+import ssl
+import sys
+import tempfile
+import urllib.error
+import urllib.request
+from datetime import datetime, timedelta, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+# ── Config (from environment; systemd supplies it via EnvironmentFile) ───────
+BIND_HOST = "127.0.0.1"          # loopback only — Caddy is the public face
+BIND_PORT = int(os.environ.get("RECEIVER_PORT", "8787"))
+SYNC_SECRET = os.environ.get("BOT_SYNC_SECRET", "")
+ACCOUNT_ID = os.environ.get("BOT_ACCOUNT_ID", "")
+TOKEN_PATH = os.environ.get("TOKEN_PATH", "/root/fib-bot/.upstox_token")
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT = os.environ.get("TELEGRAM_CHAT_ID", "")
+
+PROFILE_URL = "https://api.upstox.com/v2/user/profile"
+
+# Upstox sits behind Cloudflare, which blocks Python's default
+# "User-Agent: Python-urllib/3.x" with error 1010 (access denied on client
+# signature) before the request ever reaches Upstox. The symptom is a 403 whose
+# body is Cloudflare HTML rather than an Upstox error envelope — while curl from
+# the same machine gets a normal 401. Any explicit User-Agent passes; this one
+# names the client honestly. EVERY Upstox call from Python needs this header,
+# including the order module.
+USER_AGENT = "nifty-executor/1.0"
+MAX_BODY = 8192                  # a token is ~1KB; anything larger is not ours
+IST = timezone(timedelta(hours=5, minutes=30))
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+    stream=sys.stdout,
+)
+log = logging.getLogger("token-receiver")
+
+
+def notify(text: str) -> None:
+    """Telegram, best-effort. A notification failure must never fail a sync."""
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT:
+        return
+    try:
+        payload = json.dumps({"chat_id": TELEGRAM_CHAT, "text": text}).encode()
+        req = urllib.request.Request(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            data=payload,
+            headers={"Content-Type": "application/json", "User-Agent": USER_AGENT},
+        )
+        urllib.request.urlopen(req, timeout=10, context=ssl.create_default_context()).read()
+    except Exception as exc:                                    # noqa: BLE001
+        log.warning("telegram failed: %s", exc)
+
+
+def upstox_account_id(token: str):
+    """Who does this token belong to? None if Upstox won't say.
+
+    Runs from the droplet, whose IP is registered with Upstox — so unlike the
+    dashboard's copy of this check, it keeps working if account-scoped reads ever
+    become static-IP-only.
+    """
+    req = urllib.request.Request(
+        PROFILE_URL,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+            "User-Agent": USER_AGENT,
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10, context=ssl.create_default_context()) as res:
+            body = json.loads(res.read().decode())
+        return (body.get("data") or {}).get("user_id")
+    except urllib.error.HTTPError as exc:
+        log.warning("profile check HTTP %s: %s", exc.code, exc.read()[:200])
+        return None
+    except Exception as exc:                                    # noqa: BLE001
+        log.warning("profile check failed: %s", exc)
+        return None
+
+
+def write_token_atomically(token: str, expires_at: int) -> None:
+    """Write to a temp file in the same directory, then rename over the target.
+
+    os.replace is atomic on POSIX, so the executor either reads the whole old
+    token or the whole new one — it can never catch a half-written file and
+    authenticate with a truncated credential.
+    """
+    directory = os.path.dirname(TOKEN_PATH) or "."
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".token-", suffix=".tmp")
+    try:
+        os.fchmod(fd, 0o600)        # before any content is written
+        with os.fdopen(fd, "w") as fh:
+            fh.write(token.strip() + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, TOKEN_PATH)
+        os.chmod(TOKEN_PATH, 0o600)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+    # Expiry alongside, so the executor can refuse a stale token without having
+    # to re-derive the 03:30 boundary itself.
+    meta = TOKEN_PATH + ".meta.json"
+    with open(meta, "w") as fh:
+        json.dump({"expiresAt": expires_at, "account": ACCOUNT_ID}, fh)
+    os.chmod(meta, 0o600)
+
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "fib-token-receiver/1.0"
+
+    def log_message(self, fmt, *args):      # route access logs through logging
+        log.info("%s - %s", self.address_string(), fmt % args)
+
+    def _reply(self, code: int, payload: dict) -> None:
+        body = json.dumps(payload).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _token_status(self) -> dict:
+        """Whether a usable token is held, and until when. Never the token.
+
+        This is the one piece of state both clients need to agree on. "Am I
+        logged in" is per-browser and per-device and will always differ between
+        them; "does the droplet hold a live token" is a single global fact, and
+        it is the one that actually decides whether the bot can trade.
+        """
+        try:
+            with open(TOKEN_PATH) as fh:
+                has_token = bool(fh.read().strip())
+        except OSError:
+            return {"present": False, "expiresAt": None, "account": None, "expired": False}
+
+        expires_at = None
+        account = None
+        try:
+            with open(TOKEN_PATH + ".meta.json") as fh:
+                meta = json.load(fh)
+            expires_at = meta.get("expiresAt")
+            account = meta.get("account")
+        except (OSError, ValueError):
+            pass  # token without metadata is still a token; expiry just unknown
+
+        now_ms = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
+        expired = bool(expires_at) and expires_at <= now_ms
+        return {
+            "present": has_token,
+            "expiresAt": expires_at,
+            "account": account,
+            "expired": expired,
+        }
+
+    def do_GET(self):
+        # Liveness only. Reveals nothing about whether a token is held.
+        if self.path == "/health":
+            return self._reply(200, {"ok": True})
+
+        # Token status is behind the same secret as the sync itself. It leaks no
+        # credential, but "this droplet is armed and until when" is operational
+        # detail that belongs to the owner.
+        if self.path == "/token-status":
+            if not SYNC_SECRET:
+                return self._reply(503, {"error": "receiver not configured"})
+            if not hmac.compare_digest(self.headers.get("X-Sync-Secret", ""), SYNC_SECRET):
+                return self._reply(403, {"error": "forbidden"})
+            return self._reply(200, self._token_status())
+
+        self._reply(404, {"error": "not found"})
+
+    def do_POST(self):                                          # noqa: N802
+        if self.path != "/sync-token":
+            return self._reply(404, {"error": "not found"})
+
+        # ── Secret first, before the body is touched ──────────────────────────
+        # An unauthenticated caller should not be able to make this process read
+        # or parse anything it sends.
+        if not SYNC_SECRET:
+            log.error("BOT_SYNC_SECRET is not set — refusing every sync")
+            return self._reply(503, {"error": "receiver not configured"})
+
+        supplied = self.headers.get("X-Sync-Secret", "")
+        if not hmac.compare_digest(supplied, SYNC_SECRET):
+            log.warning("rejected: bad or missing X-Sync-Secret")
+            notify("✗ token sync rejected: bad secret")
+            return self._reply(403, {"error": "forbidden"})
+
+        # ── Body ──────────────────────────────────────────────────────────────
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            return self._reply(400, {"error": "bad content-length"})
+        if length <= 0 or length > MAX_BODY:
+            return self._reply(400, {"error": "bad body size"})
+
+        try:
+            payload = json.loads(self.rfile.read(length).decode())
+        except Exception:                                       # noqa: BLE001
+            return self._reply(400, {"error": "bad json"})
+
+        token = (payload.get("token") or "").strip()
+        expires_at = payload.get("expiresAt")
+        if not token or not isinstance(expires_at, (int, float)):
+            return self._reply(400, {"error": "token and expiresAt required"})
+        expires_at = int(expires_at)
+
+        # ── Refuse a token that is already dead ───────────────────────────────
+        now_ms = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
+        if expires_at <= now_ms:
+            log.warning("rejected: token already expired")
+            notify("✗ token sync rejected: already expired")
+            return self._reply(400, {"error": "token already expired"})
+
+        # ── Independent identity check from the registered IP ────────────────
+        account = upstox_account_id(token)
+        if account is None:
+            log.warning("rejected: could not verify account")
+            notify("✗ token sync rejected: could not verify account with Upstox")
+            return self._reply(502, {"error": "could not verify account"})
+        if ACCOUNT_ID and account != ACCOUNT_ID:
+            log.warning("rejected: wrong account %s", account)
+            notify(f"✗ token sync rejected: token belongs to {account}, not {ACCOUNT_ID}")
+            return self._reply(403, {"error": "wrong account"})
+
+        # ── Persist ───────────────────────────────────────────────────────────
+        try:
+            write_token_atomically(token, expires_at)
+        except Exception as exc:                                # noqa: BLE001
+            log.exception("could not write token")
+            notify(f"✗ token sync failed to write: {exc}")
+            return self._reply(500, {"error": "could not store token"})
+
+        until = datetime.fromtimestamp(expires_at / 1000, tz=IST).strftime("%H:%M")
+        log.info("token stored for %s, valid until %s IST", account, until)
+        notify(f"✓ token synced for {account}, valid until {until} IST")
+        return self._reply(200, {"stored": True, "account": account, "expiresAt": expires_at})
+
+
+def main() -> None:
+    if not SYNC_SECRET:
+        log.error("BOT_SYNC_SECRET is not set. Refusing to start.")
+        sys.exit(1)
+    if not ACCOUNT_ID:
+        log.error("BOT_ACCOUNT_ID is not set. Refusing to start — the identity check would be a no-op.")
+        sys.exit(1)
+
+    log.info("listening on %s:%s, token -> %s", BIND_HOST, BIND_PORT, TOKEN_PATH)
+    ThreadingHTTPServer((BIND_HOST, BIND_PORT), Handler).serve_forever()
+
+
+if __name__ == "__main__":
+    main()

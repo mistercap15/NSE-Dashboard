@@ -1,0 +1,53 @@
+# /etc/systemd/system/fib-token-receiver.service
+#
+#   systemctl daemon-reload
+#   systemctl enable --now fib-token-receiver
+#   journalctl -u fib-token-receiver -f
+
+[Unit]
+Description=Fib bot Upstox token receiver
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Secrets live in a root-only file, never in this unit — systemd units are
+# world-readable and `systemctl cat` would print them.
+EnvironmentFile=/root/fib-bot/receiver.env
+ExecStart=/usr/bin/python3 /root/fib-bot/token_receiver.py
+WorkingDirectory=/root/fib-bot
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Hardening. This process holds a live broker credential; it needs one directory
+# and one outbound connection, so everything else is taken away.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/root/fib-bot
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+# ProtectHome is deliberately OFF. It masks /root entirely — including
+# /root/fib-bot — so the service could not enter its WorkingDirectory or read
+# its own script, and systemd crash-looped it with 200/CHDIR. ReadWritePaths=
+# does NOT exempt a path from ProtectHome; that was tried and did not help.
+# Moving the install to /opt/fib-bot would let this be re-enabled, which is the
+# tidier arrangement if this is ever revisited.
+ProtectHome=false
+
+# AF_UNIX is required, not optional: glibc's name resolution talks to
+# systemd-resolved/nscd over a unix socket, so restricting to AF_INET alone
+# breaks DNS. That failure would not appear at startup — it would appear the
+# first time the receiver called Upstox to verify an account, which is a far
+# worse place to discover it.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

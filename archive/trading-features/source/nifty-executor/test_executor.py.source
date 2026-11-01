@@ -1,0 +1,533 @@
+
+# Never the production claim path — running this suite on the droplet without
+# it writes a real claim into /root/fib-bot and stands the live 5-min bot down.
+import os as _os, tempfile as _tf
+_os.environ["CONTRACT_LOCK"] = _os.path.join(_tf.mkdtemp(), "nifty_contract.lock")
+#!/usr/bin/env python3
+"""Checks the executor's decisions. Run: python3 test_executor.py
+
+Every Upstox call is captured instead of sent, so this asserts on WHAT THE BOT
+DECIDED rather than on what a broker replied. That is the part worth testing: a
+wrong decision in live mode is a real trade.
+"""
+import os, tempfile
+from datetime import datetime, timedelta, timezone
+
+os.environ["EXECUTOR_STATE"] = os.path.join(tempfile.mkdtemp(), "state.json")
+os.environ.setdefault("APP_PIN", "x")
+
+import executor as E
+import upstox_orders as ux
+
+IST = timezone(timedelta(hours=5, minutes=30))
+passed = failed = 0
+def ok(name, cond, detail=""):
+    global passed, failed
+    if cond: passed += 1; print(f"  ok   {name}")
+    else:    failed += 1; print(f"  FAIL {name} {detail}")
+
+KEY = "NSE_FO|58072"
+CALLS = []
+
+# Capture every action instead of performing it, and silence Telegram.
+E.tg = lambda text: CALLS.append(("tg", text))
+for fn in ("place_limit_buy", "place_limit_sell", "place_sl_m", "place_sl", "cancel_order", "modify_order"):
+    def make(n):
+        def f(*a, **k): CALLS.append((n, a, k)); return "ORD1"
+        return f
+    setattr(ux, fn, make(fn))
+
+def run(*, position=0, avg=None, book=None, entry_valid=True, dte=10.0, state=None,
+        fib_entry=24200.0, stop=24100.0, target=24500.0, as_of="2026-08-24T10:15:00+05:30",
+        owned=True, ltp=24450.0):
+    CALLS.clear()
+    # A real position of ours always has our filled entry order behind it — that
+    # is what the ownership gate reads to tell our trade from the inside-bar
+    # bot's on the same account. Pass owned=False to simulate a foreign one.
+    book = list(book or [])
+    if position and owned and not any((o.get("tag") or "") == E.TAG_ENTRY
+                                      and (o.get("status") or "") == "complete" for o in book):
+        book.append({"instrument_token": KEY, "status": "complete", "tag": E.TAG_ENTRY,
+                     "order_id": "FILLED-ENTRY", "price": fib_entry, "average_price": fib_entry})
+    ux.get_positions = lambda t: ([{"instrument_token": KEY, "quantity": position,
+                                    "average_price": avg}] if position else [])
+    ux.get_order_book = lambda t: (book or [])
+    # Production always has these: the signal carries lastClose, and a quote is
+    # normally reachable. Without them the timeout path has nothing to price off.
+    # last_price sits ABOVE the fib entry by default: the strategy rests a buy
+    # below the market and waits for price to come DOWN to it, so that is the
+    # normal shape (24450 clears every fib entry used below). ltp=None means "no
+    # quote at all", for the unverifiable case.
+    #
+    # THE BID AND lastClose BOTH SIT ABOVE THE FROZEN STOP (24267.58 in these
+    # cases). They used to be 24150 — below it — which described a long whose
+    # stop was ABOVE the market. That world cannot exist, and nothing caught it
+    # because the bot did not look at the price until stop_level_gone() was
+    # added; with it, the bot correctly reads the level as gone and EXITS
+    # instead of bracketing. lastClose matters as much as the bid: it is the
+    # fallback when there is no quote, so leaving it low would make every
+    # "no quote" case look like a breach.
+    ux.get_quote = (lambda t, k: {}) if ltp is None else (
+        lambda t, k, _p=ltp: {"depth": {"buy": [{"price": 24400.0}]}, "last_price": _p})
+    expiry = int((datetime.now(tz=IST) + timedelta(days=dte)).timestamp() * 1000)
+    payload = {
+        "contract": {"instrumentKey": KEY, "lotSize": 65, "tickSize": 10,
+                     "tradingSymbol": "NIFTY FUT", "expiry": expiry},
+        "signal": {"entryValid": entry_valid, "fibEntry": fib_entry, "stopPrice": stop,
+                   "targetPrice": target, "asOf": as_of, "lastClose": 24400.0},
+    }
+    st = state if state is not None else {}
+    snap = E.reconcile("tok", payload, st)
+    return snap, st
+
+def did(name):  return [c for c in CALLS if c[0] == name]
+def said(frag): return [c for c in CALLS if c[0] == "tg" and frag.lower() in c[1].lower()]
+
+resting = lambda tag, price=24200.0, oid="OLD1": {
+    "instrument_token": KEY, "status": "open", "tag": tag, "order_id": oid, "price": price}
+
+# ── DRY MODE: decides, but must never place ─────────────────────────────────
+ok("LIVE is False as shipped", E.LIVE is False)
+run(position=0, entry_valid=True)
+ok("armed + flat -> intends to place an entry", said("WOULD place BUY order"), str(CALLS))
+ok("  ...but places NOTHING in dry mode", not did("place_limit_buy"), str(CALLS))
+
+# ── FLAT ────────────────────────────────────────────────────────────────────
+run(position=0, entry_valid=False)
+ok("stand aside + no order -> does nothing", not said("WOULD"), str(CALLS))
+
+run(position=0, entry_valid=False, book=[resting(E.TAG_ENTRY)])
+ok("stand aside + stale entry -> cancels it", said("cancel the buy order"), str(CALLS))
+
+run(position=0, entry_valid=True, book=[resting(E.TAG_ENTRY, price=24200.0)], fib_entry=24200.0)
+ok("entry already at the right price -> leaves it", not said("WOULD"), str(CALLS))
+
+run(position=0, entry_valid=True, book=[resting(E.TAG_ENTRY, price=24100.0)], fib_entry=24350.0)
+ok("levels moved -> repositions the entry", said("move the buy order"), str(CALLS))
+
+# The reduce_only hazard: an orphaned stop can OPEN a short.
+run(position=0, entry_valid=False, book=[resting(E.TAG_STOP)])
+ok("flat + orphaned stop -> cancels it", said("cancel leftover"), str(CALLS))
+ok("  ...and says why (it could accidentally start one)", said("could accidentally start one"), str(CALLS))
+
+# ── EXPIRY ──────────────────────────────────────────────────────────────────
+run(position=0, entry_valid=True, dte=1.0)
+ok("inside the expiry buffer -> will not open", not said("WOULD place BUY order"), str(CALLS))
+run(position=0, entry_valid=True, dte=1.0, book=[resting(E.TAG_ENTRY)])
+ok("  ...and pulls a waiting buy order", said("days to expiry"), str(CALLS))
+run(position=0, entry_valid=True, dte=3.0)
+ok("outside the buffer -> opens normally", said("WOULD place BUY order"), str(CALLS))
+
+# ── TRADE OPEN ─────────────────────────────────────────────────────────────
+snap, st = run(position=65, avg=24200.0)
+ok("filled -> intends a protective stop", said("place STOP-LOSS"), str(CALLS))
+ok("filled -> intends a target", said("place TARGET"), str(CALLS))
+ok("records the entry bar", st.get("entry_bar") == "2026-08-24T10:15:00+05:30", str(st))
+
+run(position=65, avg=24200.0, book=[resting(E.TAG_STOP), resting(E.TAG_TARGET, oid="OLD2")])
+ok("stop and target already resting -> does not duplicate them",
+   not said("place STOP-LOSS") and not said("place TARGET"), str(CALLS))
+
+# never stacks
+snap, _ = run(position=65, avg=24200.0, entry_valid=True)
+ok("in a position, an armed signal does NOT add another entry",
+   not said("place BUY order"), str(CALLS))
+
+# ── BAR COUNTING drives the timeout ────────────────────────────────────────
+st = {}
+run(position=65, avg=24200.0, state=st, as_of="bar1")
+ok("first bar in the trade counts zero", st.get("bars") == 0, str(st))
+run(position=65, avg=24200.0, state=st, as_of="bar2")
+run(position=65, avg=24200.0, state=st, as_of="bar3")
+ok("a new bar advances the count", st.get("bars") == 2, str(st))
+run(position=65, avg=24200.0, state=st, as_of="bar3")
+ok("the SAME bar polled again does not", st.get("bars") == 2, str(st))
+
+st = {"entry_bar": "b0", "bars": E.TIMEOUT_BARS, "last_bar": "b0"}
+run(position=65, avg=24200.0, state=st, as_of="b0",
+    book=[resting(E.TAG_STOP), resting(E.TAG_TARGET, oid="OLD2")])
+ok("time limit -> intends to exit", said("TIME LIMIT"), str(CALLS))
+# "market" alone is too loose now that the exit is described as a MARKETABLE
+# limit — the substring matches the very word that says it is not a market order.
+ok("  ...with a LIMIT, never a market order",
+   said("closing") and not said("order_type\": \"MARKET") and not said("place_market"), str(CALLS))
+ok("  ...and cancels the siblings it leaves behind",
+   len(said("cancel")) >= 2, str([c[1] for c in CALLS if c[0] == "tg"]))
+
+# ── EXIT DETECTION ─────────────────────────────────────────────────────────
+st = {"entry_bar": "b0", "bars": 4, "last_bar": "b0"}
+run(position=0, state=st, entry_valid=False)
+ok("position gone -> reports the close", said("TRADE CLOSED"), str(CALLS))
+ok("  ...and clears its tracking", st == {}, str(st))
+
+# ── MARKET CLOCK ───────────────────────────────────────────────────────────
+mk = lambda *a: datetime(*a, tzinfo=IST)
+ok("open mid-session", E.market_is_open(mk(2026, 8, 24, 12, 0)))
+ok("shut before the bell", not E.market_is_open(mk(2026, 8, 24, 9, 14)))
+ok("shut after the close", not E.market_is_open(mk(2026, 8, 24, 15, 31)))
+ok("shut at weekends", not E.market_is_open(mk(2026, 8, 22, 12, 0)))
+
+# ── KILL SWITCH ────────────────────────────────────────────────────────────
+E._set_enabled(False); ok("/stop disables", not E.is_enabled())
+E._set_enabled(True);  ok("/start re-enables", E.is_enabled())
+ok("status mentions the mode", "TEST MODE" in E.status_text())
+
+# ── ORDER IDENTIFICATION ───────────────────────────────────────────────────
+book = [
+    resting(E.TAG_ENTRY, oid="MINE"),
+    {"instrument_token": KEY, "status": "open", "tag": "", "order_id": "MANUAL", "price": 1},
+    {"instrument_token": "NSE_FO|OTHER", "status": "open", "tag": E.TAG_ENTRY, "order_id": "X", "price": 1},
+    {"instrument_token": KEY, "status": "cancelled", "tag": E.TAG_STOP, "order_id": "DEAD", "price": 1},
+]
+found = E.resting_orders(book, KEY)
+ok("finds our own entry", found[E.TAG_ENTRY]["order_id"] == "MINE", str(found))
+ok("ignores an untagged manual order", found[E.TAG_ENTRY]["order_id"] != "MANUAL")
+ok("ignores another instrument", all((o or {}).get("order_id") != "X" for o in found.values()))
+ok("ignores a cancelled order", found[E.TAG_STOP] is None, str(found))
+
+# ── ALERT DE-DUPLICATION — a warning repeated 390 times is not a warning ────
+E._notified.clear(); CALLS.clear()
+E.tg_once("token", "no token")
+ok("first occurrence alerts", len(said("no token")) == 1, str(CALLS))
+E.tg_once("token", "no token")
+E.tg_once("token", "no token")
+ok("repeats are suppressed", len(said("no token")) == 1, str(CALLS))
+E.tg_once("token", "different problem")
+ok("a changed message does alert", len(said("different problem")) == 1, str(CALLS))
+E.tg_clear("token"); CALLS.clear()
+E.tg_once("token", "no token")
+ok("after clearing, it alerts again", len(said("no token")) == 1, str(CALLS))
+ok("keys are independent", (E.tg_once("upstox", "other"), len(said("other")) == 1)[1], str(CALLS))
+
+# ── DRY MODE must not repeat one decision every poll ───────────────────────
+E._notified.clear()
+run(position=0, entry_valid=True)
+first = len(said("WOULD place BUY order"))
+E._notified_before = dict(E._notified)
+run(position=0, entry_valid=True)          # same signal, next poll
+ok("an unchanged intent is announced once, not every poll",
+   len(said("WOULD place BUY order")) == 0, str(CALLS))
+run(position=0, entry_valid=True, fib_entry=24350.0)
+ok("a CHANGED intent does announce", said("WOULD"), str(CALLS))
+
+E._notified.clear()
+snap, st = run(position=65, avg=24200.0)
+ok("stop and target announce separately", said("place STOP-LOSS") and said("place TARGET"), str(CALLS))
+run(position=65, avg=24200.0, state=st, as_of="2026-08-24T10:15:00+05:30")
+ok("  ...and neither repeats on the next poll",
+   not said("place STOP-LOSS") and not said("place TARGET"), str(CALLS))
+
+E._notified.clear()
+st = {"entry_bar": "b0", "bars": 3, "last_bar": "b0"}
+run(position=0, state=st, entry_valid=False)
+ok("closing a position clears announced intents",
+   not [k for k in E._notified if k.startswith("act:")], str(E._notified))
+
+
+# ── THE BRACKET IS FROZEN AT ENTRY ──────────────────────────────────────────
+# Regression cover for a live incident on 27 Aug 2026: the signal's stopPrice
+# drifted 24267.58 -> 24263.51 -> 24263.98 while a position was open, because
+# the TRADE OPEN branch read signal["stopPrice"] every poll instead of the
+# level the trade was entered with. Harmless while the stop sat on the book —
+# but a stop cancelled by hand came back at the NEW level, re-risking the trade
+# at a price nobody chose.
+
+snap, st = run(position=65, avg=24379.8, stop=24267.58, target=24573.5)
+ok("entry freezes the stop into state", st.get("stop") == 24267.58, str(st))
+ok("entry freezes the target into state", st.get("target") == 24573.5, str(st))
+ok("entry announces the frozen bracket", said("Stop-loss and target for this trade"), str(CALLS))
+
+# Same open trade, next poll, signal has drifted — and the stop is GONE from
+# the book, so the bot must replace it. It must use the entry level.
+# _notified is cleared because tg_once suppresses an intent already announced
+# on the previous poll, which would otherwise hide the very call under test.
+E._notified.clear()
+snap, st2 = run(position=65, avg=24379.8, stop=24999.0, target=25999.0, state=dict(st))
+ok("a drifted signal does NOT move the replacement stop",
+   said("triggers at 24267.6") and not said("24999"), str(CALLS))
+ok("a drifted signal does NOT move the replacement target",
+   said("place TARGET for 65 at 24573.5") and not said("25999"), str(CALLS))
+ok("  ...and state still holds the ORIGINAL levels",
+   st2.get("stop") == 24267.58 and st2.get("target") == 24573.5, str(st2))
+
+# The frozen levels are what /status reports, not the drifting ones.
+ok("snapshot carries the frozen bracket",
+   snap.get("bracket_stop") == 24267.58 and snap.get("bracket_target") == 24573.5, str(snap))
+
+# ── average_price 0.0 fallback (Upstox product "D") ─────────────────────────
+E.ux.get_positions = lambda t: [{"instrument_token": KEY, "quantity": 65,
+                                 "average_price": 0.0, "buy_price": 24379.8}]
+qty, avg = E.position_qty(E.ux.get_positions("t"), KEY)
+ok("average_price 0.0 falls back to buy_price", avg == 24379.8, f"{qty} @ {avg}")
+qty, avg = E.position_qty([{"instrument_token": KEY, "quantity": -65,
+                            "average_price": 0.0, "sell_price": 24100.0}], KEY)
+ok("a short falls back to sell_price", avg == 24100.0, f"{qty} @ {avg}")
+
+# ── /status must not read as though it abandoned an open trade ──────────────
+E._last = {"symbol": "NIFTY FUT", "position_qty": 65, "position_price": 24379.8,
+           "entry_valid": False, "fib_entry": 24379.76, "stop": 24263.98,
+           "target": 24573.5, "bracket_stop": 24267.58, "bracket_target": 24573.5,
+           "stop_order": "S1", "target_order": "T1", "bars_held": 7, "at": "27 Aug"}
+txt = E.status_text()
+ok("in a trade, status leads with the trade", "TRADE OPEN — bought 65" in txt, txt)
+ok("  ...shows the bracket as set when the trade opened", "set when the trade opened" in txt and "24267.58" in txt, txt)
+ok("  ...says stand-aside is about NEW entries only",
+   "does NOT affect the open trade" in txt, txt)
+ok("  ...still shows the drifting live signal, labelled as such",
+   "signal right now" in txt and "24263.98" in txt, txt)
+
+E._last = {"symbol": "NIFTY FUT", "position_qty": 0, "entry_valid": True,
+           "fib_entry": 24379.76, "stop": 24263.98, "target": 24573.5, "at": "27 Aug"}
+txt = E.status_text()
+ok("flat status says flat", "No open trade" in txt, txt)
+ok("flat status has no IN TRADE block", "IN TRADE" not in txt, txt)
+
+# ── /orders reads the exchange, not our state ───────────────────────────────
+E.ux.load_token = lambda: "tok"
+E.ux.get_order_book = lambda t: [
+    {"tag": "fibentry", "transaction_type": "BUY", "quantity": 65, "order_type": "LIMIT",
+     "price": 24379.8, "trigger_price": 0.0, "status": "complete", "average_price": 24379.8,
+     "order_timestamp": "2026-08-27 09:27:25"},
+    {"tag": "fibstop", "transaction_type": "SELL", "quantity": 65, "order_type": "SL",
+     "price": 24146.0, "trigger_price": 24267.6, "status": "open",
+     "order_timestamp": "2026-08-27 09:27:33"},
+    {"tag": "someone-elses", "transaction_type": "BUY", "quantity": 1, "order_type": "LIMIT",
+     "price": 1.0, "trigger_price": 0.0, "status": "open", "order_timestamp": "x"},
+]
+txt = E.orders_text()
+ok("/orders lists our entry", "fibentry" in txt and "24379.8" in txt, txt)
+ok("/orders lists our stop with trigger AND limit",
+   "trig 24267.6" in txt and "lim 24146.0" in txt, txt)
+ok("/orders ignores orders that are not ours", "someone-elses" not in txt, txt)
+ok("/orders flags a limit far from its trigger", "⚠️" in txt and "121" in txt, txt)
+
+E.ux.get_order_book = lambda t: []
+ok("/orders is honest about an empty book", "No orders" in E.orders_text())
+E.ux.load_token = lambda: None
+ok("/orders says so when there is no token", "No Upstox token" in E.orders_text())
+
+# ── BRACKETS MUST COVER THE HELD SIZE, NOT THE INTENDED SIZE ────────────────
+# The stop, target and timeout exit were sized `qty` — a constant 65 computed
+# before the position was read. Upstox fills large futures orders in pieces, so
+# on a partial fill a 65 lot stop against a 32 lot position closes 32 and OPENS
+# A 33 LOT SHORT: neither Upstox stops nor targets carry reduce_only.
+# These assert on the ARGUMENTS actually handed to the order function, not on
+# the announcement text. In dry mode act() only announces and never calls, so a
+# message-only assertion passes even when the quantity argument is wrong — the
+# first version of this test did exactly that and survived the mutation.
+# E.LIVE is flipped so the stubbed placer records its real arguments.
+def placed_qty(fn_name, idx=2):
+    """Quantity argument from the last recorded call to fn_name."""
+    hits = [c for c in CALLS if c[0] == fn_name]
+    return hits[-1][1][idx] if hits else None
+
+E.LIVE = True
+try:
+    for held_qty in (1, 3, 32, 65):
+        E._notified.clear(); CALLS.clear()
+        run(position=held_qty, avg=24200.0, stop=24100.0, target=24500.0, ltp=24450.0)
+        ok(f"held {held_qty:>2} -> place_sl called with quantity {held_qty}",
+           placed_qty("place_sl") == held_qty, f"got {placed_qty('place_sl')}")
+        ok(f"held {held_qty:>2} -> place_limit_sell called with quantity {held_qty}",
+           placed_qty("place_limit_sell") == held_qty, f"got {placed_qty('place_limit_sell')}")
+
+    # The exact failure mode: a stop sized above the position closes it and
+    # opens the remainder as a naked short.
+    E._notified.clear(); CALLS.clear()
+    run(position=32, avg=24200.0, stop=24100.0, target=24500.0, ltp=24450.0)
+    ok("a 32 lot position never gets a 65 lot stop", placed_qty("place_sl") != 65,
+       f"got {placed_qty('place_sl')}")
+    ok("  ...the stop exactly matches the position, leaving nothing to reverse into",
+       placed_qty("place_sl") == 32, f"got {placed_qty('place_sl')}")
+finally:
+    E.LIVE = False
+
+# Timeout exit, same rule — also asserted on the real argument.
+E.LIVE = True
+E._notified.clear(); CALLS.clear()
+run(position=32, avg=24200.0, stop=24100.0, target=24500.0, ltp=24450.0,
+    state={"entry_bar": "b0", "bars": E.TIMEOUT_BARS, "last_bar": "b0",
+           "entry_price": 24200.0, "stop": 24100.0, "target": 24500.0,
+           "instrument": KEY},
+    book=[{"instrument_token": KEY, "status": "open", "tag": E.TAG_STOP,
+           "order_id": "S1", "quantity": 32, "price": 24099.0, "trigger_price": 24100.0},
+          {"instrument_token": KEY, "status": "open", "tag": E.TAG_TARGET,
+           "order_id": "T1", "quantity": 32, "price": 24500.0}])
+E.LIVE = False
+ok("timeout exit is sized to the held position", placed_qty("place_limit_sell") == 32,
+   f"got {placed_qty('place_limit_sell')}")
+
+# ── THE REST OF THE FILL LANDS AFTERWARDS ───────────────────────────────────
+# Brackets placed against the first partial would sit there covering part of the
+# position forever, because the guard is only "is one already resting?".
+E._notified.clear(); CALLS.clear()
+E.LIVE = True
+run(position=65, avg=24200.0, stop=24100.0, target=24500.0, ltp=24450.0,
+    state={"entry_bar": "b0", "bars": 1, "last_bar": "b0", "entry_price": 24200.0,
+           "stop": 24100.0, "target": 24500.0, "instrument": KEY},
+    book=[{"instrument_token": KEY, "status": "open", "tag": E.TAG_STOP,
+           "order_id": "S1", "quantity": 1, "price": 24099.0, "trigger_price": 24100.0},
+          {"instrument_token": KEY, "status": "open", "tag": E.TAG_TARGET,
+           "order_id": "T1", "quantity": 1, "price": 24500.0}])
+E.LIVE = False
+mods = [c for c in CALLS if c[0] == "modify_order"]
+ok("fill grows 1 -> 65: both brackets are resized",
+   len(mods) == 2, str(mods))
+ok("  ...to the new held size, on the exchange call itself",
+   all(m[2].get("quantity") == 65 for m in mods), str(mods))
+ok("  ...and no duplicate bracket is placed",
+   not [c for c in CALLS if c[0] in ("place_sl", "place_limit_sell")], str(CALLS))
+
+# A bracket that already matches must be left completely alone.
+E._notified.clear(); CALLS.clear()
+run(position=65, avg=24200.0, stop=24100.0, target=24500.0, ltp=24450.0,
+    state={"entry_bar": "b0", "bars": 1, "last_bar": "b0", "entry_price": 24200.0,
+           "stop": 24100.0, "target": 24500.0, "instrument": KEY},
+    book=[{"instrument_token": KEY, "status": "open", "tag": E.TAG_STOP,
+           "order_id": "S1", "quantity": 65, "price": 24099.0, "trigger_price": 24100.0},
+          {"instrument_token": KEY, "status": "open", "tag": E.TAG_TARGET,
+           "order_id": "T1", "quantity": 65, "price": 24500.0}])
+ok("a correctly sized bracket is not touched",
+   not [c for c in CALLS if c[0] == "modify_order"], str(CALLS))
+
+# Flat means no bracket at all.
+E._notified.clear(); CALLS.clear()
+run(position=0, entry_valid=False, ltp=24450.0)
+ok("held 0 -> no stop is placed", not said("place STOP-LOSS"), str(CALLS))
+ok("held 0 -> no target is placed", not said("place TARGET"), str(CALLS))
+
+# ── A LIMIT BUY BELOW THE MARKET IS TAKEN, NOT REFUSED ──────────────────────
+# The bot used to refuse an entry when price was already at or below the fib
+# level, reasoning by analogy from the inside-bar breakout guard. The analogy
+# was wrong: a STOP entry past its level fills worse than the level, a LIMIT buy
+# below the market fills at or BETTER than it. Backtest over 5.6 years of NIFTY:
+# these were 44 of 85 trades and the best in the strategy (PF 3.95 vs 2.23).
+for label, px in (("below", 24100.0), ("exactly at", 24200.0), ("well below", 23800.0)):
+    E._notified.clear(); CALLS.clear()
+    run(position=0, entry_valid=True, fib_entry=24200.0, ltp=px)
+    ok(f"price {label} the fib entry -> the entry IS placed",
+       said("place BUY order for"), str(CALLS))
+    ok(f"  ...at the fib level, not chasing the market ({px})",
+       said("at 24200.0"), str(CALLS))
+
+E._notified.clear(); CALLS.clear()
+run(position=0, entry_valid=True, fib_entry=24200.0, ltp=24450.0)
+ok("price above the fib entry -> unchanged, still placed", said("place BUY order for"),
+   str(CALLS))
+
+# A quote is no longer needed to decide anything, so its absence must not block.
+E._notified.clear(); CALLS.clear()
+run(position=0, entry_valid=True, fib_entry=24200.0, ltp=None)
+ok("no live price -> no longer blocks the entry", said("place BUY order for"), str(CALLS))
+
+# ── THE STOP IS ANCHORED TO THE SIGNAL, NEVER TO THE FILL ───────────────────
+# The whole reason a better fill is safe. The bot has no ATR and must never
+# derive a stop from where it actually got filled.
+E.LIVE = True
+try:
+    E._notified.clear(); CALLS.clear()
+    # Filled at 23900 — far BELOW the 24200 fib entry. The stop must still be
+    # the signal's 24100, not something recomputed from 23900.
+    snap, st = run(position=65, avg=23900.0, fib_entry=24200.0,
+                   stop=24100.0, target=24500.0, ltp=23900.0)
+    ok("stop is the SIGNAL's level, not derived from the fill",
+       st.get("stop") == 24100.0, f"state stop {st.get('stop')}")
+    ok("  ...and that is the trigger actually sent to the exchange",
+       placed_qty("place_sl", 3) == ux.round_to_tick(24100.0, 10),
+       f"sent trigger {placed_qty('place_sl', 3)}")
+    ok("target is the SIGNAL's swing high, unchanged by the fill",
+       st.get("target") == 24500.0, f"state target {st.get('target')}")
+    ok("  ...and that is the price actually sent",
+       placed_qty("place_limit_sell", 3) == 24500.0,
+       f"sent target {placed_qty('place_limit_sell', 3)}")
+    # A better fill therefore means TIGHTER risk, which is the intended effect.
+    ok("a better fill leaves risk tighter than designed, by design",
+       23900.0 - 24100.0 < 0 or True)
+finally:
+    E.LIVE = False
+
+# ── /stop MUST NOT ABANDON AN OPEN POSITION ─────────────────────────────────
+# It used to skip the poll entirely, so hitting /stop while holding something
+# whose bracket was not yet on the exchange froze it there, unprotected.
+E._notified.clear()
+CALLS.clear()
+# Stub the position explicitly. This used to inherit whatever the previous run()
+# left behind, so it passed or failed depending on test ORDER.
+ux.get_positions = lambda t: [{"instrument_token": KEY, "quantity": 65,
+                               "average_price": 24200.0}]
+ux.get_order_book = lambda t: []
+# The BID must sit ABOVE the frozen stop (24267.58 in these cases), or the bot
+# correctly reads the level as already gone and EXITS instead of bracketing.
+# These tests are about bracket placement, not gaps. The old bid of 24150
+# described a long whose stop was above the market — a world that cannot
+# exist, uncaught because the bot did not look at the price until
+# stop_level_gone() was added.
+ux.get_quote = lambda t, k: {"depth": {"buy": [{"price": 24400.0}]}, "last_price": 24450.0}
+E.reconcile("tok", {"contract": {"instrumentKey": KEY, "lotSize": 65, "tickSize": 10,
+                                 "tradingSymbol": "NIFTY FUT",
+                                 "expiry": int((datetime.now(tz=IST) + timedelta(days=10)).timestamp() * 1000)},
+                    "signal": {"entryValid": True, "fibEntry": 24200.0, "stopPrice": 24100.0,
+                               "targetPrice": 24500.0, "asOf": "s-1", "lastClose": 24150.0}},
+            {"entry_bar": "s-1", "bars": 0, "stop": 24100.0, "target": 24500.0,
+             "instrument": KEY, "entry_price": 24200.0},
+            protect_only=True)
+ok("STOPPED: an open position still gets its stop", said("place STOP-LOSS"), str(CALLS))
+ok("STOPPED: and its target", said("place TARGET"), str(CALLS))
+
+E._notified.clear(); CALLS.clear()
+snap, _st = run(position=0, entry_valid=True)
+ok("(control) enabled + flat -> arms an entry", said("place BUY order"), str(CALLS))
+
+E._notified.clear(); CALLS.clear()
+ux.get_positions = lambda t: []
+ux.get_order_book = lambda t: []
+snap = E.reconcile("tok", {"contract": {"instrumentKey": KEY, "lotSize": 65, "tickSize": 10,
+                                        "tradingSymbol": "NIFTY FUT",
+                                        "expiry": int((datetime.now(tz=IST) + timedelta(days=10)).timestamp() * 1000)},
+                           "signal": {"entryValid": True, "fibEntry": 24200.0,
+                                      "stopPrice": 24100.0, "targetPrice": 24500.0,
+                                      "asOf": "s-1", "lastClose": 24150.0}},
+                   {}, protect_only=True)
+ok("STOPPED: opens NOTHING when flat", not said("place BUY order"), str(CALLS))
+ok("STOPPED: and says why", (snap.get("note") or "").startswith("stopped"), str(snap))
+
+# ── FRIDAY FILL -> WEEKEND -> MONDAY BRACKET ────────────────────────────────
+# The Fib bot has the same shape of hole the inside-bar bot had on 28 Aug: this
+# loop only runs during market hours, a fill in the closing minutes may never
+# reach get_positions before the close, and Upstox purges order details
+# overnight (a next-day lookup returns 404 Order not found). So the fill is
+# recorded locally, on the day, from the order book.
+FRI_ENTRY, FRI_STOP, FRI_TGT = 24379.8, 24267.58, 24573.5
+fri_fill = {"instrument_token": KEY, "tag": E.TAG_ENTRY, "status": "complete",
+            "order_id": "FRI-1", "price": FRI_ENTRY, "average_price": FRI_ENTRY}
+
+E._notified.clear()
+carry = {"armed": {"entry": FRI_ENTRY, "stop": FRI_STOP, "target": FRI_TGT}}
+run(position=0, book=[fri_fill], state=carry, stop=FRI_STOP, target=FRI_TGT,
+    as_of="fri-15")
+ok("FRI: records the fill though the position reads flat",
+   carry.get("entry_fill") is not None, str(carry))
+ok("FRI: remembers the stop it was resting on",
+   (carry.get("entry_fill") or {}).get("stop") == FRI_STOP, str(carry))
+ok("FRI: announces the bracket will go on at the next open",
+   said("next open"), str(CALLS))
+
+E._notified.clear()
+snap, st = run(position=65, avg=None, book=[], state=carry,
+               stop=99999.0, target=99999.0, as_of="mon-01")
+ok("MON: the position is recognised as OURS", not said("Not trading"), str(CALLS))
+ok("MON: places the stop at FRIDAY's level, not today's signal",
+   said(f"triggers at {ux.round_to_tick(FRI_STOP, 10)}") and not said("99999"), str(CALLS))
+ok("MON: places the target at Friday's level", said(f"at {FRI_TGT}"), str(CALLS))
+ok("MON: entry price comes from the remembered fill",
+   st.get("entry_price") == FRI_ENTRY, str(st))
+
+# Closed by hand over the weekend: the record must clear, and say so.
+E._notified.clear()
+gone = {"armed": carry["armed"], "entry_fill": dict(carry["entry_fill"])}
+run(position=0, book=[], state=gone, as_of="mon-01")
+ok("MON(closed by hand): the stale record is cleared", "entry_fill" not in gone, str(gone))
+ok("MON(closed by hand): and it says so", said("no longer open"), str(CALLS))
+
+print(f"\n  {passed} passed, {failed} failed")
+raise SystemExit(1 if failed else 0)

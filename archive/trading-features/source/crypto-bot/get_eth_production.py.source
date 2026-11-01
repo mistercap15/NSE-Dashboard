@@ -1,0 +1,61 @@
+# ── get_eth_production.py ── pulls CLEAN ETH candles from Delta PRODUCTION
+# Read-only market data. Places nothing. Uses production endpoint.
+import csv, time, requests
+from datetime import datetime, timezone
+
+# PRODUCTION endpoint — real market data (not testnet)
+BASE = 'https://api.india.delta.exchange'
+
+start = int(datetime(2026, 4, 1, tzinfo=timezone.utc).timestamp())
+end   = int(datetime.now(timezone.utc).timestamp())
+
+def pull(resolution, outfile):
+    url = f'{BASE}/v2/history/candles'
+    all_rows = []
+    # page in chunks sized to the resolution so we stay under any per-call cap
+    if resolution == '1h':
+        chunk = 20 * 24 * 3600      # 20 days
+    elif resolution == '15m':
+        chunk = 5 * 24 * 3600       # 5 days
+    else:
+        chunk = 1 * 24 * 3600
+    s = start
+    while s < end:
+        e = min(s + chunk, end)
+        params = {'resolution':resolution,'symbol':'ETHUSD','start':s,'end':e}
+        try:
+            r = requests.get(url, params=params, timeout=20,
+                             headers={'User-Agent':'Mozilla/5.0'})
+            data = r.json().get('result', [])
+            all_rows.extend(data)
+            print(f"  [{resolution}] {datetime.utcfromtimestamp(s).date()} → {len(data)} candles")
+        except Exception as ex:
+            print(f"  [{resolution}] chunk {s} FAILED: {ex}")
+        s = e
+        time.sleep(0.4)
+
+    # de-dup + sort
+    seen=set(); clean=[]
+    for c in all_rows:
+        if c['time'] not in seen:
+            seen.add(c['time']); clean.append(c)
+    clean.sort(key=lambda x:x['time'])
+
+    with open(outfile,'w',newline='') as f:
+        w=csv.writer(f)
+        w.writerow(['time_utc','open','high','low','close','volume'])
+        for c in clean:
+            w.writerow([
+                datetime.utcfromtimestamp(c['time']).strftime('%Y-%m-%d %H:%M:%S'),
+                c['open'],c['high'],c['low'],c['close'],c.get('volume',0)])
+    # quick sanity
+    closes=[float(c['close']) for c in clean]
+    print(f"  saved {len(clean)} rows to {outfile}")
+    print(f"  close range: {min(closes):.0f} - {max(closes):.0f}  "
+          f"(sane ETH range ~1500-2500 = good)")
+    print()
+
+print("Pulling ETH production data (April 1 → now)...\n")
+pull('1h',  'eth_1h_prod.csv')
+pull('15m', 'eth_15m_prod.csv')
+print("Done.")

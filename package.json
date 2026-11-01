@@ -7,6 +7,7 @@
     "build": "next build",
     "start": "next start",
     "refresh-data": "node scripts/export-backtest-data.mjs && node scripts/rebuild-universe-from-export.mjs",
+    "test:retired": "node scripts/test-retired-trading.mjs",
     "test:levels": "node scripts/test-levels.mjs",
     "test:conviction": "node scripts/test-conviction.mjs",
     "test": "npm run test:levels && npm run test:conviction && npm run test:qualify && npm run test:fib && npm run test:upstox && npm run test:inside-bar && npm run test:seasonality && npm run test:market-regime && npm run test:dns",

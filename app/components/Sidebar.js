@@ -5,8 +5,7 @@ import { usePathname } from "next/navigation";
 import { useTheme } from "next-themes";
 import {
   Sun, Moon, Menu, X, ChevronDown, LogOut,
-  LayoutDashboard, TrendingUp, CalendarDays, SlidersHorizontal, Search, RotateCcw, Zap, LineChart, TrendingDown, Scale, Layers, Target, Bot, Bitcoin,
-  Timer,
+  LayoutDashboard, TrendingUp, CalendarDays, SlidersHorizontal, Search, RotateCcw, Zap, LineChart, TrendingDown, Scale, Layers, Target,
 } from "lucide-react";
 import { MONTHS } from "../lib/api";
 import { getCurrentMonth, getCurrentYear } from "../lib/date";
@@ -30,14 +29,10 @@ const navGroups = [
     label: "Trade Setups",
     Icon: Zap,
     children: [
-      { href: "/protection", label: "Futures Protection", Icon: Scale },
       { href: "/playbook",    label: "Playbook",    Icon: Target },
       { href: "/early-entry", label: "Early Entry", Icon: Zap },
       { href: "/swing-low",   label: "Swing Low",   Icon: TrendingDown },
       { href: "/sizing",      label: "Capital",     Icon: Scale },
-      { href: "/fib",         label: "Fib Bot",     Icon: Bot },
-      { href: "/fib-5m",      label: "5-Min Fib",   Icon: Timer },
-      { href: "/crypto-fib",  label: "Crypto Fib",  Icon: Bitcoin },
     ],
   },
   {

@@ -1,0 +1,107 @@
+# ── extract_signals.py ────────────────────────────────────────────
+# READ-ONLY. Scrolls the signal channel, parses every signal from
+# April 1 2026 onward, writes to signals.csv. Places no orders.
+#
+# Run on the server (same folder as signal_bot.py — uses same session):
+#   python3 extract_signals.py
+
+import os
+import re
+import csv
+import asyncio
+from datetime import datetime, timezone
+from dotenv import load_dotenv
+from telethon import TelegramClient
+
+load_dotenv()
+
+TELEGRAM_API_ID   = int(os.getenv('TELEGRAM_API_ID'))
+TELEGRAM_API_HASH = os.getenv('TELEGRAM_API_HASH')
+TELEGRAM_PHONE    = os.getenv('TELEGRAM_PHONE')
+SIGNAL_CHANNEL_ID = int(os.getenv('SIGNAL_CHANNEL_ID'))
+
+# Only keep signals on/after this date (UTC)
+CUTOFF = datetime(2026, 4, 1, tzinfo=timezone.utc)
+
+tg = TelegramClient('signal_session', TELEGRAM_API_ID, TELEGRAM_API_HASH)
+
+def parse_signal(text):
+    text = (text or "").strip()
+
+    m = re.search(r'Entered\s+(Long|Short)\s+in\s+([\w.]+)', text, re.I)
+    if m:
+        symbol = m.group(2).upper()
+        price  = re.search(r'Entry\s+Price[:\s]+([0-9.]+)', text, re.I)
+        sl     = re.search(r'SL\s*[@:]\s*([0-9.]+)', text, re.I)
+        return {
+            'type': 'entry',
+            'direction': m.group(1).lower(),
+            'symbol': symbol,
+            'entry': float(price.group(1)) if price else '',
+            'sl':    float(sl.group(1))    if sl    else '',
+        }
+
+    m = re.search(r'SL\s+updated\s+for\s+([\w.]+)\s*[@:]\s*([0-9.]+)', text, re.I)
+    if m:
+        return {'type':'sl_update','symbol':m.group(1).upper(),
+                'direction':'','entry':'','sl':float(m.group(2))}
+
+    m = re.search(r'Exited\s+([\w.]+)', text, re.I)
+    if m:
+        return {'type':'exit','symbol':m.group(1).upper(),
+                'direction':'','entry':'','sl':''}
+
+    return None
+
+async def main():
+    await tg.start(phone=TELEGRAM_PHONE)
+    print("Connected. Scrolling channel history...")
+
+    rows = []
+    total_seen = 0
+    stopped_at_cutoff = False
+
+    # iter_messages goes newest → oldest by default
+    async for msg in tg.iter_messages(SIGNAL_CHANNEL_ID):
+        total_seen += 1
+        if msg.date < CUTOFF:
+            stopped_at_cutoff = True
+            print(f"Reached cutoff (April 1) after {total_seen} messages.")
+            break
+
+        sig = parse_signal(msg.text or "")
+        if sig:
+            rows.append({
+                'timestamp_utc': msg.date.strftime('%Y-%m-%d %H:%M:%S'),
+                'type':      sig['type'],
+                'symbol':    sig['symbol'],
+                'direction': sig['direction'],
+                'entry':     sig['entry'],
+                'sl':        sig['sl'],
+            })
+
+        if total_seen % 500 == 0:
+            print(f"  scanned {total_seen} messages, found {len(rows)} signals...")
+
+    # oldest first in the output
+    rows.reverse()
+
+    with open('signals.csv', 'w', newline='') as f:
+        w = csv.DictWriter(f, fieldnames=[
+            'timestamp_utc','type','symbol','direction','entry','sl'])
+        w.writeheader()
+        w.writerows(rows)
+
+    # quick summary
+    entries = [r for r in rows if r['type']=='entry']
+    longs   = [r for r in entries if r['direction']=='long']
+    shorts  = [r for r in entries if r['direction']=='short']
+    print(f"\nDone. {len(rows)} signals written to signals.csv")
+    print(f"  Entries: {len(entries)}  (long: {len(longs)}, short: {len(shorts)})")
+    print(f"  SL updates: {len([r for r in rows if r['type']=='sl_update'])}")
+    print(f"  Exits: {len([r for r in rows if r['type']=='exit'])}")
+    if not stopped_at_cutoff:
+        print("  NOTE: reached end of accessible history before April 1 "
+              "(channel may limit how far back you can read).")
+
+asyncio.run(main())

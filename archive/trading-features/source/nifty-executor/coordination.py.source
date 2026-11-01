@@ -1,0 +1,330 @@
+"""Mutual exclusion between the hourly Fib bot and the 5-minute gap-fill bot.
+
+THE INVARIANT: never two positions on one contract. It is absolute.
+
+WHY IT MATTERS HERE AND NOT ELSEWHERE. Both bots trade the SAME Nifty future on
+the SAME Upstox account, and Upstox NETS positions per contract. Two entries do
+not produce two trades you can tell apart — they produce one number. Each bot
+then reads that number as its own and places a stop and a target sized for the
+combined quantity. The first bracket to fire closes both trades; the second is
+left resting as a naked opposite-side order, which OPENS a reversed position,
+because Upstox has no reduce_only. That is the actual failure mode, and it is
+how a coordination bug turns into an unbounded one.
+
+PRIORITY: THE HOURLY ALWAYS WINS. It is the validated, live, real-money bot. The
+5-minute bot exists only to fill idle time and yields unconditionally:
+
+  hourly holding or armed, 5-min flat     → 5-min does not open
+  hourly holding or armed, 5-min resting  → 5-min CANCELS its resting entry
+  hourly holding or armed, 5-min HOLDING  → 5-min manages its position to the
+                                            exit and adds nothing. The hourly is
+                                            kept off it by the peer-state read on
+                                            its own side (see executor.py's
+                                            peer_claims_position).
+  hourly idle                             → 5-min free to trade
+
+THREE INDEPENDENT SOURCES, ALL MUST BE CLEAR. Any one of them can be wrong on
+its own, and they fail in different directions:
+
+  1. the hourly's STATE FILE — survives restarts and the overnight order-book
+     purge, but is a claim rather than a fact, and goes stale if that process
+     dies.
+  2. the EXCHANGE ORDER BOOK — authoritative about orders actually placed, but
+     Upstox purges order details overnight, so it forgets yesterday.
+  3. the EXCHANGE POSITION — authoritative about exposure, but nets everything
+     into one attribution-free number.
+
+Requiring all three to be clear means a single source being stale, purged or
+unattributed cannot let the 5-min open on top of a live hourly trade.
+
+FAIL SAFE, ALWAYS. Unreadable state, stale state, an unattributable position —
+every ambiguous case resolves to "do not open". A 5-minute bot that sits out a
+good setup has lost nothing but an opportunity. One that opens a second position
+on a contract that already has one has lost control of the risk.
+
+Pure and I/O-free apart from read_peer_state(), so the invariant can be tested
+exhaustively without a broker, a droplet or a clock.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import time
+
+# Order tags. The hourly bot's are fixed by executor.py and must match exactly —
+# a typo here silently disables source (2) and nothing would ever complain.
+HOURLY_TAGS = ("fibentry", "fibstop", "fibtarget", "fibexit")
+FIVEMIN_TAGS = ("f5entry", "f5stop", "f5target", "f5exit")
+INSIDEBAR_TAGS = ("ibentryl", "ibentrys", "ibstop", "ibtarget", "ibexit")
+
+# THE SINGLE REGISTRY OF WHO OWNS WHICH TAG. Every bot resolves attribution
+# through this and nothing keeps a private copy.
+#
+# 7 Sep 2026, and this cost real money. executor.py held its own hard-coded map
+# — {"fibentry", "ibentryl", "ibentrys"} — and the 5-minute bot was added
+# without anyone updating it. So when the 5-min filled an entry tagged
+# "f5entry", the hourly bot scanned the order book, found no tag it recognised,
+# concluded the position belonged to nobody, and ADOPTED it: it wrote the 5-min's
+# fill price into its own state and began placing ITS bracket on the 5-min's
+# lots. Both bots then bracketed the same 65, the account went over margin, and
+# 50 orders were rejected in a retry loop.
+#
+# A map that has to be edited in two places when a bot is added is a map that
+# will be edited in one. Hence one registry, and a test that asserts every tag
+# any executor uses appears in it.
+TAG_OWNER = {}
+for _tag in HOURLY_TAGS:
+    TAG_OWNER[_tag] = "the hourly Fib bot"
+for _tag in FIVEMIN_TAGS:
+    TAG_OWNER[_tag] = "the 5-min bot"
+for _tag in INSIDEBAR_TAGS:
+    TAG_OWNER[_tag] = "the inside-bar bot"
+
+
+def owner_of(tag: str | None) -> str | None:
+    """Which bot placed an order with this tag, or None if nothing claims it."""
+    return TAG_OWNER.get((tag or "").lower())
+
+# Order statuses that mean "this order can still fill". Same list executor.py
+# uses; a resting entry is every bit as dangerous as a filled one, because it
+# becomes a position without anyone deciding anything.
+RESTING = ("open", "trigger pending", "open pending", "put order req received")
+
+# How old the hourly's state file may be before it stops counting as evidence.
+#
+# The hourly writes it at the end of every successful poll, i.e. every 15s while
+# the market is open. It does NOT write on a faulted poll, which is deliberate
+# and useful: a hourly that cannot reach Upstox goes stale, and a stale hourly
+# means the 5-min stands down rather than trading blind next to it.
+#
+# 180s is twelve missed polls — long enough to ride out a slow API call or a
+# restart, short enough to be well inside one 5-minute bar.
+STATE_MAX_AGE_S = 180
+
+
+class Verdict:
+    """What the 5-minute bot is allowed to do this poll.
+
+    `may_open`  — place a NEW entry order.
+    `must_yield`— cancel any entry of ours still resting, right now.
+
+    They are separate because they are not opposites. When the hourly goes
+    active while we hold a filled position, we may not open and we have nothing
+    to yield; we simply manage what we have to its exit.
+    """
+
+    __slots__ = ("may_open", "must_yield", "reason", "evidence")
+
+    def __init__(self, may_open: bool, must_yield: bool, reason: str, evidence=None):
+        self.may_open = may_open
+        self.must_yield = must_yield
+        self.reason = reason
+        self.evidence = list(evidence or [])
+
+    def __repr__(self) -> str:                                   # pragma: no cover
+        return (f"Verdict(may_open={self.may_open}, must_yield={self.must_yield}, "
+                f"reason={self.reason!r})")
+
+    def __eq__(self, other) -> bool:
+        return (isinstance(other, Verdict)
+                and (self.may_open, self.must_yield) == (other.may_open, other.must_yield))
+
+
+# ── Source 1: the peer's state file ──────────────────────────────────────────
+
+def read_peer_state(path: str, now: float | None = None) -> tuple[dict | None, float | None]:
+    """(state, age_in_seconds). Either may be None, and None means "no evidence".
+
+    A missing file, a corrupt file and a torn write all collapse to (None, None),
+    which every caller must treat as "cannot confirm the hourly is idle" — not as
+    "the hourly is idle". That distinction is the whole safety property.
+    """
+    try:
+        mtime = os.path.getmtime(path)
+        with open(path) as fh:
+            st = json.load(fh)
+    except (OSError, ValueError):
+        return None, None
+    if not isinstance(st, dict):
+        return None, None
+    return st, max(0.0, (time.time() if now is None else now) - mtime)
+
+
+def state_says_active(st: dict | None, instrument_key: str | None) -> str | None:
+    """Why the peer's state file says it is busy, or None if it says it is idle.
+
+    Three separate claims, because they expire at different times:
+      entry_bar  — holding a position, set on entry and cleared on exit
+      entry_fill — a fill it has seen but may not yet have brackets on. Survives
+                   the overnight order-book purge, which is exactly the window
+                   where the book alone would say "nothing here".
+      armed      — an entry order it intends to have resting. This one is the
+                   reason the 5-min can be beaten to a setup and must check.
+    """
+    if not isinstance(st, dict):
+        return None
+
+    # A claim about a DIFFERENT contract is not evidence about this one. Guard on
+    # the key where the state records one; where it does not, treat the claim as
+    # applying here, because assuming otherwise would discard real evidence.
+    claimed = st.get("instrument")
+    if claimed and instrument_key and claimed != instrument_key:
+        return None
+
+    if st.get("entry_bar"):
+        return f"holding a position (entered {st['entry_bar']})"
+    if st.get("entry_fill"):
+        px = (st.get("entry_fill") or {}).get("price")
+        return f"has a recorded fill at {px}"
+    if st.get("armed"):
+        want = (st.get("armed") or {}).get("entry")
+        return f"has a buy order armed at {want}"
+    return None
+
+
+# ── Source 2: the exchange order book ────────────────────────────────────────
+
+def book_says_active(book, instrument_key: str, tags=HOURLY_TAGS) -> str | None:
+    """Any order of the peer's on this contract that is resting or filled today.
+
+    Resting counts. An entry sitting on the book is a position that has not
+    happened yet, and treating it as harmless is how two bots end up filled
+    seconds apart with no rule ever having been broken.
+    """
+    for o in book or []:
+        if o.get("instrument_token") != instrument_key:
+            continue
+        tag = (o.get("tag") or "").lower()
+        if tag not in tags:
+            continue
+        status = (o.get("status") or "").lower()
+        if status in RESTING:
+            return f"has a {tag} order resting on the book"
+        if status == "complete":
+            return f"has a {tag} order filled today"
+    return None
+
+
+# ── Source 3: the exchange position ──────────────────────────────────────────
+
+def position_qty(positions, instrument_key: str) -> int:
+    """Net quantity on this contract. Sign preserved; 0 when flat or absent."""
+    for p in positions or []:
+        if p.get("instrument_token") != instrument_key:
+            continue
+        try:
+            return int(p.get("quantity") or 0)
+        except (TypeError, ValueError):
+            return 0
+    return 0
+
+
+# ── The verdict ──────────────────────────────────────────────────────────────
+
+def assess(
+    *,
+    instrument_key: str,
+    peer_state: dict | None,
+    peer_state_age_s: float | None,
+    book=None,
+    positions=None,
+    we_own_position: bool = False,
+    peer_tags=HOURLY_TAGS,
+    max_age_s: float = STATE_MAX_AGE_S,
+) -> Verdict:
+    """May the 5-minute bot open, and must it withdraw what it has resting?
+
+    `we_own_position` is the 5-min executor's own attribution — its state file
+    says it entered, or its own tagged entry filled. It exists so a position the
+    5-min itself opened is not mistaken for the hourly's and does not make the
+    bot stand down from managing its own trade.
+    """
+    evidence: list[str] = []
+
+    # ── the state file, including its absence ────────────────────────────────
+    # `not isinstance(dict)` as well as None: read_peer_state already collapses a
+    # corrupt file to None, but assess() is the safety gate and must not depend
+    # on its caller having sanitised the input. A truthy non-dict — a bare string
+    # from some other reader — would otherwise sail through every check below,
+    # because each one silently returns "no evidence" for a type it cannot read.
+    if not isinstance(peer_state, dict) or peer_state_age_s is None:
+        return Verdict(
+            False, True,
+            "the hourly bot's state file could not be read — standing down rather "
+            "than trading blind next to it",
+            ["state file unreadable or missing"],
+        )
+    if peer_state_age_s > max_age_s:
+        return Verdict(
+            False, True,
+            f"the hourly bot's state file has not been updated for "
+            f"{int(peer_state_age_s)}s (it writes every poll) — it may be down or "
+            f"faulting, so standing down",
+            [f"state file {int(peer_state_age_s)}s stale"],
+        )
+
+    why = state_says_active(peer_state, instrument_key)
+    if why:
+        evidence.append(f"state file: the hourly {why}")
+
+    # ── the order book ───────────────────────────────────────────────────────
+    why = book_says_active(book, instrument_key, peer_tags)
+    if why:
+        evidence.append(f"order book: the hourly {why}")
+
+    # ── the position ─────────────────────────────────────────────────────────
+    held = position_qty(positions, instrument_key)
+    if held and not we_own_position:
+        evidence.append(f"exchange: {held} open on this contract that is not ours")
+
+    if evidence:
+        return Verdict(False, True, "the hourly bot is active", evidence)
+
+    return Verdict(True, False, "the hourly bot is idle", [])
+
+
+# ── The rejection circuit breaker ────────────────────────────────────────────
+
+# How many times an order carrying one tag may be REJECTED today before this
+# bot stops re-sending it.
+#
+# 7 Sep 2026: two bots bracketed the same 65 lots, the account went over margin,
+# and every stop and target came back "You need to add Rs 128,240". A rejected
+# order never appears as RESTING, so the next poll saw no bracket, placed it
+# again, and was rejected again — 50 orders in eleven minutes, every 15 seconds,
+# and /stop could not halt it because /stop deliberately keeps protecting an
+# open position.
+#
+# The cause that day was cross-bot adoption, now fixed. This is the guard for
+# the CLASS of fault rather than that one instance: whatever makes the exchange
+# refuse an order — margin, a bad price, an expired contract, a freeze limit —
+# retrying it unchanged every 15 seconds will not fix it, and it buries the
+# reason under a wall of identical messages.
+REJECT_LIMIT = 3
+
+
+def rejected_count(book, instrument_key: str, tag: str) -> int:
+    """How many orders with this tag the exchange has rejected today."""
+    n = 0
+    for o in book or []:
+        if o.get("instrument_token") != instrument_key:
+            continue
+        if (o.get("tag") or "").lower() != (tag or "").lower():
+            continue
+        if (o.get("status") or "").lower() == "rejected":
+            n += 1
+    return n
+
+
+def last_rejection(book, instrument_key: str, tag: str) -> str | None:
+    """The exchange's own words for the most recent rejection, for the alert."""
+    msg = None
+    for o in book or []:
+        if o.get("instrument_token") != instrument_key:
+            continue
+        if (o.get("tag") or "").lower() != (tag or "").lower():
+            continue
+        if (o.get("status") or "").lower() == "rejected":
+            msg = o.get("status_message") or o.get("status_message_raw") or msg
+    return msg

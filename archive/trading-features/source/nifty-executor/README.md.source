@@ -1,0 +1,266 @@
+# nifty-executor — droplet side of the Fib bot
+
+Runs on the droplet at **139.59.33.81**, whose IP is registered with Upstox. Only
+this machine may place orders; the dashboard on Vercel has dynamic IPs and never
+will.
+
+```
+token_receiver.py           catches the token pushed from the dashboard
+upstox_orders.py            order placement — REAL MONEY
+instruments.py              resolves the front-month Nifty future
+test_order.py               one resting order, then cancel — the live proof
+test_receiver.py            44 checks, no token needed
+test_orders.py              29 checks, no token or network needed
+fib-token-receiver.service  systemd unit
+Caddyfile                   TLS termination (only if not using Tailscale Funnel)
+```
+
+## The executor
+
+`executor.py` polls the dashboard's signal and keeps the exchange in the state
+that signal implies. **It ships with `LIVE = False`** — it decides everything
+exactly as it would live, reports each intended action prefixed 🧪, and places
+nothing.
+
+```bash
+# /root/fib-bot/executor.env   (chmod 600)
+APP_PIN=<the dashboard PIN — the droplet mints its own session to read the signal>
+SIGNAL_URL=https://nse-dashboard-gamma.vercel.app/api/fib/signal
+TELEGRAM_BOT_TOKEN=<bot token>
+TELEGRAM_CHAT_ID=<your chat id>
+TOKEN_PATH=/root/fib-bot/.upstox_token
+EXECUTOR_STATE=/root/fib-bot/executor_state.json
+```
+
+```bash
+cp fib-executor.service /etc/systemd/system/
+systemctl daemon-reload && systemctl enable --now fib-executor
+journalctl -u fib-executor -f
+```
+
+Telegram: `/status` (mode, position, signal, token), `/stop` (no new orders),
+`/start`.
+
+**Going live is one flag and a restart**, and deliberately nothing else:
+`LIVE = True` at the top of `executor.py`, then
+`systemctl restart fib-executor`. Do not do that until dry mode has run clean
+for several sessions.
+
+### What it refuses to do
+
+- hold more than one position at a time
+- open anything within 2 days of contract expiry
+- trade while the token is missing, expired, or rejected
+- place a MARKET order — banned over the API, so exits are LIMIT through the
+  touch and the stop is an SL-M
+
+### The orphaned-stop hazard
+
+Upstox has no `reduce_only`. A protective stop is a plain opposite-side SL-M, so
+one left resting after a position closes some other way **can open a short**. The
+executor cancels any stop or target it finds while flat, and says so when it
+does.
+
+## Running the order test
+
+The only deliberate real-money touch before the executor. It places one limit buy
+5% below the market so it rests unfilled, reads it back, and cancels it.
+
+```bash
+cd /root/fib-bot
+python3 test_order.py          # asks you to type PLACE before anything is sent
+```
+
+It refuses to run outside 09:15–15:30 IST Mon–Fri. An order placed while NSE is
+shut becomes an after-market order that queues for the next session — it would
+sit over a weekend and could open at Monday's bell, which is the opposite of a
+test that takes no position. `--force` overrides that if you know why you want it.
+
+It also aborts if the token's account is not `BOT_ACCOUNT_ID`.
+
+Watch it in the Upstox app: a resting order appears far below price, then
+disappears. Both should happen within a few seconds.
+
+## Why a push, and why a domain
+
+Upstox issues no refresh token and every access token dies at **03:30 IST**. So
+each morning you log into the dashboard as the trading account and press *Sync
+token to droplet*; the token travels once, over TLS, and lands here.
+
+The token crosses the public internet, so it must be encrypted end to end. Caddy
+gets a Let's Encrypt certificate automatically, but **Let's Encrypt will not
+issue certificates for bare IP addresses** — so a hostname pointing at the
+droplet is required. It does **not** have to be a purchased one; see below.
+
+## Setup
+
+### 1. The shared secret
+
+```bash
+openssl rand -hex 32
+```
+
+The same value goes in **both** places. Nowhere else — not in git, not in chat.
+
+### 2. A hostname (free — do not buy a domain)
+
+Use **DuckDNS**: sign in at [duckdns.org](https://duckdns.org) with GitHub or
+Google, claim a subdomain, and set its IP to `139.59.33.81`. Two minutes, free
+forever. Then:
+
+```bash
+dig +short nse-fib-bot.duckdns.org      # must print 139.59.33.81 before starting Caddy
+```
+
+If it doesn't resolve yet, Caddy's certificate request fails and it backs off
+before retrying — so wait for DNS first.
+
+A subdomain of a domain you already own is equally fine, and strictly nicer.
+
+> **Do not use nip.io or sslip.io.** They are the obvious shortcut —
+> `139.59.33.81.nip.io` already resolves to this droplet with no signup at all —
+> but neither is on the [Public Suffix List](https://publicsuffix.org/list/),
+> which means every subdomain of `nip.io` worldwide shares **one** Let's Encrypt
+> rate-limit bucket of 50 certificates per week. It is effectively always spent,
+> and the failure surfaces at certificate issuance rather than at DNS, so it
+> reads like a Caddy problem and isn't. `duckdns.org` is on the list, so each
+> subdomain gets its own bucket. (Verified against the live PSL — `duckdns.org`
+> is present, `nip.io` and `sslip.io` are not.)
+
+### 2b. Alternative: Tailscale Funnel, no open ports
+
+If you'd rather not expose 80/443 at all, skip DuckDNS **and** Caddy:
+
+```bash
+curl -fsSL https://tailscale.com/install.sh | sh
+tailscale up
+tailscale funnel 8787
+```
+
+That publishes the receiver at `https://<machine>.<tailnet>.ts.net` with a
+certificate Tailscale obtains and renews for you, over Tailscale's own network —
+the droplet's firewall stays shut. Set `DROPLET_SYNC_URL` to that URL instead.
+Same security posture (the endpoint is still public, so `BOT_SYNC_SECRET` is
+still what protects it), fewer moving parts, one less service to keep patched.
+
+### 3. Droplet
+
+```bash
+mkdir -p /root/fib-bot && cd /root/fib-bot
+# copy token_receiver.py here
+
+cat > /root/fib-bot/receiver.env <<'EOF'
+BOT_SYNC_SECRET=<the openssl value>
+BOT_ACCOUNT_ID=84BDRQ
+TOKEN_PATH=/root/fib-bot/.upstox_token
+TELEGRAM_BOT_TOKEN=<bot token>
+TELEGRAM_CHAT_ID=<your chat id>
+EOF
+chmod 600 /root/fib-bot/receiver.env    # systemd reads it as root; nobody else should
+
+cp fib-token-receiver.service /etc/systemd/system/
+systemctl daemon-reload && systemctl enable --now fib-token-receiver
+journalctl -u fib-token-receiver -f
+```
+
+Caddy:
+
+```bash
+apt install -y caddy
+# put Caddyfile at /etc/caddy/Caddyfile, with your DuckDNS subdomain
+ufw allow 80/tcp && ufw allow 443/tcp
+systemctl reload caddy
+curl https://nse-fib-bot.duckdns.org/health   # -> {"ok": true}
+```
+
+The receiver binds `127.0.0.1` only, so it is unreachable from the internet
+except through Caddy. **Do not** change `BIND_HOST`, and do not open 8787 in the
+firewall.
+
+### 4. Vercel
+
+Project Settings → Environment Variables, then **redeploy** (env changes don't
+apply to an existing build):
+
+| Variable | Value |
+|---|---|
+| `BOT_SYNC_SECRET` | the same openssl value |
+| `DROPLET_SYNC_URL` | `https://nse-fib-bot.duckdns.org/sync-token` |
+| `BOT_ACCOUNT_ID` | `84BDRQ` |
+
+Do **not** add any of these to `next.config.js`'s `env` block — that inlines
+values into the browser bundle.
+
+### 5. Point OAuth at nifty-executor
+
+The dashboard's login currently uses whichever Upstox app `UPSTOX_API_KEY`
+names. To make *Sync* produce an order-capable token for your account, set in
+Vercel:
+
+| Variable | Value |
+|---|---|
+| `UPSTOX_API_KEY` | `538082d5-a8d7-4d1b-8fa7-54c27ea1c119` |
+| `UPSTOX_API_SECRET` | the nifty-executor secret |
+| `UPSTOX_REDIRECT_URI` | must match the redirect registered on that app |
+
+This does **not** affect prices: those come from `UPSTOX_ANALYTICS_TOKEN`, and
+`resolveAccessToken()` prefers it without ever reading the OAuth credentials.
+
+## Verify
+
+```bash
+python3 test_receiver.py     # 30 checks, no token needed
+```
+
+Then the real round-trip:
+
+1. Log into the dashboard **as the trading account** and connect Upstox.
+2. Open `/fib`, press **Sync token to droplet**.
+3. Telegram should say `✓ token synced for 84BDRQ, valid until 03:30 IST`.
+4. On the droplet: `ls -l /root/fib-bot/.upstox_token` → exists, mode `600`.
+
+A wrong-account login is refused with the account it actually found, and nothing
+is written.
+
+## Troubleshooting
+
+**`status=200/CHDIR`, restart counter climbing** — the unit could not enter
+`/root/fib-bot`. Caused by `ProtectHome=true`, which masks `/root`; the shipped
+unit has it off for exactly this reason. Check it wasn't re-enabled.
+
+**Starts, then fails only when a token is synced** — likely
+`RestrictAddressFamilies` without `AF_UNIX`, which breaks DNS resolution inside
+the sandbox, so the Upstox profile check can't resolve the hostname.
+
+**`BOT_SYNC_SECRET is not set. Refusing to start.`** — `receiver.env` is missing,
+empty, or unreadable. By design: a receiver with no lock is worse than one that
+isn't running.
+
+**502 through the public URL** — Funnel/Caddy is fine, the receiver isn't
+running. `systemctl status fib-token-receiver`.
+
+**`could not verify account`, journal shows Cloudflare error 1010** — Upstox is
+behind Cloudflare, which rejects Python's default `User-Agent: Python-urllib/3.x`
+on client signature before the request reaches Upstox. Tell-tale: `curl` from the
+same droplet gets a normal 401 while Python gets 403 with Cloudflare HTML.
+Fixed by sending an explicit `User-Agent` — see `USER_AGENT` in
+`token_receiver.py`. Any Upstox call added later needs the same header.
+
+**404 at the bare URL** — correct. Only `/health` and `/sync-token` answer.
+
+## What refuses what
+
+The dashboard checks the account before pushing; this server checks it **again**
+from the registered IP. That is not redundancy for its own sake — the two fail
+differently. Vercel's check can be bypassed by anything that can call the sync
+endpoint directly; this one cannot be reached without the secret. Neither alone
+is sufficient.
+
+| Condition | Result |
+|---|---|
+| missing / wrong `X-Sync-Secret` | 403, body never read |
+| body > 8 KB, malformed, or incomplete | 400 |
+| token already past its expiry | 400 |
+| Upstox can't confirm the account | 502 — unverified is refused, not assumed |
+| token belongs to another account | 403, names the account found |
+| all clear | 200, atomic write at mode 600, Telegram confirms |

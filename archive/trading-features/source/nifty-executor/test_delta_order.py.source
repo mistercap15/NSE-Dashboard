@@ -1,0 +1,107 @@
+#!/usr/bin/env python3
+"""
+Proves Delta's order API works with your TESTNET keys, without taking a position.
+
+  python3 test_delta_order.py
+
+Places one small limit buy far BELOW the market so it rests unfilled, reads it
+back, then cancels it. Then does the same for a stop-market sell far below, which
+is the shape the protective stop uses.
+
+REFUSES TO RUN AGAINST MAINNET. This bot exists to be tested with fake money; a
+script that places orders should not be one environment variable away from a real
+account.
+"""
+import sys
+import delta_api as dx
+
+DISTANCE_PCT = 20.0     # far enough that nothing can fill
+LOTS = 1
+
+
+def probe(label, purpose, place, pid, expect_side):
+    print(f"\n── {label}")
+    print(f"   {purpose}")
+    try:
+        res = place()
+    except Exception as exc:                                    # noqa: BLE001
+        print(f"   ✗ REJECTED: {exc}")
+        return False
+    oid = (res or {}).get("id") or (res or {}).get("order_id")
+    print(f"   ✓ placed: id={oid}  state={(res or {}).get('state')}")
+
+    ok = False
+    try:
+        live = dx.open_orders(pid)
+        mine = [o for o in live if str(o.get("id")) == str(oid)]
+        if mine:
+            o = mine[0]
+            print(f"   resting: side={o.get('side')} type={o.get('order_type')} "
+                  f"limit={o.get('limit_price')} stop={o.get('stop_price')} state={o.get('state')}")
+            ok = (o.get("side") == expect_side)
+            print(f"   {'✓' if ok else '⚠'} side is {o.get('side')}, expected {expect_side}")
+        else:
+            print("   ⚠ not found in live orders — it may have filled or been rejected")
+    except Exception as exc:                                    # noqa: BLE001
+        print(f"   ⚠ could not read it back: {exc}")
+
+    try:
+        dx.cancel_order(pid, oid)
+        print(f"   ✓ cancelled {oid}")
+    except Exception as exc:                                    # noqa: BLE001
+        print(f"   ✗ CANCEL FAILED: {exc}\n     Cancel {oid} manually in the Delta app NOW.")
+        return False
+    return ok
+
+
+def main() -> int:
+    if dx.network() != "testnet":
+        print(f"✗ DELTA_NETWORK is '{dx.network()}'. This script is TESTNET only. Refusing.")
+        return 1
+    print(f"✓ network: TESTNET ({dx.base_url()})")
+
+    symbol = "BTCUSD"
+    try:
+        pid = dx.product_id(symbol)
+    except dx.DeltaError as exc:
+        print(f"✗ {exc}")
+        return 1
+    print(f"✓ {symbol} → product_id {pid}")
+
+    px = dx.last_price(symbol)
+    if not px:
+        print("✗ no last price")
+        return 1
+    below = round(px * (1 - DISTANCE_PCT / 100), 1)
+    print(f"✓ last price {px}, placing {DISTANCE_PCT}% below at {below}")
+
+    print(f"\n  positions before: {dx.get_position(pid)} lots")
+
+    print("\n" + "-" * 62)
+    print("  ABOUT TO PLACE TWO TESTNET ORDERS (neither can fill)")
+    print(f"    1. LIMIT BUY        {LOTS} lot @ {below}")
+    print(f"    2. STOP-MARKET SELL {LOTS} lot @ trigger {below}   (the protective stop shape)")
+    print(f"    network TESTNET · each cancelled immediately after")
+    print("-" * 62)
+    if input("  Type PLACE to continue: ").strip() != "PLACE":
+        print("Aborted — nothing sent.")
+        return 1
+
+    results = [
+        probe("1. ENTRY — limit buy", "the resting pullback entry",
+              lambda: dx.place_limit_buy(pid, LOTS, below), pid, "buy"),
+        probe("2. STOP — stop-market sell", "the protective stop the bot places on a fill",
+              lambda: dx.place_stop_market(pid, LOTS, below, "sell"), pid, "sell"),
+    ]
+
+    print(f"\n  positions after: {dx.get_position(pid)} lots  (must still be 0)")
+    print("\n" + "=" * 62)
+    if all(results):
+        print("  ✓ Delta testnet order API works: place, read back, cancel.")
+        return 0
+    print("  ✗ Something did not behave as expected — do not run the executor live.")
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

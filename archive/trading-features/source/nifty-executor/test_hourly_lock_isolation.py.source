@@ -1,0 +1,223 @@
+#!/usr/bin/env python3
+"""The contract claim must not change how the hourly bot behaves.
+
+This is the test the whole lock design has to earn. The hourly is the validated,
+live, real-money bot; adding a coordination mechanism to it is only acceptable
+if that mechanism is invisible whenever nothing is contending — which is almost
+always, because the 5-min bot is flat most of the time and absent entirely until
+it is deployed.
+
+So the property under test is not "the lock works". It is: WITH the lock wired
+in, the hourly does exactly what it did before, EXCEPT when the 5-min actually
+holds the contract.
+
+  1. no 5-min bot at all, claim file never created  → trades
+  2. 5-min running but flat, claim free             → trades
+  3. 5-min holds the claim, entry resting           → WAITS, then trades the
+                                                      moment the 5-min releases
+  4. 5-min holds a FILLED position                  → waits
+  5. the claim file is unusable entirely            → trades (fails OPEN)
+  6. flat with no setup                             → releases the claim
+  7. holding a position                             → marks the claim holding
+
+Worlds 3 and 4 used to differ: the hourly preempted a mere resting claim so it
+always won. test_entry_race.py showed that let BOTH bots place an entry in 60 of
+60 races — preemption takes the claim but cannot recall an order already on the
+exchange. So 3 now behaves like 4, and the hourly can be briefly held up by the
+junior bot. That is the price of the invariant, and it is paid deliberately.
+"""
+import json
+import os
+import sys
+import tempfile
+
+TMP = tempfile.mkdtemp()
+LOCK = os.path.join(TMP, "nifty_contract.lock")
+os.environ["EXECUTOR_STATE"] = os.path.join(TMP, "hourly_state.json")
+os.environ["PEER_STATE"] = os.path.join(TMP, "ib_state.json")
+os.environ["PEER_STATE_5M"] = os.path.join(TMP, "executor_5m_state.json")
+os.environ["CONTRACT_LOCK"] = LOCK
+os.environ.setdefault("APP_PIN", "test")
+os.environ.setdefault("SIGNAL_URL", "http://localhost/api/fib/signal")
+
+sys.path.insert(0, "/Users/khilanpatel/Desktop/Live Projects/nifty-executor")
+
+from datetime import datetime, timedelta, timezone
+
+import contract_lock as lock
+import executor as E
+import upstox_orders as ux
+
+IST = timezone(timedelta(hours=5, minutes=30))
+KEY = "NSE_FO|58072"
+LOT = 65
+ENTRY, STOP, TARGET = 24220.0, 24134.0, 24436.0
+
+CALLS: list = []
+PLACED: list = []
+passed = failed = 0
+
+
+def check(label, cond, detail=""):
+    global passed, failed
+    if cond:
+        passed += 1
+        print(f"  ok   {label}")
+    else:
+        failed += 1
+        print(f"  FAIL {label}  {detail}")
+
+
+E.tg = lambda t: CALLS.append(t)
+for _n in ("place_limit_buy", "place_limit_sell", "place_sl_m", "place_sl",
+           "cancel_order", "modify_order"):
+    def _mk(n):
+        def f(*a, **k):
+            PLACED.append((n, a, k))
+            return f"OID-{n}"
+        return f
+    setattr(ux, _n, _mk(_n))
+
+
+def payload(*, armed=True, entry=ENTRY, dte=30.0, as_of="bar-01"):
+    expiry = int((datetime.now(tz=IST) + timedelta(days=dte)).timestamp() * 1000)
+    return {
+        "tokenValid": True, "error": None,
+        "contract": {"instrumentKey": KEY, "lotSize": LOT, "tickSize": 10,
+                     "tradingSymbol": "NIFTY FUT 29 SEP 26", "expiry": expiry},
+        "signal": {"entryValid": armed, "fibEntry": entry, "stopPrice": STOP,
+                   "targetPrice": TARGET, "asOf": as_of},
+    }
+
+
+def world(position=0, avg=None, book=None):
+    book = list(book or [])
+    if position and not any((o.get("tag") or "") == E.TAG_ENTRY
+                            and (o.get("status") or "") == "complete" for o in book):
+        book.append({"instrument_token": KEY, "status": "complete", "tag": E.TAG_ENTRY,
+                     "order_id": "FILLED", "price": avg, "average_price": avg})
+    ux.get_positions = lambda t: ([{"instrument_token": KEY, "quantity": position,
+                                    "average_price": avg}] if position else [])
+    ux.get_order_book = lambda t: list(book)
+    ux.get_quote = lambda t, k: {"depth": {"buy": [{"price": 24150.0}]}, "last_price": 24450.0}
+
+
+def run(position=0, avg=None, book=None, state=None, **kw):
+    CALLS.clear()
+    PLACED.clear()
+    world(position, avg, book)
+    st = state if state is not None else {}
+    E.reconcile("tok", payload(**kw), st)
+    return st
+
+
+def entries():
+    return [p for p in PLACED if p[0] == "place_limit_buy"]
+
+
+def free():
+    try:
+        os.remove(LOCK)
+    except OSError:
+        pass
+
+
+def five_min_state(**fields):
+    with open(os.environ["PEER_STATE_5M"], "w") as fh:
+        json.dump(fields, fh)
+
+
+print("═" * 74)
+print("  The contract claim must be invisible to the hourly bot")
+print("═" * 74)
+
+# Everything here runs LIVE so the assertions are about calls, not announcements.
+# In dry mode act() never invokes the placer, so "no order was placed" would be
+# true whatever the lock did — the test would pass while proving nothing.
+E.LIVE = True
+try:
+    # ── 1. no 5-min bot at all ───────────────────────────────────────────────
+    print("\n── 1. the 5-min bot does not exist ──")
+    free()
+    five_min_state()
+    run()
+    check("hourly places its entry exactly as before", len(entries()) == 1, PLACED)
+    args = entries()[0][1] if entries() else ()
+    check("  ...same contract, quantity and price",
+          args and args[1] == KEY and args[2] == LOT and args[3] == 24220.0, args)
+    check("  ...and it now holds the claim",
+          (lock.read_claim(LOCK) or {}).get("owner") == "hourly", lock.read_claim(LOCK))
+
+    print("\n── 2. the 5-min bot is running but flat ──")
+    free()
+    five_min_state(instrument=KEY)
+    run(entry=24221.0)
+    check("hourly trades normally", len(entries()) == 1, PLACED)
+
+    # THIS WORLD CHANGED MEANING, deliberately. It used to assert the hourly
+    # preempted a resting 5-min claim. test_entry_race.py proved that broke the
+    # invariant — preemption cannot recall an order already on the exchange — so
+    # the hourly now waits here too. It is the one case where the junior bot can
+    # briefly hold the senior one up, and it is the price of correctness.
+    print("\n── 3. the 5-min holds the claim with an entry resting ──")
+    free()
+    lock.claim(LOCK, "5m", KEY, holding=False)
+    five_min_state(instrument=KEY, armed={"entry": 24100})
+    run(entry=24222.0)
+    check("hourly WAITS rather than opening alongside it", not entries(), PLACED)
+    check("  ...the claim stays with the 5-min",
+          (lock.read_claim(LOCK) or {}).get("owner") == "5m", lock.read_claim(LOCK))
+    check("  ...and it says it is waiting", any("waiting" in c.lower() for c in CALLS), CALLS[:1])
+
+    # ...and the moment the 5-min lets go, the hourly proceeds. Without this the
+    # test above would also pass if the hourly were simply broken.
+    lock.release(LOCK, "5m")
+    five_min_state()
+    run(entry=24225.0)
+    check("  ...and trades as soon as the 5-min releases", len(entries()) == 1, PLACED)
+
+    print("\n── 4. the 5-min holds a FILLED position (the only refusal) ──")
+    free()
+    lock.claim(LOCK, "5m", KEY, holding=True)
+    five_min_state(entry_bar="2026-09-07T10:15:00+05:30", instrument=KEY, entry_price=24100.0)
+    run(entry=24223.0)
+    check("hourly does NOT open on top of it", not entries(), PLACED)
+    check("  ...and says it is waiting, not that it failed",
+          any("waiting" in c.lower() for c in CALLS), CALLS[:1])
+    check("  ...and explicitly does not close the other bot's trade",
+          any("does not close it early" in c.lower() for c in CALLS), CALLS[:1])
+
+    print("\n── 5. the claim file is unusable → the hourly FAILS OPEN ──")
+    real, E.LOCK_PATH = E.LOCK_PATH, "/proc/nope/nifty.lock"
+    five_min_state()
+    run(entry=24224.0)
+    check("hourly trades anyway when the lock is broken", len(entries()) == 1, PLACED)
+    check("  ...silently — a broken lock is not the hourly's problem to announce",
+          not any("waiting" in c.lower() for c in CALLS), CALLS[:1])
+    E.LOCK_PATH = real
+
+    # ── the release path ─────────────────────────────────────────────────────
+    print("\n── 6. the hourly lets go when it has nothing to do ──")
+    free()
+    lock.claim(LOCK, "hourly", KEY)
+    five_min_state()
+    run(armed=False)
+    check("claim released so the 5-min can use the idle time",
+          lock.read_claim(LOCK) is None, lock.read_claim(LOCK))
+
+    print("\n── 7. holding a position marks the claim as holding ──")
+    free()
+    five_min_state()
+    run(position=LOT, avg=ENTRY, state={})
+    rec = lock.read_claim(LOCK) or {}
+    check("claim says hourly, holding=True",
+          rec.get("owner") == "hourly" and rec.get("holding") is True, rec)
+    granted, _ = lock.claim(LOCK, "5m", KEY)
+    check("  ...so the 5-min cannot take the contract", not granted)
+finally:
+    E.LIVE = False
+
+check("LIVE restored to False", E.LIVE is False)
+
+print(f"\n  {passed} passed, {failed} failed")
+sys.exit(1 if failed else 0)

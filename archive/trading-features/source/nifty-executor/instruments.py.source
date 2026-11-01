@@ -1,0 +1,79 @@
+#!/usr/bin/env python3
+"""
+Resolve the front-month Nifty futures contract from Upstox's instrument master.
+
+WHY THIS IS NOT DERIVED FROM THE SYMBOL. Upstox addresses F&O by an opaque
+exchange token — the August 2026 Nifty future is NSE_FO|58072 — which changes
+with every contract and cannot be constructed from "NIFTY" and a month. The only
+correct source is the published master.
+
+The master also carries `expiry` as epoch-ms, so the roll date comes for free.
+Nothing here computes an expiry date, which matters: NSE moved monthly F&O expiry
+from the last Thursday to the last Tuesday, and any code that worked it out
+itself went silently stale that day.
+
+The executor normally gets its contract from the signal payload — the dashboard
+resolves the same thing from the same file. This module exists so the order test
+can run standalone, and as the fallback if the signal is unavailable.
+"""
+
+import gzip
+import json
+import urllib.request
+from datetime import datetime, timedelta, timezone
+
+MASTER_URL = "https://assets.upstox.com/market-quote/instruments/exchange/NSE.json.gz"
+USER_AGENT = "nifty-executor/1.0"
+IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def fetch_master() -> list:
+    req = urllib.request.Request(MASTER_URL, headers={"User-Agent": USER_AGENT})
+    with urllib.request.urlopen(req, timeout=60) as res:
+        return json.loads(gzip.decompress(res.read()).decode())
+
+
+def futures_chain(rows: list, underlying: str = "NIFTY") -> list:
+    """Every listed future for an underlying, expiry ascending."""
+    want = underlying.upper()
+    chain = [
+        {
+            "instrument_key": r["instrument_key"],
+            "trading_symbol": r.get("trading_symbol"),
+            "expiry": r["expiry"],
+            "lot_size": r.get("lot_size"),
+            "freeze_quantity": r.get("freeze_quantity"),
+            "tick_size": r.get("tick_size"),
+        }
+        for r in rows
+        if r.get("segment") == "NSE_FO"
+        and r.get("instrument_type") == "FUT"
+        and (r.get("underlying_symbol") or r.get("asset_symbol") or "").upper() == want
+        and r.get("expiry")
+    ]
+    return sorted(chain, key=lambda c: c["expiry"])
+
+
+def current_contract(rows: list, underlying: str = "NIFTY", now_ms: int | None = None) -> dict | None:
+    """The nearest contract that has not expired.
+
+    Upstox stamps `expiry` at END OF DAY (23:59 IST), not at the 15:30 close —
+    checked against the live master. So this keeps returning the expiring
+    contract for the whole of expiry day, including the hours after it has
+    stopped trading. Correct for a position already open; the caller's roll rule
+    is what must stop it opening anything new, and it cannot lean on this
+    timestamp to mean "still tradeable".
+    """
+    if now_ms is None:
+        now_ms = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
+    return next((c for c in futures_chain(rows, underlying) if c["expiry"] >= now_ms), None)
+
+
+def expiry_ist(contract: dict) -> str:
+    return datetime.fromtimestamp(contract["expiry"] / 1000, tz=IST).strftime("%Y-%m-%d %H:%M IST")
+
+
+if __name__ == "__main__":
+    rows = fetch_master()
+    c = current_contract(rows)
+    print(json.dumps({**c, "expiry_ist": expiry_ist(c)}, indent=2) if c else "no live contract")

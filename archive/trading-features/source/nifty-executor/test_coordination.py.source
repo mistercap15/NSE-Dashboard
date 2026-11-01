@@ -1,0 +1,223 @@
+"""The invariant: never two positions on one Nifty contract.
+
+The hourly Fib bot and the 5-minute gap-fill bot trade the same contract on the
+same Upstox account, which nets positions. Two entries do not make two trades —
+they make one number that both bots then bracket for the full size. The first
+bracket to fire closes everything; the second is a naked opposite-side order
+that OPENS a reversed position, because Upstox has no reduce_only.
+
+So these tests are not about tidy behaviour. They are about the one outcome that
+must be impossible.
+
+Every case below asserts the same property from the 5-minute bot's side: given
+what it can see of the hourly, would it place an entry? It may only answer yes
+when all three independent sources agree the hourly is idle.
+"""
+import json
+import os
+import sys
+import tempfile
+import time
+
+sys.path.insert(0, "/Users/khilanpatel/Desktop/Live Projects/nifty-executor")
+
+import coordination as C
+
+passed = failed = 0
+
+
+def check(label, cond, detail=""):
+    global passed, failed
+    if cond:
+        passed += 1
+        print(f"  ok   {label}")
+    else:
+        failed += 1
+        print(f"  FAIL {label}  {detail}")
+
+
+KEY = "NSE_FO|68407"
+OTHER = "NSE_FO|48704"
+
+
+def order(tag, status, key=KEY):
+    return {"instrument_token": key, "tag": tag, "status": status}
+
+
+def position(qty, key=KEY):
+    return {"instrument_token": key, "quantity": qty}
+
+
+def verdict(peer_state, age=1.0, book=None, positions=None, ours=False):
+    return C.assess(instrument_key=KEY, peer_state=peer_state, peer_state_age_s=age,
+                    book=book, positions=positions, we_own_position=ours)
+
+
+# ═══ 1. HOURLY IDLE — the 5-min is free to trade ═════════════════════════════
+print("\n── hourly idle ──")
+
+v = verdict({})
+check("empty hourly state, empty book, flat → 5-min MAY open", v.may_open and not v.must_yield, repr(v))
+
+v = verdict({"instrument": KEY, "bars": 3}, book=[], positions=[])
+check("hourly state with no claim fields → MAY open", v.may_open, repr(v))
+
+v = verdict({}, book=[order("f5entry", "open")], positions=[position(65)], ours=True)
+check("our OWN resting entry and our OWN position → still MAY open (not the hourly's)",
+      v.may_open and not v.must_yield, repr(v))
+
+v = verdict({"entry_bar": "x", "instrument": OTHER})
+check("hourly holds a DIFFERENT contract → MAY open", v.may_open, repr(v))
+
+
+# ═══ 2. HOURLY ARMS WHILE 5-MIN IS FLAT — must not open ══════════════════════
+print("\n── hourly arms while the 5-min is flat ──")
+
+v = verdict({"armed": {"entry": 24500}})
+check("hourly ARMED in its state file → 5-min must NOT open", not v.may_open, repr(v))
+check("  ...and is told to withdraw anything resting", v.must_yield, repr(v))
+
+v = verdict({}, book=[order("fibentry", "open")])
+check("hourly entry RESTING on the book → must NOT open", not v.may_open, repr(v))
+
+v = verdict({}, book=[order("fibentry", "trigger pending")])
+check("hourly entry trigger-pending → must NOT open", not v.may_open, repr(v))
+
+v = verdict({}, book=[order("fibentry", "complete")])
+check("hourly entry FILLED today → must NOT open", not v.may_open, repr(v))
+
+v = verdict({}, positions=[position(65)])
+check("a position on the contract that is not ours → must NOT open", not v.may_open, repr(v))
+
+v = verdict({"entry_fill": {"price": 24500}})
+check("hourly has a recorded fill (survives the overnight book purge) → must NOT open",
+      not v.may_open, repr(v))
+
+# The three sources are independent; ANY one is sufficient on its own.
+check("state file alone is sufficient", not verdict({"entry_bar": "x"}).may_open)
+check("order book alone is sufficient", not verdict({}, book=[order("fibstop", "open")]).may_open)
+check("position alone is sufficient", not verdict({}, positions=[position(-65)]).may_open)
+
+
+# ═══ 3. HOURLY ARMS WHILE THE 5-MIN ALREADY HOLDS ════════════════════════════
+print("\n── hourly arms while the 5-min already holds ──")
+
+# The 5-min owns the position. The hourly then arms. The 5-min must not ADD, and
+# has nothing resting to pull — it just manages what it has to the exit.
+v = verdict({"armed": {"entry": 24500}}, positions=[position(65)], ours=True)
+check("5-min holding + hourly arms → 5-min must NOT open (no adding)", not v.may_open, repr(v))
+check("  ...the hourly is named as the reason", "hourly" in v.reason.lower(), v.reason)
+check("  ...evidence cites the state file", any("state file" in e for e in v.evidence), v.evidence)
+
+# And the other half of the rule, which lives on the hourly's side: its existing
+# peer-state gate must see the 5-min's claim. Verified against the real function.
+import importlib
+tmpdir = tempfile.mkdtemp()
+five_state = os.path.join(tmpdir, "executor_5m_state.json")
+with open(five_state, "w") as fh:
+    json.dump({"entry_bar": "2026-09-05T10:15:00+05:30", "instrument": KEY,
+               "entry_price": 24500}, fh)
+os.environ["EXECUTOR_STATE"] = os.path.join(tmpdir, "hourly.json")
+# Never the production claim path. Run on the droplet without this, the suite
+# writes a real "hourly is holding" claim into /root/fib-bot and the live 5-min
+# bot stands down for five minutes. That actually happened.
+os.environ["CONTRACT_LOCK"] = os.path.join(tempfile.mkdtemp(), "nifty_contract.lock")
+os.environ["PEER_STATE"] = os.path.join(tmpdir, "ib_state.json")
+os.environ["PEER_STATE_5M"] = five_state
+os.environ["SIGNAL_URL"] = "http://localhost/api/fib/signal"
+for m in ("executor",):
+    if m in sys.modules:
+        del sys.modules[m]
+import executor as H
+
+claim = H.peer_claims_position(KEY)
+check("HOURLY side: peer_claims_position sees the 5-min's held position",
+      claim is not None and "5-min" in (claim.get("who") or ""), repr(claim))
+
+claim_other = H.peer_claims_position(OTHER)
+check("HOURLY side: a claim on another contract is not evidence here",
+      claim_other is None, repr(claim_other))
+
+with open(five_state, "w") as fh:
+    json.dump({"instrument": KEY}, fh)          # 5-min flat
+check("HOURLY side: 5-min flat → no claim, hourly unaffected",
+      H.peer_claims_position(KEY) is None)
+
+os.remove(five_state)
+check("HOURLY side: missing 5-min state → no claim, hourly unaffected",
+      H.peer_claims_position(KEY) is None)
+
+
+# ═══ 4. FAIL SAFE — ambiguity always resolves to "do not open" ═══════════════
+print("\n── fail safe ──")
+
+check("unreadable hourly state → must NOT open", not verdict(None, age=None).may_open)
+check("  ...and withdraw anything resting", verdict(None, age=None).must_yield)
+check("stale hourly state (past the age limit) → must NOT open",
+      not verdict({}, age=C.STATE_MAX_AGE_S + 1).may_open)
+check("just inside the age limit → MAY open",
+      verdict({}, age=C.STATE_MAX_AGE_S - 1).may_open)
+check("non-dict state → must NOT open", not verdict("garbage", age=1).may_open)
+
+# read_peer_state must not raise on anything the filesystem can hand it.
+missing = os.path.join(tmpdir, "nope.json")
+check("read_peer_state on a missing file → (None, None)",
+      C.read_peer_state(missing) == (None, None))
+torn = os.path.join(tmpdir, "torn.json")
+open(torn, "w").write('{"entry_bar": "x"')          # truncated mid-write
+check("read_peer_state on a torn write → (None, None)",
+      C.read_peer_state(torn) == (None, None))
+good = os.path.join(tmpdir, "good.json")
+json.dump({"entry_bar": "x"}, open(good, "w"))
+st, age = C.read_peer_state(good)
+check("read_peer_state on a good file → state and a fresh age",
+      st == {"entry_bar": "x"} and age is not None and age < 5, (st, age))
+
+
+# ═══ 5. THE INVARIANT ITSELF, over every combination ═════════════════════════
+# Exhaustive rather than illustrative: whatever the hourly is doing, if it shows
+# ANY sign of life the 5-min must not add a position. This is the property that
+# must hold, so it is asserted over the whole space rather than at three points.
+print("\n── exhaustive: only one position ever ──")
+
+hourly_states = [
+    ("idle",        {}),
+    ("armed",       {"armed": {"entry": 24500}}),
+    ("filled",      {"entry_fill": {"price": 24500}}),
+    ("holding",     {"entry_bar": "2026-09-05T10:15:00+05:30"}),
+]
+books = [("clean", []), ("hourly entry resting", [order("fibentry", "open")]),
+         ("hourly entry filled", [order("fibentry", "complete")])]
+poss = [("flat", []), ("occupied", [position(65)])]
+
+violations = []
+allowed = 0
+for sname, st in hourly_states:
+    for bname, bk in books:
+        for pname, ps in poss:
+            for ours in (False, True):
+                v = verdict(st, book=bk, positions=ps, ours=ours)
+                hourly_active = (sname != "idle") or (bname != "clean")
+                # A position that is not ours is the hourly's by elimination.
+                occupied_by_them = (pname == "occupied") and not ours
+                if v.may_open:
+                    allowed += 1
+                    if hourly_active or occupied_by_them:
+                        violations.append((sname, bname, pname, ours))
+
+check(f"no combination lets the 5-min open while the hourly shows life "
+      f"({allowed} of {4*3*2*2} combinations allowed to open)",
+      not violations, violations[:6])
+
+# The converse — it must not be so paranoid it never trades at all.
+check("the fully-clear combination IS allowed", allowed > 0)
+# THREE, not four. The clean combinations are idle/clean/flat with ours either
+# way, plus idle/clean/occupied when the position IS ours. idle/clean/occupied
+# with ours=False is correctly refused — a position we do not own is the
+# hourly's by elimination. Getting this wrong in the first draft is exactly why
+# the exhaustive sweep is here rather than three hand-picked cases.
+check("  ...and it is exactly the three clean ones", allowed == 3,
+      f"expected 3 (flat/not-ours, flat/ours, occupied/ours), got {allowed}")
+
+print(f"\n  {passed} passed, {failed} failed")
+sys.exit(1 if failed else 0)

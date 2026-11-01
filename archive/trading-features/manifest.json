@@ -1,0 +1,671 @@
+{
+  "date": "2026-11-01",
+  "files": [
+    {
+      "project": "nse-dashboard",
+      "path": "app/fib/page.js",
+      "bytes": 21924,
+      "sha256": "536f22df3fcef7ec6829e60a3fac93494fd531318a07cb3cf92465d4d0182e85"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "app/fib-5m/page.js",
+      "bytes": 17559,
+      "sha256": "8cca7b60f92e0c52b4487bba44bd53b214c3abb5cb483bed47de0179689a7200"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "app/crypto-fib/page.js",
+      "bytes": 11198,
+      "sha256": "f7d50bb66660fa939ac2ce909bf9944eb00546cb79e7c685e4c9826335ed858c"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "app/protection/ActionCard.js",
+      "bytes": 1589,
+      "sha256": "f2124ba6123e06104107743104ca61de137a44ac08e2fbbb7b3e0ad2d17adadc"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "app/protection/HedgePanel.js",
+      "bytes": 4269,
+      "sha256": "8ec46e83b6c81e437a1c3a1273de3350917e7b6122775607f024f235c2313f1b"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "app/protection/Inbox.js",
+      "bytes": 3475,
+      "sha256": "afb8f346b8c7c117c8b8caf8a028791f56b278dfc7077546f65f326bca5832d3"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "app/protection/LoadingCard.js",
+      "bytes": 611,
+      "sha256": "2c39e5d37e856f429a1d8f5bcf452a55a6639fdba5d795b9e9f0d636621a6d8a"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "app/protection/ProtectionDetails.js",
+      "bytes": 7389,
+      "sha256": "d9ae921fff5c66be723cf868f1a0d7b4d734e43bedb0b1a9b2df817fac495d05"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "app/protection/page.js",
+      "bytes": 7878,
+      "sha256": "9af9e5603e79da7c7c3988d97f90f43e7e5ce6b8a7db7671716eeff6bd6b0575"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "app/protection/tracked/[id]/page.js",
+      "bytes": 4419,
+      "sha256": "717afeb3ce4a542f5cea734e500f6d971508883b4c22c3c564601344caab79df"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "app/protection/tracked/page.js",
+      "bytes": 4087,
+      "sha256": "1b2db1076e27cf86b83526c854dd9b9c8d15ab99ff80d230f00dd24cc7a24247"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "app/api/fib/signal/route.js",
+      "bytes": 7577,
+      "sha256": "b006fa661e55a238360329dd52b6aa764dd0c83082b0d29a83d1d8ec0b346054"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "app/api/fib-5m/signal/route.js",
+      "bytes": 6694,
+      "sha256": "4aba94db904805349efc6f33e0e823694e2f77f9a8d635dfe0c85c9a7747afa9"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "app/api/crypto-fib/signal/route.js",
+      "bytes": 3186,
+      "sha256": "bfec2d5f50821385d1dfb394301d0d9888d0211575c6aec94e1b1eb408ee93a0"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "app/api/protection/inbox/route.js",
+      "bytes": 1744,
+      "sha256": "4b15981a6e6abfd8b2ab409aac55b6638eaf0fd8546822ba6671419f777d753c"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "app/api/protection/route.js",
+      "bytes": 10988,
+      "sha256": "b9520c352440949a0371b0cf59d848eb138ce23ef2e89aaf1973414607bed2a0"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "app/api/bot/status/route.js",
+      "bytes": 3755,
+      "sha256": "a5601b27b742e30741dac3abf7f16509beae9cae49bfcd98b5f0fdd3709aafdb"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "app/api/bot/sync/route.js",
+      "bytes": 11187,
+      "sha256": "35f3ef4d50fb6624ce539dac15e5a9adbd06819d72f7f014e92eac7b61a1d78b"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "app/api/inside-bar/signal/route.js",
+      "bytes": 6656,
+      "sha256": "1681971b68aec3b2dfd8164c5f02e9de626968c7e2c76923eccfb27e5cfe4c3b"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "research/hedge_inbox/README.md",
+      "bytes": 7213,
+      "sha256": "092c29667210bc2fa2673c24a27a3e27995950f563783a9d73ded2b6e66ebaf4"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "research/hedge_inbox/nserank-hedge-inbox.service",
+      "bytes": 700,
+      "sha256": "2946f13f990e5507f726e9ceba517c8b00608061bbe8e2d59d1c4c8b52f3d92d"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "research/hedge_inbox/service.py",
+      "bytes": 9259,
+      "sha256": "9c191630e85a3fc5a754acb417fcbc28f46432ec535f146362cf7a91331be385"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "research/hedge_inbox/test_service.py",
+      "bytes": 4220,
+      "sha256": "9d7e4c3f6035d546a05cf8365f030a5f2e1047461d2724a9322d7640ca0d8616"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "app/lib/fib.js",
+      "bytes": 15483,
+      "sha256": "b739beebb4da1a9e9b4f193a4de6c525126e557a1361b7121d79a563b3da9b23"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "app/lib/insideBar.js",
+      "bytes": 12174,
+      "sha256": "cde067cbcba0c3c9e01f8acba4a3d835a0d48bc4d03d5d0ff531ddf9a05a7374"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "app/lib/deltaCandles.js",
+      "bytes": 4258,
+      "sha256": "3555d22d2a7d986aab67a37234b6a0b3008bfb838b1791261d36c264d95697c8"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "app/lib/protection.mjs",
+      "bytes": 7357,
+      "sha256": "8ead90a98ee838ab94b54a7c50763c1cd5feddeb0b3c03653ff6f7007988fae7"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "app/lib/hedgeAdvice.mjs",
+      "bytes": 4422,
+      "sha256": "36c89143400940b9074253cdbb4f275e8e163d1d26a7d95ec0925d7426cba58f"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "app/lib/hedgeContext.mjs",
+      "bytes": 3520,
+      "sha256": "437d1c3e3b37cc8a6238732d7105c0ea05e7bc486b272bbd4647f2cd3f1f2d82"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "app/lib/hedgeSummary.mjs",
+      "bytes": 3761,
+      "sha256": "e1f23d042a7335ad523cd0f2c41a7f78ea117fe669da52c9c20781e4628aff8c"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "app/components/Sidebar.js",
+      "bytes": 11260,
+      "sha256": "968d3243b373b3be1ded323d6a88a8dd4ada6091ed7310404549a456406ddcfd"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "middleware.js",
+      "bytes": 4108,
+      "sha256": "81f22e5c9744c39fc1198105ba5106e7090f1fcd0c01a34102009127219638f0"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "package.json",
+      "bytes": 1760,
+      "sha256": "8c128d4f25ff053d2e4180fa5ae4773f505c90a144595857d268a19dc8eeb431"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "scripts/test-fib.mjs",
+      "bytes": 16819,
+      "sha256": "9d5a73e2216b199ec6a7c2dcbed4516b8b007b2cd23b941a3aaa11c642855d18"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "scripts/test-inside-bar.mjs",
+      "bytes": 12065,
+      "sha256": "ade2cb69d1208b6dc935d838bb33486a4ab7c464fc2fb3f052a76bcf013a54f4"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "scripts/test-protection.mjs",
+      "bytes": 3675,
+      "sha256": "6eb2639619f6f08e3f5d2ccb54efecedaef1ff1cd2bfbfc06b756eb0a55fa473"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "scripts/test-hedge-advice.mjs",
+      "bytes": 1995,
+      "sha256": "c706a91480a77fb2ffffc9196007efe574fb736ff797be2aa68ca4ecda7dc053"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "scripts/test-hedge-context.mjs",
+      "bytes": 1655,
+      "sha256": "f4284f077c5c5d87202e1cb322f5e7b20d4c198aa724b547d490b8c023261544"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "scripts/test-hedge-summary.mjs",
+      "bytes": 1909,
+      "sha256": "422b4453a519cdb3b9f66ef34658cb474a5d03b33b4a79d5e95bb878664ed517"
+    },
+    {
+      "project": "nse-mobile",
+      "path": "app/research/fib-bot.tsx",
+      "bytes": 16630,
+      "sha256": "13dc46efa594b0758282a7176610e122f0bb4ded51b37eb75d7e4607c0b8e52c"
+    },
+    {
+      "project": "nse-mobile",
+      "path": "app/research/fib-5m.tsx",
+      "bytes": 9959,
+      "sha256": "2b280ff568dd59f325a8975832bafce8c5082162d54ea93946dbb27f96430ee0"
+    },
+    {
+      "project": "nse-mobile",
+      "path": "app/research/crypto-fib.tsx",
+      "bytes": 8778,
+      "sha256": "781f1564d85f692cef6db2d21403ba0d5cb670fe703b2eb2b7eb0220c92fe7cf"
+    },
+    {
+      "project": "nse-mobile",
+      "path": "app/research/protection.tsx",
+      "bytes": 7251,
+      "sha256": "283a4ed2544649e76ee9bacd01a9b3827c967a31fd754e5e4aebd11a8f144989"
+    },
+    {
+      "project": "nse-mobile",
+      "path": "app/research/protection-detail.tsx",
+      "bytes": 4746,
+      "sha256": "406232c385e22825d9ad9b160e95fd6a0485808fe5b23f5401f825b2d44ed086"
+    },
+    {
+      "project": "nse-mobile",
+      "path": "app/research/protection-tracked.tsx",
+      "bytes": 3969,
+      "sha256": "5927d1338a6e9ef250d499537c3ce6e3375dbc2d9b89eac7ccd6ef896a26d94a"
+    },
+    {
+      "project": "nse-mobile",
+      "path": "components/BotLiveState.tsx",
+      "bytes": 6652,
+      "sha256": "e166dc17b0c962c6fdc932c2c14f3d9b7cd17a370137469e370b60d4937c04f7"
+    },
+    {
+      "project": "nse-mobile",
+      "path": "components/HedgeGuidance.tsx",
+      "bytes": 4047,
+      "sha256": "d19f1c2d5052bc87f9c149424b5ae398d6f0154cde73c775bb392758b8c60f8b"
+    },
+    {
+      "project": "nse-mobile",
+      "path": "components/HedgeInbox.tsx",
+      "bytes": 3489,
+      "sha256": "c375873e5c51ad6bea469e0b79886f624bc31ff568c85f2a26ca60e5174526c2"
+    },
+    {
+      "project": "nse-mobile",
+      "path": "components/ProtectionDetails.tsx",
+      "bytes": 7813,
+      "sha256": "dabf6c58f85bfabffd4c3de7e097bc8e9283cbda4d6a7d9e2b36fb205fbc62ce"
+    },
+    {
+      "project": "nse-mobile",
+      "path": "lib/queries.ts",
+      "bytes": 17885,
+      "sha256": "6f5cb9d5ee78262541503aba278b40eadae6ed0e16f3295b28942084596899c9"
+    },
+    {
+      "project": "nse-mobile",
+      "path": "lib/types.ts",
+      "bytes": 27785,
+      "sha256": "15272261f663bc05b4598318037a534747051493e1b286ae605756d03048479b"
+    },
+    {
+      "project": "nse-mobile",
+      "path": "app/(tabs)/research.tsx",
+      "bytes": 4450,
+      "sha256": "9ab655f853d00f86046a26abc46400d02719f1a06845525ccd6bc53dffe9244c"
+    },
+    {
+      "project": "nse-mobile",
+      "path": "app/_layout.tsx",
+      "bytes": 4901,
+      "sha256": "ef78cffe75b7a1fc6411632fbd9670d681a8290557e98d271cb10a71f66abfae"
+    },
+    {
+      "project": "nse-mobile",
+      "path": "app.json",
+      "bytes": 1775,
+      "sha256": "21f442ef6ec3f188cadb5d9ee5fedf8345c96701b45c4f9adfde8910879a9732"
+    },
+    {
+      "project": "nse-mobile",
+      "path": "eas.json",
+      "bytes": 682,
+      "sha256": "7dd738c0480315edea55a73fc551e2c261d7a78dcb0f5ea840bdf4d454b14945"
+    },
+    {
+      "project": "nse-mobile",
+      "path": "package.json",
+      "bytes": 2018,
+      "sha256": "85e3288e609cb508bb62f570c0ed2be9d331817f0da9db4651c7c3b6618802aa"
+    },
+    {
+      "project": "nifty-executor",
+      "path": ".gitignore",
+      "bytes": 58,
+      "sha256": "3ff9ed4b55ff5c6228a703e360c68b004dc412c224acc8dbc79cfd7247e3f023"
+    },
+    {
+      "project": "nifty-executor",
+      "path": "Caddyfile",
+      "bytes": 3097,
+      "sha256": "07c9d6060acf2d5297570a1cdd4e20e2045bbb8bf55761f8e2b91be7577c6016"
+    },
+    {
+      "project": "nifty-executor",
+      "path": "DRY_SHADOW_CHECKLIST.md",
+      "bytes": 4753,
+      "sha256": "d50a7c47161bebf698d976545f35659266a3d3f35c3ceae6753213c48bc8fba8"
+    },
+    {
+      "project": "nifty-executor",
+      "path": "README.md",
+      "bytes": 10249,
+      "sha256": "b1b4102be06938a669acc1fa509e79247b970185ffaaf667f2fd4dc2cddb6e4f"
+    },
+    {
+      "project": "nifty-executor",
+      "path": "bot_status.py",
+      "bytes": 11153,
+      "sha256": "6260d5178c0d5cc36f036787fe77850336474ab44dc9ac9c3511e09da2f0ea85"
+    },
+    {
+      "project": "nifty-executor",
+      "path": "contract_lock.py",
+      "bytes": 11932,
+      "sha256": "92c40d93ae5748e16f98e94ec32f4b937cfd7e2f613bcb5fbd3ee00c6d614de2"
+    },
+    {
+      "project": "nifty-executor",
+      "path": "coordination.py",
+      "bytes": 15319,
+      "sha256": "a557b2955d591a832cd97131911ee45c77dbf5228afe7f4542476d441f94acad"
+    },
+    {
+      "project": "nifty-executor",
+      "path": "crypto-executor.service",
+      "bytes": 1228,
+      "sha256": "c005dedecabd921b6cbb408c506fce808349ce823e15388e7cabd80dd314ce79"
+    },
+    {
+      "project": "nifty-executor",
+      "path": "crypto_executor.py",
+      "bytes": 33358,
+      "sha256": "71bfa5a4a4fadc8a2b341ef837709239146d8d96947d0971d9ed102d8fdc30b4"
+    },
+    {
+      "project": "nifty-executor",
+      "path": "delta_api.py",
+      "bytes": 11474,
+      "sha256": "f95c7dc41b630c5077d8b926b6b750861b155fc612fc87271fb8b3c4a212c906"
+    },
+    {
+      "project": "nifty-executor",
+      "path": "executor.py",
+      "bytes": 68917,
+      "sha256": "ea3496d89704ca8a913f6ab4a3d4fb15c4f30c0b34feff4711aae5d501cd9f70"
+    },
+    {
+      "project": "nifty-executor",
+      "path": "executor_5m.env.example",
+      "bytes": 828,
+      "sha256": "4f1d83d5e6ad6e17198b1c34128918c8fd0dc185dbb701f8407a741aa0c6585f"
+    },
+    {
+      "project": "nifty-executor",
+      "path": "executor_5m.py",
+      "bytes": 81360,
+      "sha256": "60b6950e9e08bdb446bf27516f4bdd2ee649dcac0244712d717c880b637e32cc"
+    },
+    {
+      "project": "nifty-executor",
+      "path": "fib-5m-executor.service",
+      "bytes": 2196,
+      "sha256": "836b8da36bc1a911f3de01c4e4b7e6de41f269be19b4acc3fd35c6e531600da1"
+    },
+    {
+      "project": "nifty-executor",
+      "path": "fib-bot-status.service",
+      "bytes": 2162,
+      "sha256": "ed347428a605e9fa76ea730c0e5f504f08ed9375ffbada315ca5b1dc960cdd21"
+    },
+    {
+      "project": "nifty-executor",
+      "path": "fib-executor.service",
+      "bytes": 1259,
+      "sha256": "77568ee0adf6e9f9706d717245480eaa317b90fec03912e97e9200fcfb55bdae"
+    },
+    {
+      "project": "nifty-executor",
+      "path": "fib-ib-executor.service",
+      "bytes": 1294,
+      "sha256": "de3d288520f83baa0948d1153a2bcb7f23d7e2b27355565e46981209848c6a8a"
+    },
+    {
+      "project": "nifty-executor",
+      "path": "fib-token-receiver.service",
+      "bytes": 1892,
+      "sha256": "cea7f1cf785e6f15050c63c158ff2debdc7d37f4b06700827864e6bc998ca84c"
+    },
+    {
+      "project": "nifty-executor",
+      "path": "ib_executor.py",
+      "bytes": 57887,
+      "sha256": "6f6c88460cbc271441c9aa6454e4d4317693708ba238a2a0658e4ab353250ba3"
+    },
+    {
+      "project": "nifty-executor",
+      "path": "instruments.py",
+      "bytes": 3266,
+      "sha256": "e3dbb5d5c7e445356c556d475e2ff1bf595b78c3c074bc4e7695203df7973c32"
+    },
+    {
+      "project": "nifty-executor",
+      "path": "preflight.py",
+      "bytes": 5768,
+      "sha256": "4af6203efe3933abb5170fb9c40575b3b969d05233cfbf2520bd62e51ad8377d"
+    },
+    {
+      "project": "nifty-executor",
+      "path": "rehearsal_signal.json",
+      "bytes": 429,
+      "sha256": "be2dbae089e6b15db2eac8c8f954238643779ecb193a6dfd93c6f199a5720151"
+    },
+    {
+      "project": "nifty-executor",
+      "path": "rehearse_5m.py",
+      "bytes": 17987,
+      "sha256": "a1b037ef7601d41ad61cad94ce49688f3fee9028c84a55993c793d2b55c2f1c6"
+    },
+    {
+      "project": "nifty-executor",
+      "path": "test_5m_intraday.py",
+      "bytes": 12898,
+      "sha256": "cf8bae13dbbcc903df716e1ec1c9ebe7c47e1b5fbdfe0e59dbc3d97569d9a1a9"
+    },
+    {
+      "project": "nifty-executor",
+      "path": "test_5m_lifecycle.py",
+      "bytes": 21154,
+      "sha256": "5459e6f97e40ef9096cebaecbc2e44ad00662c615405c3112ad605a3b42b6ae5"
+    },
+    {
+      "project": "nifty-executor",
+      "path": "test_5m_regressions.py",
+      "bytes": 15027,
+      "sha256": "4021b781d012292bf62e267c0dbaf051ecbd763d85bef3c460f1273d3e20f8d4"
+    },
+    {
+      "project": "nifty-executor",
+      "path": "test_alerts.py",
+      "bytes": 7856,
+      "sha256": "7202730e6426cb97f8399006593dc712420fcf64d09384c6f225b68c9968e4af"
+    },
+    {
+      "project": "nifty-executor",
+      "path": "test_bot_status.py",
+      "bytes": 10185,
+      "sha256": "6973bbb639f541a82ed1662edf54a22f2832927b3bb65f44b26dba64f3b00250"
+    },
+    {
+      "project": "nifty-executor",
+      "path": "test_brackets.py",
+      "bytes": 5906,
+      "sha256": "c88fef192bed7dd19e96f3c2c468623bc2c75e29d57692290e277ad900302ab0"
+    },
+    {
+      "project": "nifty-executor",
+      "path": "test_contract_lock.py",
+      "bytes": 12898,
+      "sha256": "22a0abf65b38cc8ffbdb07c3bbad1c52d91f9018b338e00ed867aef1f1af8714"
+    },
+    {
+      "project": "nifty-executor",
+      "path": "test_coordination.py",
+      "bytes": 10137,
+      "sha256": "31c43c414bc280183ac54972431e5c35210504880f0d9f64489fb1b9541fba4c"
+    },
+    {
+      "project": "nifty-executor",
+      "path": "test_crypto_lifecycle.py",
+      "bytes": 20474,
+      "sha256": "e6cfd29ba010a5e88468363e67233385a9db4ebb86c15fe1165321aa201d9b5d"
+    },
+    {
+      "project": "nifty-executor",
+      "path": "test_delta_order.py",
+      "bytes": 3967,
+      "sha256": "a7f486cd2b4bffbb4c65b2d477e3f886062980c479eba0359a73e54f7a2150a9"
+    },
+    {
+      "project": "nifty-executor",
+      "path": "test_entry_race.py",
+      "bytes": 10240,
+      "sha256": "275345cbd692d435fed8b3e4b5b8151bc1ba867c45db1b2f6d2be563b6031889"
+    },
+    {
+      "project": "nifty-executor",
+      "path": "test_executor.py",
+      "bytes": 31387,
+      "sha256": "2d90852734197f5791debfa63536cc4d45f3ec7b010f1f938864054f7fb317f8"
+    },
+    {
+      "project": "nifty-executor",
+      "path": "test_executor_lifecycle.py",
+      "bytes": 22953,
+      "sha256": "6003cc2fa2f6e9bafa298de68732306fb3bff7099d7e644c488a71d5038b195d"
+    },
+    {
+      "project": "nifty-executor",
+      "path": "test_gap_stop.py",
+      "bytes": 9734,
+      "sha256": "4f089984bb2c72b53b0684343eafa97e340be5abce395813133feaa536e4202b"
+    },
+    {
+      "project": "nifty-executor",
+      "path": "test_hourly_lock_isolation.py",
+      "bytes": 9289,
+      "sha256": "bc980eca870b5f07df39fea41a27d69215f21cfa66a45aabc6437ab0ff176093"
+    },
+    {
+      "project": "nifty-executor",
+      "path": "test_incident_20260907.py",
+      "bytes": 12205,
+      "sha256": "12c48bb47aeeeca478a278273c240fc430ae1dde75e4ed6869b902e3b0d9900f"
+    },
+    {
+      "project": "nifty-executor",
+      "path": "test_inside_bar_lifecycle.py",
+      "bytes": 41454,
+      "sha256": "3ea9b5a6ae268a6cf2b5f3ccaf3113a71af9034b0b85b6e8683a0375e73809be"
+    },
+    {
+      "project": "nifty-executor",
+      "path": "test_inside_bar_orders.py",
+      "bytes": 7075,
+      "sha256": "f77cf5d46046afc53739e6ac566b70e8681310f6ec36e926d13580cebc7c5cb0"
+    },
+    {
+      "project": "nifty-executor",
+      "path": "test_killswitch.py",
+      "bytes": 4896,
+      "sha256": "a78fa9db9f7b737980fcf936cf411665f17f2144df1ba057c7f722430b3c2daa"
+    },
+    {
+      "project": "nifty-executor",
+      "path": "test_order.py",
+      "bytes": 9762,
+      "sha256": "d0891c5633b18a46104a0b1c238126ce9585768c8b53fcd4caf876b154631637"
+    },
+    {
+      "project": "nifty-executor",
+      "path": "test_orders.py",
+      "bytes": 6387,
+      "sha256": "fb16a19101111793847c3faa0b7a8de7f40f59ed23a31c006df5a40a8f76a287"
+    },
+    {
+      "project": "nifty-executor",
+      "path": "test_receiver.py",
+      "bytes": 8995,
+      "sha256": "332f018bcbaf5e99a343e0b30254cb41138b54a80b20c24ef4cf15da413e8e36"
+    },
+    {
+      "project": "nifty-executor",
+      "path": "token_receiver.py",
+      "bytes": 13072,
+      "sha256": "0ba89b0f99de2be32337a21d9ee06ea37b7141d22a8e2900ba9ebc8fa8ea497f"
+    },
+    {
+      "project": "nifty-executor",
+      "path": "upstox_orders.py",
+      "bytes": 19203,
+      "sha256": "fea9ed8269a772c858f5ccd42634751211dccd993934e11629f160751b00afab"
+    },
+    {
+      "project": "crypto-bot",
+      "path": "extract_signals.py",
+      "bytes": 3867,
+      "sha256": "897afa160ceea3389e48a4f287a4ec3d89e33e58daf3a93b2447109ed5ee9eb3"
+    },
+    {
+      "project": "crypto-bot",
+      "path": "fetch_binance_5m.py",
+      "bytes": 20219,
+      "sha256": "ad70c4b7ab0ff8ac0b0f43d9df79381468c9cc1a5f1705f6747e2542da0d29a3"
+    },
+    {
+      "project": "crypto-bot",
+      "path": "fetch_binance_data.py",
+      "bytes": 24841,
+      "sha256": "ec80ff0690f590473a186c7e2ea26b0477ae290fdd17955fd366e3bf954acdc8"
+    },
+    {
+      "project": "crypto-bot",
+      "path": "get_eth_data.py",
+      "bytes": 1946,
+      "sha256": "cb1c8a36391a72170ad44a8bf2eb9f97a21ba0e82c84789a68454938668213f0"
+    },
+    {
+      "project": "crypto-bot",
+      "path": "get_eth_production.py",
+      "bytes": 2316,
+      "sha256": "293ccbebc4888f92dc2f0409b6dab8aa375d5411c2cf16d5f3f9c93d707af437"
+    },
+    {
+      "project": "crypto-bot",
+      "path": "signal_bot.py",
+      "bytes": 16205,
+      "sha256": "9627e45a80d0c76ed1ae30bcd9ce0f8002ef81bd249e1790103a7f3c88abc06c"
+    },
+    {
+      "project": "crypto-bot",
+      "path": "test_order.py",
+      "bytes": 1521,
+      "sha256": "7c271a60c60ea92b6734c484138abe6dfca4c4c688fcffbb97d8b3e4cc2997d5"
+    },
+    {
+      "project": "crypto-bot",
+      "path": "test_parser.py",
+      "bytes": 3928,
+      "sha256": "ede8b6879b8d01d78655d9d8ec6376a3ab4427cb9258149c5044a7ce685c7302"
+    }
+  ]
+}

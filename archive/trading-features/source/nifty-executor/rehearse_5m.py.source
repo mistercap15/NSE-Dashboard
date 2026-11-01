@@ -1,0 +1,417 @@
+#!/usr/bin/env python3
+"""Drive the REAL 5-minute bot through every coordination scenario in ~2 minutes.
+
+  python3 rehearse_5m.py
+
+WHY THIS EXISTS. The DRY run proves the bot behaves in the wild, but the events
+worth seeing are rare: the hourly bot takes roughly fifteen trades a YEAR, so
+waiting for it to hold a position while the 5-min wants one could take months.
+This forces every one of those situations on demand.
+
+WHAT MAKES IT DIFFERENT FROM THE TEST SUITE. test_5m_lifecycle.py calls
+reconcile() in-process with stubbed everything. This launches executor_5m.py as
+a REAL SUBPROCESS — its own interpreter, its own poll loop, its own state file,
+its own kill switch, fetching its signal over real HTTP. What is faked is only
+the world outside the bot:
+
+  · the SIGNAL comes from a local HTTP server, but the numbers in it were
+    computed by the REAL engine (app/lib/fib.js) over synthetic 5-minute bars
+    shaped into a genuine pullback-in-uptrend. Not a hand-written payload.
+  · UPSTOX is a shim module earlier on PYTHONPATH, reading a scripted world.json
+    so positions and the order book can be set to anything.
+  · the HOURLY BOT is a state file this script writes.
+
+NOTHING TOUCHES PRODUCTION. Its own temp directory, its own state, lock and
+switch files, LIVE hard-off, Telegram disabled so the rehearsal cannot spam the
+real chat. The live droplet bot is untouched and keeps running.
+
+WHAT TO WATCH. Each scenario prints the messages the bot actually emitted. The
+pair that matters is a stand-down naming the hourly, followed later by the
+all-clear and a resumed entry.
+"""
+import http.server
+import json
+import os
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+DASH = os.path.join(os.path.dirname(HERE), "nse-dashboard")
+
+KEY = "NSE_FO|58072"
+LOT = 65
+SYMBOL = "NIFTY FUT 29 SEP 26"
+POLL = 2                      # the rehearsal runs the bot at 2s, not 15s
+
+
+# ── 1. A real signal, from the real engine, over synthetic bars ──────────────
+
+GEN_JS = r"""
+import { computeFibSignal } from "%(fib)s";
+const bars = [];
+let t = new Date("2026-09-07T09:15:00+05:30").getTime();
+const push = (o,h,l,c) => { bars.push({ timestamp: new Date(t).toISOString(),
+  date: new Date(t).toISOString().slice(0,10), open:o, high:h, low:l, close:c,
+  volume:50000, openInterest:1e7 }); t += 5*60000; };
+for (let i=0;i<29;i++){ const b=24050+Math.sin(i)*10; push(b,b+12,b-12,b+2); }
+for (let i=0;i<20;i++){ const b=24100+(300*i/19); push(b,b+14,b-8,b+8); }
+for (let i=0;i<11;i++){ const b=24400-(80*i/10); push(b,b+6,b-10,b-4); }
+console.log(JSON.stringify(computeFibSignal(bars)));
+"""
+
+
+CACHED = os.path.join(HERE, "rehearsal_signal.json")
+
+
+def build_signal(work):
+    """Synthetic bars → the REAL computeFibSignal → a signal we can serve.
+
+    Prefers computing it fresh, so a change to the engine shows up here. Falls
+    back to the cached copy when node or the dashboard checkout is absent —
+    which is the case on the droplet, where this is most useful to run. The
+    cache is not hand-written: it is written by this same function on a machine
+    that CAN compute it, so the numbers still came out of the real engine.
+    """
+    fib_src = os.path.join(DASH, "app", "lib", "fib.js")
+    have_node = shutil.which("node") is not None
+
+    if os.path.exists(fib_src) and have_node:
+        fib_mjs = os.path.join(work, "fib.mjs")
+        shutil.copyfile(fib_src, fib_mjs)
+        gen = os.path.join(work, "gen.mjs")
+        with open(gen, "w") as fh:
+            fh.write(GEN_JS % {"fib": fib_mjs})
+        out = subprocess.run(["node", gen], capture_output=True, text=True)
+        if out.returncode:
+            sys.exit(f"!!! signal generation failed:\n{out.stderr[:600]}")
+        sig = json.loads(out.stdout)
+        with open(CACHED, "w") as fh:
+            json.dump(sig, fh, indent=1)
+        print("  (computed fresh from app/lib/fib.js; cache refreshed)")
+        return sig
+
+    if os.path.exists(CACHED):
+        why = "no node" if not have_node else "no nse-dashboard checkout"
+        print(f"  ({why} here — using rehearsal_signal.json, computed by the real\n"
+              f"   engine on a machine that had both)")
+        with open(CACHED) as fh:
+            return json.load(fh)
+
+    sys.exit(f"!!! need either node + {fib_src}, or a cached {CACHED}.")
+
+
+def payload_for(signal, entry_valid=True):
+    expiry = int((time.time() + 30 * 86400) * 1000)
+    sig = dict(signal)
+    sig["entryValid"] = bool(entry_valid and signal.get("entryValid"))
+    return {
+        "tokenValid": True, "error": None, "timeframe": "5m",
+        "contract": {"instrumentKey": KEY, "lotSize": LOT, "tickSize": 10,
+                     "tradingSymbol": SYMBOL, "expiry": expiry},
+        "signal": sig,
+    }
+
+
+# ── 2. The fake Upstox the bot will import instead of the real one ──────────
+
+SHIM = '''"""Rehearsal stand-in for upstox_orders. Reads a scripted world.json.
+
+Placed FIRST on PYTHONPATH so `import upstox_orders` in the executor resolves
+here. The real module is never loaded, so no request can reach Upstox even by
+accident.
+"""
+import json, os
+
+WORLD = os.environ["REHEARSAL_WORLD"]
+
+# THE PURE PRICE MATHS COMES FROM THE REAL MODULE, NOT A REIMPLEMENTATION.
+#
+# The first version of this shim wrote its own round_to_tick and got the units
+# wrong — the real one takes tick in PAISE (10 → Rs 0.10), the copy treated it
+# as rupees. The rehearsal then showed a stop whose trigger and limit were the
+# SAME price, which looks exactly like the stop-limit bug fixed in production in
+# August. A rehearsal that lies about prices is worse than no rehearsal, so
+# anything that does arithmetic on money is loaded from the real file and only
+# the NETWORK calls below are faked.
+import importlib.util as _il
+
+_spec = _il.spec_from_file_location("_real_ux", os.environ["REHEARSAL_REAL_UX"])
+_real = _il.module_from_spec(_spec)
+_spec.loader.exec_module(_real)          # no network at import; it only defines
+
+round_to_tick = _real.round_to_tick
+stop_limit_price = _real.stop_limit_price
+USER_AGENT = _real.USER_AGENT
+TIMEOUT = _real.TIMEOUT
+STOP_LIMIT_OFFSET = _real.STOP_LIMIT_OFFSET
+UpstoxError = _real.UpstoxError
+TokenUnavailable = _real.TokenUnavailable
+
+
+def _w():
+    try:
+        with open(WORLD) as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return {}
+
+
+def _log(kind, *a, **k):
+    with open(os.environ["REHEARSAL_CALLS"], "a") as fh:
+        fh.write(json.dumps({"call": kind, "args": [str(x) for x in a[1:]]}) + "\\n")
+    return f"REH-{kind}"
+
+
+def load_token():            return "rehearsal-token"
+def get_positions(t):
+    q = _w().get("position", 0)
+    return [{"instrument_token": %(key)r, "quantity": q,
+             "average_price": _w().get("avg")}] if q else []
+def get_order_book(t):       return _w().get("book", [])
+def get_quote(t, k):
+    # ABOVE the synthetic signal's stop (24176.58). A bid below it is a
+    # breached stop, and the bot rightly exits instead of running the
+    # lifecycle — which silently turned this rehearsal into a test of the
+    # gap path rather than of coordination.
+    return {"depth": {"buy": [{"price": 24400.0}]}, "last_price": 24450.0}
+def place_limit_buy(*a, **k):  return _log("place_limit_buy", *a, **k)
+def place_limit_sell(*a, **k): return _log("place_limit_sell", *a, **k)
+def place_sl(*a, **k):         return _log("place_sl", *a, **k)
+def place_sl_m(*a, **k):       return _log("place_sl_m", *a, **k)
+def cancel_order(*a, **k):     return _log("cancel_order", *a, **k)
+def modify_order(*a, **k):     return _log("modify_order", *a, **k)
+''' % {"key": KEY}
+
+
+# ── 3. The mock signal server ────────────────────────────────────────────────
+
+class Serve(http.server.BaseHTTPRequestHandler):
+    payload = {}
+
+    def do_GET(self):                                            # noqa: N802
+        body = json.dumps(Serve.payload).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self):                                           # noqa: N802
+        # The executor logs into the dashboard first; hand it a session.
+        body = json.dumps({"ok": True, "token": "rehearsal"}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *a):                                   # silence
+        pass
+
+
+def free_port():
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    p = s.getsockname()[1]
+    s.close()
+    return p
+
+
+# ── 4. The rehearsal ─────────────────────────────────────────────────────────
+
+def main():
+    work = tempfile.mkdtemp(prefix="rehearse5m-")
+    print("═" * 76)
+    print("  5-MINUTE BOT REHEARSAL — the real process, a scripted world")
+    print(f"  workspace {work}")
+    print("═" * 76)
+
+    signal = build_signal(work)
+    print(f"\nSignal from the REAL engine over synthetic 5-minute bars:")
+    print(f"  entryValid {signal['entryValid']}   buy {signal['fibEntry']}   "
+          f"stop {signal['stopPrice']}   target {signal['targetPrice']}")
+    if not signal.get("entryValid"):
+        sys.exit("!!! the synthetic bars did not produce a valid setup — adjust GEN_JS")
+
+    with open(os.path.join(work, "upstox_orders.py"), "w") as fh:
+        fh.write(SHIM)
+
+    world_path = os.path.join(work, "world.json")
+    calls_path = os.path.join(work, "calls.jsonl")
+    hourly_path = os.path.join(work, "executor_state.json")
+    open(calls_path, "w").close()
+
+    def set_world(**kw):
+        with open(world_path, "w") as fh:
+            json.dump(kw, fh)
+
+    def set_hourly(**kw):
+        with open(hourly_path, "w") as fh:
+            json.dump(kw, fh)
+
+    set_world()
+    set_hourly()
+
+    port = free_port()
+    Serve.payload = payload_for(signal)
+    srv = http.server.HTTPServer(("127.0.0.1", port), Serve)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+    env = dict(os.environ)
+    env.update({
+        # ORDER MATTERS AND IS NOT OBVIOUS. Python prepends the SCRIPT'S OWN
+        # directory to sys.path ahead of PYTHONPATH, so without -P the real
+        # upstox_orders next to executor_5m.py wins and the shim is never
+        # imported — the bot then tries to read the live token file and
+        # announces it cannot trade. -P suppresses that prepend, so `work`
+        # (the shim) comes first and HERE still supplies coordination.py and
+        # contract_lock.py.
+        "PYTHONPATH": work + os.pathsep + HERE,
+        "PYTHONUNBUFFERED": "1",
+        "FIB5M_LIVE": "false",                    # never real orders
+        "FIB5M_FORCE_MARKET_OPEN": "rehearsal",   # run outside market hours
+        "POLL_SECONDS_5M": str(POLL),
+        # PUSH THE INTRADAY RULES LATE. Without this the rehearsal inherits the
+        # wall clock: run it any time after 15:00 and the bot correctly refuses
+        # to open and squares off instead — so the entry and bracket lifecycle
+        # below is never exercised, while the run still reports PASS. A tool
+        # that quietly tests less is worse than one that fails.
+        "FIB5M_NO_ENTRY_AFTER": "23:50",
+        "FIB5M_SQUARE_OFF_AT": "23:59",
+        "SIGNAL_URL_5M": f"http://127.0.0.1:{port}/api/fib-5m/signal",
+        "EXECUTOR_5M_STATE": os.path.join(work, "executor_5m_state.json"),
+        "HOURLY_STATE": hourly_path,
+        "PEER_STATE": os.path.join(work, "ib_state.json"),
+        "CONTRACT_LOCK": os.path.join(work, "nifty_contract.lock"),
+        "REHEARSAL_WORLD": world_path,
+        "REHEARSAL_CALLS": calls_path,
+        "REHEARSAL_REAL_UX": os.path.join(HERE, "upstox_orders.py"),
+        "APP_PIN": "rehearsal",
+    })
+    # Telegram off: a rehearsal must not put test messages in the real chat.
+    env.pop("TELEGRAM_BOT_TOKEN", None)
+    env.pop("TELEGRAM_BOT_TOKEN_5M", None)
+    env.pop("TELEGRAM_CHAT_ID", None)
+
+    proc = subprocess.Popen([sys.executable, "-P", os.path.join(HERE, "executor_5m.py")],
+                            env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, bufsize=1)
+    lines: list[str] = []
+
+    def drain():
+        for line in proc.stdout:
+            lines.append(line.rstrip())
+    threading.Thread(target=drain, daemon=True).start()
+
+    def scenario(title, note, *, settle=POLL * 3 + 1):
+        mark = len(lines)
+        time.sleep(settle)
+        said = [l.split("TG ", 1)[1] for l in lines[mark:] if " TG " in l]
+        print("\n" + "─" * 76)
+        print(f"▶ {title}")
+        print(f"  {note}")
+        if said:
+            for m in said:
+                print(f"    {m}")
+        else:
+            print("    (no new message — the bot had nothing to say)")
+        return said
+
+    try:
+        time.sleep(POLL * 2)
+        boot = [l.split("TG ", 1)[1] for l in lines if " TG " in l]
+        print("\nBoot:")
+        for m in boot:
+            print(f"  {m[:120]}")
+        if any("CANNOT TRADE" in m for m in boot):
+            sys.exit("\n!!! the bot could not start — the Upstox shim was not imported. "
+                     "Check the -P flag and PYTHONPATH above.")
+        lines.clear()
+
+        scenario("1. HOURLY IDLE — the 5-min is free",
+                 "hourly state {} · nothing on the book · a valid setup")
+
+        set_hourly(armed={"entry": 24500.0}, instrument=KEY)
+        scenario("2. HOURLY ARMS a setup while the 5-min is flat",
+                 "THE MESSAGE YOU ARE WAITING FOR IN THE DRY RUN")
+
+        set_hourly(entry_bar="2026-09-07T10:15:00+05:30", instrument=KEY,
+                   entry_price=24488.0)
+        scenario("3. HOURLY IS HOLDING a position",
+                 "the stronger form of the same stand-down")
+
+        set_hourly()
+        scenario("4. HOURLY GOES FLAT — the all-clear",
+                 "stand-down lifts, and the bot resumes")
+
+        # The 5-min now has an entry resting, and the hourly wakes up.
+        set_world(book=[{"instrument_token": KEY, "tag": "f5entry", "status": "open",
+                         "order_id": "OURS-1", "price": signal["fibEntry"]}])
+        set_hourly(armed={"entry": 24500.0}, instrument=KEY)
+        scenario("5. HOURLY ARMS while the 5-min has an order RESTING",
+                 "it must WITHDRAW that order, not just decline to place another")
+
+        # Our entry filled; the hourly then wants in. No adding, no closing.
+        set_world(position=LOT, avg=signal["fibEntry"],
+                  book=[{"instrument_token": KEY, "tag": "f5entry", "status": "complete",
+                         "order_id": "OURS-1", "price": signal["fibEntry"],
+                         "average_price": signal["fibEntry"]}])
+        set_hourly(armed={"entry": 24500.0}, instrument=KEY)
+        scenario("6. HOURLY ARMS while the 5-min is IN A TRADE",
+                 "manage to the exit, add nothing — and the hourly is kept off it",
+                 settle=POLL * 4 + 1)
+
+        set_world()
+        set_hourly()
+        scenario("7. the trade closes and everything clears",
+                 "back to a clean slate")
+
+        # ── the verdict ──────────────────────────────────────────────────────
+        calls = [json.loads(l) for l in open(calls_path) if l.strip()]
+        buys = [c for c in calls if c["call"] == "place_limit_buy"]
+        print("\n" + "═" * 76)
+        print("  VERDICT")
+        print("═" * 76)
+        print(f"  real order calls attempted : {len(calls)}  "
+              f"(must be 0 — LIVE is off, so nothing should ever be placed)")
+        crashed = [l for l in lines if "Traceback" in l]
+        print(f"  crashes                    : {len(crashed)}")
+        stops = [l for l in lines if "place STOP-LOSS" in l]
+        bad_stop = [l for l in stops
+                    if "triggers at" in l and l.split("triggers at ")[1].split(",")[0].strip()
+                    == l.split("sells at ")[1].strip()]
+        print(f"  stop orders seen           : {len(stops)}  "
+              f"(trigger == limit on {len(bad_stop)} — must be 0)")
+        stood_down = sum(1 for l in lines if "Standing down" in l)
+        cleared = sum(1 for l in lines if "hourly bot is clear" in l)
+        print(f"  stand-downs observed       : {stood_down}")
+        print(f"  all-clears observed        : {cleared}")
+        # A run that placed no stop at all has not exercised the lifecycle — see
+        # the note on FIB5M_NO_ENTRY_AFTER above. Assert it, so the rehearsal
+        # cannot pass by doing nothing.
+        entries = [l for l in lines if "place BUY order" in l]
+        print(f"  entries placed             : {len(entries)}  (0 means the lifecycle never ran)")
+        ok = (not calls and not crashed and not bad_stop and stops and entries
+              and stood_down >= 3 and cleared >= 1)
+        print(f"\n  {'PASS — coordination behaved' if ok else 'LOOK AGAIN — see above'}")
+        if not ok or os.environ.get("REHEARSAL_VERBOSE"):
+            print("\n── raw process output ──")
+            for l in lines[-45:]:
+                print("   ", l)
+        return 0 if ok else 1
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        srv.shutdown()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

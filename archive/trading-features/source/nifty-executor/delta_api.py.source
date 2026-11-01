@@ -1,0 +1,271 @@
+#!/usr/bin/env python3
+"""
+Delta Exchange order layer for the crypto Fib bot. TESTNET BY DEFAULT.
+
+Entirely separate from upstox_orders.py — different exchange, different keys,
+different account. The two share nothing but the fact that both place orders, and
+neither can affect the other.
+
+WHY LEVERAGE IS CAPPED IN CODE. The earlier crypto bot ran 50x. The backtest of
+this strategy at 50x liquidated on trades 3-9 — the stop sits about 2% below
+entry, and at 50x a 2% adverse move is the entire margin, so the position dies
+before the stop it was given can ever be reached. The strategy's edge (BTC PF
+2.02, ETH PF 1.89) only exists if trades are allowed to reach their stop. So
+LEVERAGE_MAX is 2, checked at import, and the module REFUSES TO LOAD above it.
+That is deliberately not a config option: a number that has already destroyed one
+account should not be reachable by editing an env file at 3am.
+
+Verified against the live testnet API (Aug 2026):
+  GET /v2/history/candles?resolution=1h&symbol=BTCUSD&start=<sec>&end=<sec>
+  testnet  https://cdn-ind.testnet.deltaex.org
+  mainnet  https://api.india.delta.exchange
+"""
+
+import json
+import logging
+import os
+import socket
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+log = logging.getLogger("delta-api")
+
+TESTNET_BASE = "https://cdn-ind.testnet.deltaex.org"
+MAINNET_BASE = "https://api.india.delta.exchange"
+
+# ── Force IPv4 to Delta. Not cosmetic — it is the whole API key. ─────────────
+#
+# Delta binds an API key to whitelisted IPs, and a trading key CANNOT be created
+# without one. The droplet has both an IPv4 and an IPv6 address and was reaching
+# api.india.delta.exchange over IPv6, so a key whitelisted to 139.59.33.81 came
+# back:
+#
+#   401 {"error":{"code":"ip_not_whitelisted_for_api_key",
+#                 "context":{"client_ip":"2400:6180:100:d0:0:1:7cd2:5001"}}}
+#
+# Pinning to IPv4 means one stable address to whitelist instead of two, and no
+# silent breakage if the v6 address ever changes. upstox_orders.py does exactly
+# this, for exactly the same reason — see the note there.
+_DELTA_HOSTS = ("delta.exchange", "deltaex.org")
+_real_getaddrinfo = socket.getaddrinfo
+
+
+def _getaddrinfo_ipv4_for_delta(host, *args, **kwargs):
+    results = _real_getaddrinfo(host, *args, **kwargs)
+    if isinstance(host, str) and any(h in host for h in _DELTA_HOSTS):
+        ipv4 = [r for r in results if r[0] == socket.AF_INET]
+        if ipv4:
+            return ipv4
+    return results
+
+
+socket.getaddrinfo = _getaddrinfo_ipv4_for_delta
+
+# ── The leverage ceiling. Read the module docstring before changing it. ──────
+LEVERAGE_MAX = 2
+
+# Delta quotes perpetuals in LOTS, not in coin. One BTCUSD lot is 0.001 BTC.
+LOT_SIZE = {"BTCUSD": 0.001, "ETHUSD": 0.01}
+
+USER_AGENT = "crypto-fib-bot/1.0"
+
+
+class DeltaError(Exception):
+    def __init__(self, message, status=None, body=None):
+        super().__init__(message)
+        self.status = status
+        self.body = body
+
+    @property
+    def is_auth(self):
+        return self.status in (401, 403)
+
+
+def network() -> str:
+    """Anything other than an explicit "mainnet" is testnet. A missing or
+    misspelled variable must fail SAFE, never rich."""
+    return "mainnet" if os.environ.get("DELTA_NETWORK", "").strip().lower() == "mainnet" else "testnet"
+
+
+def mainnet_allowed() -> bool:
+    """Reaching real money needs a SECOND, separately-named variable.
+
+    DELTA_NETWORK alone decides which host to call, and one edited word — a
+    copy-pasted env file, a mistyped line — would move this bot from fake money
+    to a real account. A typo can produce one wrong value; it is very unlikely to
+    produce two, in two differently-named keys, both saying the right thing.
+    """
+    return os.environ.get("DELTA_ALLOW_MAINNET", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def assert_network_permitted() -> str:
+    """Refuse to run against mainnet unless both variables say so. Called at
+    startup so the failure is immediate and loud, never a warning nobody reads."""
+    net = network()
+    if net == "mainnet" and not mainnet_allowed():
+        raise DeltaError(
+            "DELTA_NETWORK=mainnet but DELTA_ALLOW_MAINNET is not set. This bot was "
+            "built and validated for TESTNET; reaching a real-money account needs "
+            "both variables set deliberately. Refusing to start."
+        )
+    return net
+
+
+def base_url() -> str:
+    return MAINNET_BASE if network() == "mainnet" else TESTNET_BASE
+
+
+def assert_leverage(leverage) -> int:
+    """Refuse anything above the ceiling, loudly, at startup."""
+    lev = int(leverage)
+    if lev < 1 or lev > LEVERAGE_MAX:
+        raise DeltaError(
+            f"Leverage {lev}x is outside the permitted range 1-{LEVERAGE_MAX}x. "
+            f"This strategy's stop is ~2% below entry; above {LEVERAGE_MAX}x a normal "
+            f"adverse move liquidates the position before its stop can be reached, "
+            f"which is exactly how the 50x backtest died on trades 3-9."
+        )
+    return lev
+
+
+# ── Public data (no credentials needed) ─────────────────────────────────────
+
+def get_candles(symbol: str, hours: int = 400) -> list:
+    """Hourly candles, oldest→newest, in the shape the Fib engine consumes.
+
+    Delta returns epoch SECONDS and newest-first; both are normalised here.
+    """
+    end = int(time.time())
+    start = end - hours * 3600
+    url = (f"{base_url()}/v2/history/candles?resolution=1h"
+           f"&symbol={urllib.parse.quote(symbol)}&start={start}&end={end}")
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    with urllib.request.urlopen(req, timeout=30) as res:
+        rows = (json.loads(res.read().decode()).get("result") or [])
+    out = [{"timestamp": r["time"], "open": r["open"], "high": r["high"],
+            "low": r["low"], "close": r["close"], "volume": r.get("volume")}
+           for r in rows]
+    return sorted(out, key=lambda c: c["timestamp"])
+
+
+def last_price(symbol: str) -> float | None:
+    """Most recent traded price, for pricing a marketable exit."""
+    candles = get_candles(symbol, hours=3)
+    return candles[-1]["close"] if candles else None
+
+
+# ── Authenticated client ────────────────────────────────────────────────────
+# delta_rest_client is the library the earlier bot used successfully against this
+# same exchange, so its auth and signing are known to work here. Imported lazily
+# so the public-data helpers above, and the whole test harness, run without it.
+
+_client = None
+
+
+def client():
+    """The authenticated Delta client, built once.
+
+    Refuses to construct against mainnet unless DELTA_NETWORK says so
+    explicitly — a bot meant for testnet should not be one typo from real money.
+    """
+    global _client
+    if _client is not None:
+        return _client
+    key = os.environ.get("DELTA_API_KEY", "")
+    secret = os.environ.get("DELTA_API_SECRET", "")
+    if not key or not secret:
+        raise DeltaError("DELTA_API_KEY / DELTA_API_SECRET are not set.")
+    try:
+        from delta_rest_client import DeltaRestClient
+    except ImportError as exc:
+        raise DeltaError("delta-rest-client is not installed: pip3 install delta-rest-client") from exc
+    _client = DeltaRestClient(base_url=base_url(), api_key=key, api_secret=secret)
+    log.info("delta client ready on %s", network())
+    return _client
+
+
+def product_id(symbol: str) -> int:
+    """Delta addresses orders by numeric product id, not by symbol."""
+    t = client().get_ticker(symbol)
+    pid = t.get("product_id")
+    if not pid:
+        raise DeltaError(f"No product_id for {symbol}")
+    return int(pid)
+
+
+def get_position(pid: int) -> int:
+    """Net size in LOTS. Positive long, negative short, 0 flat.
+
+    The exchange is the source of truth for whether a trade is on — never the
+    bot's memory, which a restart erases.
+    """
+    try:
+        pos = client().get_position(pid) or {}
+        return int(pos.get("size") or 0)
+    except Exception as exc:                                    # noqa: BLE001
+        log.error("get_position(%s) failed: %s", pid, exc)
+        raise DeltaError(f"get_position failed: {exc}") from exc
+
+
+def set_leverage(pid: int, leverage: int) -> None:
+    client().set_leverage(product_id=pid, leverage=str(assert_leverage(leverage)))
+
+
+def place_limit_buy(pid: int, size: int, price: float) -> dict:
+    """The entry. A resting limit that fills at its price or better — the same
+    pullback mechanic as the Nifty Fib bot, deliberately not a stop-entry."""
+    from delta_rest_client import OrderType
+    return client().place_order(product_id=pid, size=int(size), side="buy",
+                                order_type=OrderType.LIMIT, limit_price=str(price))
+
+
+def place_limit_sell(pid: int, size: int, price: float, reduce_only: bool = True) -> dict:
+    """The target, and the timeout exit. reduce_only so it can only ever CLOSE a
+    position — without it, an order left resting after an exit would open a
+    short, which is the mistake the Nifty bots have to cancel around."""
+    from delta_rest_client import OrderType
+    return client().place_order(product_id=pid, size=int(size), side="sell",
+                                order_type=OrderType.LIMIT, limit_price=str(price),
+                                reduce_only="true" if reduce_only else "false")
+
+
+def place_stop_market(pid: int, size: int, stop_price: float, side: str = "sell") -> dict:
+    """The protective stop: a stop-market that fires when price reaches stop_price.
+
+    NO reduce_only — and this is a real asymmetry, not an oversight. Delta's
+    place_order accepts reduce_only, but place_stop_order does NOT (checked
+    against the installed client's signature, which is how the first version of
+    this was found to be wrong).
+
+    So the stop CAN open a position if it ever fires while flat, exactly like the
+    Upstox stops on the Nifty bots. The executor must cancel an orphaned stop the
+    moment it sees itself flat, which it does — that branch is not tidy-up, it is
+    the thing standing between a stale stop and an unintended short.
+    """
+    from delta_rest_client import OrderType
+    return client().place_stop_order(product_id=pid, size=int(size), side=side,
+                                     order_type=OrderType.MARKET,
+                                     stop_price=str(stop_price))
+
+
+def cancel_order(pid: int, order_id) -> None:
+    client().cancel_order(product_id=pid, order_id=order_id)
+
+
+def open_orders(pid: int) -> list:
+    """Live orders for one product.
+
+    get_live_orders takes an optional `query`, not a product_id — so everything
+    is fetched and filtered here. Slightly wasteful, and deliberately chosen over
+    depending on the query parameter's semantics, which are not documented in the
+    client. The account holds a handful of orders at most.
+    """
+    try:
+        orders = client().get_live_orders() or []
+    except Exception as exc:                                    # noqa: BLE001
+        log.error("open_orders(%s) failed: %s", pid, exc)
+        raise DeltaError(f"open_orders failed: {exc}") from exc
+    return [o for o in orders
+            if str((o.get("product_id") or (o.get("product") or {}).get("id"))) == str(pid)]
