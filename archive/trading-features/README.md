@@ -30,9 +30,17 @@ Crypto Fib. Mobile Research no longer lists them and the root stack has no title
 feature registrations. No replacement marketing or unavailable-feature cards are
 shown.
 
+Follow-up: Gap Pullback Paper was also retired on 2026-11-01. Its scanner,
+historical-pilot screens, account controls and API routes are no longer available.
+The same archive now preserves its complete locally tracked Python research
+package, frozen configurations, operational/research reports, systemd service,
+dashboard UI/APIs, mobile screens/components/helpers and bundled pilot results.
+The manifest's `supplements` record the source revisions for this addition.
+
 Dashboard middleware redirects these page prefixes to Overview:
 
 - `/fib`, `/fib-5m`, `/crypto-fib`, `/protection` (including tracked/detail pages).
+- `/research/gap-paper` (the scanner and paper account page).
 
 The page modules independently call `notFound()` if middleware is bypassed. These
 API prefixes return HTTP 410 with `FEATURE_RETIRED`, before authentication worker
@@ -41,14 +49,19 @@ bypasses or any upstream request:
 - `/api/fib`, `/api/fib-5m`, `/api/crypto-fib`, `/api/protection`.
 - `/api/bot` (both token sync and live status).
 - `/api/inside-bar` (the companion executor on the retired server).
+- `/api/research/gap-paper` (including `/pilot` and all account-control methods).
 
 Each existing API handler is also an inert 410 stub, so a stale mobile client cannot
 forward a broker token to the deleted droplet. Old mobile deep links to the six
-screens redirect to Research without mounting their original polling hooks.
+screens, plus Gap Paper and its history screen, redirect to Research without
+mounting their original polling hooks or loading the historical pilot dataset.
 
 General Upstox OAuth, analytics credentials, seasonality, research and sizing are
-not removed. Gap Pullback Paper is outside the four requested features and remains
-visible; its former droplet-hosted scanner is offline and is not restarted here.
+not removed. The offline `research/gap_paper` package remains in its original
+location because separate `research/strategy_search` tooling imports its engine,
+CLI and validation helpers. Those dependencies are not moved or auto-started.
+Its original dashboard integration test is archived; the active test now verifies
+retirement HTTP behavior rather than exercising retired account controls.
 
 ## Previous Architecture
 
@@ -102,6 +115,8 @@ review the full archived service definitions/READMEs. Relevant former settings:
 | --- | --- |
 | Dashboard bot proxies | `BOT_ACCOUNT_ID`, `BOT_SYNC_SECRET`, `DROPLET_SYNC_URL`, optional `DROPLET_STATUS_URL` |
 | Protection inbox | `HEDGE_INBOX_URL`, `HEDGE_INBOX_SECRET`, `HEDGE_WORKER_SECRET` |
+| Gap Paper dashboard | `GAP_PAPER_URL`, `GAP_PAPER_HTTP_SECRET`, `GAP_PAPER_LOCAL`, `GAP_PAPER_DB`, `GAP_PAPER_MANIFEST`, `GAP_PAPER_CALENDAR`, `GAP_PAPER_PYTHON` |
+| Gap Paper worker | `/etc/nserank-gap-paper.env`; runtime data formerly `/var/lib/nserank-gap-paper`; source installation formerly `/opt/nserank-gap-paper` |
 | Executors | `/root/fib-bot/executor.env`, `executor_5m.env`, `ib_executor.env`, `crypto_executor.env`, `receiver.env` |
 | Protection worker | `/etc/nserank-hedge-inbox.env`; database directory formerly `/var/lib/nserank-hedge-inbox` |
 
@@ -177,3 +192,23 @@ exclusive writes intentionally refuse to replace an existing archive. Do not rer
 it to refresh the snapshot from the now-inert route stubs. Add a new dated archive
 for a later retirement instead. Keep this archive in Git and in normal off-machine
 repository backups; do not rely on the deleted droplet as the backup.
+
+### Gap Paper Restoration Notes
+
+The supplement was created with `scripts/archive-gap-paper.mjs` before replacing
+the active pages. Do not rerun it against retired stubs to refresh the snapshot.
+Original Gap Paper files use the same `.source` convention and checksums. The
+bundled `gapPaperPilot.json` files are historical research output, not a backup of
+the destroyed host's V1/V2 SQLite ledgers or a claim of profitable performance.
+
+If explicitly restoring this module later, follow the general restoration process
+above, then review archived `research/gap_paper/OPERATIONS.md`, `MARKET_ROLLOUT.md`,
+`V2_COMPARISON.md`, `RULES_FROZEN.md` and `DATA_ACCESS.md`. Use fresh service secrets,
+review quote freshness, corporate actions, warmup coverage and paper fill/cost
+assumptions. Recover any V1/V2 ledgers only from a verified separate backup; do not
+fabricate prior state or turn historical results into live scanner observations.
+Start with temporary local paper storage and synthetic tests; enabling a new remote
+observer requires separate approval. Restore the proxy/pilot handlers and local
+helper/dataset files, narrowly remove the retirement path gates, then restore the
+web/mobile views and publish both clients. Never restore the deleted server's old
+IP or token destinations just because they appear in historical documentation.

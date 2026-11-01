@@ -666,6 +666,326 @@
       "path": "test_parser.py",
       "bytes": 3928,
       "sha256": "ede8b6879b8d01d78655d9d8ec6376a3ab4427cb9258149c5044a7ce685c7302"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "app/api/research/gap-paper/pilot/route.js",
+      "bytes": 219,
+      "sha256": "234cae172e729120ec52303590cc82088675921c2499142f5d4abfc9f4691eac"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "app/api/research/gap-paper/route.js",
+      "bytes": 3379,
+      "sha256": "dedee5299bcb97650c92cb718d9f5b48e5f4dd34bf424661d7154a3ccbace5fa"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "app/lib/gapPaperPilot.json",
+      "bytes": 29749,
+      "sha256": "d87f2a3c65f1e006bc8af385e41ff0852709df4c3d74cb211d7eabcad3c84149"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "app/lib/gapPaperRemote.js",
+      "bytes": 1118,
+      "sha256": "ffd3967daf3aef716bc81831ac0f9f6c0f811381542b41d90c18d78c5caedfdb"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "app/research/gap-paper/DailyPaperPanel.js",
+      "bytes": 4656,
+      "sha256": "0eab679a8c0fe8b3cc9b923ce65794ed93fa4ecb698bb90870e1e298395389ff"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "app/research/gap-paper/MarketScanner.js",
+      "bytes": 4457,
+      "sha256": "db3b73d6b016f0a80371a3ae4e4d2848c47c80445c777e44f971cda5adcedc53"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "app/research/gap-paper/SessionStatus.js",
+      "bytes": 2390,
+      "sha256": "c1c6cbfc1de15949984b4322679b862f089da6bb2333a5860100edc997d8b82a"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "app/research/gap-paper/page.js",
+      "bytes": 9946,
+      "sha256": "5faefd2d4669b0decf42e6256be203f7b6c6ace12fa2f94f107385e34a7bd81c"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "research/gap_paper/.gitignore",
+      "bytes": 19,
+      "sha256": "862263fa1f46c20f0d1e4dac5ffcc75abd55c08211b2c3864c5f8764b9d87793"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "research/gap_paper/DATA_ACCESS.md",
+      "bytes": 5493,
+      "sha256": "a40fa492a809e0eb75b507b9b2d52c542ba1a6c9251f5347ed95e109921df284"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "research/gap_paper/LIVE_ROLLOUT.md",
+      "bytes": 3442,
+      "sha256": "73a1e2ff8f538878d10cf68a091fb6c0cae4aeb746739b35e900e8027f63f2c5"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "research/gap_paper/MARKET_ROLLOUT.md",
+      "bytes": 7081,
+      "sha256": "309137c219e0de1dcb35834743714aa353702c94e77fd8a1b2c55c5b0444a46a"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "research/gap_paper/NO_TRADES_AUDIT_2026-10-08.md",
+      "bytes": 4156,
+      "sha256": "fc9ba272c751b29051903ad55d828755f3a4b7ac0d1d964186bd8705d8f7a865"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "research/gap_paper/OPERATIONS.md",
+      "bytes": 10764,
+      "sha256": "d67eebd855bee440bc52f7935f6b732e6254715fa96d7ada5986b0ab0c933a13"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "research/gap_paper/PILOT_REPORT.md",
+      "bytes": 6398,
+      "sha256": "a2f8389330f9033f85290d0435b0f2513db9ef0b5b89240de1de7a2722c9d39a"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "research/gap_paper/README.md",
+      "bytes": 12971,
+      "sha256": "9a5797dd2b5be875058e2a595b95b3df886acf6b144f6abbeb101e0688a4887c"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "research/gap_paper/RULES_FROZEN.md",
+      "bytes": 7006,
+      "sha256": "c82dc621275f524c23bcafdc8dce34de41805de3e71001c34908270452dc196f"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "research/gap_paper/V2_COMPARISON.md",
+      "bytes": 3518,
+      "sha256": "0d8d3d95a10a713db0bc18a7b8f33579e09dee4a05da0419f817154b865e85a6"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "research/gap_paper/VERIFICATION.md",
+      "bytes": 2353,
+      "sha256": "a75d268f1b55cb7caf1afc50322f67a3f12c5db3d61905ab121d00e342532f2b"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "research/gap_paper/__init__.py",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "research/gap_paper/cli.py",
+      "bytes": 16167,
+      "sha256": "9ea66a6af4a38526c75325b3d29c62e0bd47b098e2ee118931c52cbb13424a8f"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "research/gap_paper/comparison.py",
+      "bytes": 9033,
+      "sha256": "3f093ca36a2423b09ec9d021f4aa602675eaa13a495235ef1945013761af17c8"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "research/gap_paper/config.json",
+      "bytes": 1025,
+      "sha256": "d121ed1a13d274705c3c36fdd5639fefebc0e2acbed7c9562cc4fe99de719d8a"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "research/gap_paper/config.live.json",
+      "bytes": 1085,
+      "sha256": "b507f5bfa48ce8c41ede824ba06af5d904b638a22d79fadd6aadb82849b61d36"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "research/gap_paper/config.v2.json",
+      "bytes": 1097,
+      "sha256": "9930851629eb968d7935e9e662fa27e7a22371ea84aa8ac03b442ae66ad606c6"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "research/gap_paper/data.py",
+      "bytes": 6088,
+      "sha256": "55803b8aeeba8410d12ba164d73d5415f75f5a0ef5fb84c1384c88e6215a7ce6"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "research/gap_paper/engine.py",
+      "bytes": 30399,
+      "sha256": "a4f00de6e2dea6691fd2d84be5bbdd07ae4603567708aa118f46986852b27d12"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "research/gap_paper/market.py",
+      "bytes": 14132,
+      "sha256": "7317c5728aaa03e80ae6617e81bf4932381a8eac6fbe69c1a267a2f71f2cb00c"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "research/gap_paper/market_service.py",
+      "bytes": 18264,
+      "sha256": "8186823b0d50dbf4b1b8a30dc204cb0cefdd480ef349795b208fef4acaad1c5d"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "research/gap_paper/nserank-gap-paper.service",
+      "bytes": 854,
+      "sha256": "336905609526a720e93591dac7f3e25d0ba0e5db183b57e7505e44274d829ebe"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "research/gap_paper/pilot_report.py",
+      "bytes": 8101,
+      "sha256": "a016e0089b1d60f5d900ff5fadfdc2f31c89592bf2acb6aad079085b9ca0a5c0"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "research/gap_paper/publish_view.py",
+      "bytes": 3841,
+      "sha256": "73b515f76d5272d58671a1bde853524de48bd3fd4eac05e9337546af4ec58f96"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "research/gap_paper/references.py",
+      "bytes": 6096,
+      "sha256": "e8e697d83367c40aa110e2eba9d31801030b897b25146a7a2e0a00734708d015"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "research/gap_paper/report.py",
+      "bytes": 4629,
+      "sha256": "42523dc18bbf44ae335aa58ad7168a12d8535152596f06a7ee0f89a4ce43f4dc"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "research/gap_paper/service.py",
+      "bytes": 22948,
+      "sha256": "c71659a8c782793e101ba5f45c70dc4256f93e995c168cb1263def509bf7827a"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "research/gap_paper/storage.py",
+      "bytes": 13703,
+      "sha256": "50d6759021993eb4fbee2f6ed71cc85aaa2de75c2d7ef8f94f15f82899caaeb9"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "research/gap_paper/test_comparison.py",
+      "bytes": 5890,
+      "sha256": "b7f2c72e0ae4f9ad18e08d9d22157871a62fa883ca18693c05a1bf997b21a5f4"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "research/gap_paper/test_dashboard.mjs",
+      "bytes": 4915,
+      "sha256": "445589007de3d0fdf1bc2a33f3a2ad6fd2a2df3e06966ef1d65b5d53c38cf3b7"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "research/gap_paper/test_data.py",
+      "bytes": 2483,
+      "sha256": "2c1b5a93cf19c2d1e14ca01e0cddc8f78ec58b6128a5e56cba0a8d6e01690154"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "research/gap_paper/test_diagnostics.py",
+      "bytes": 5239,
+      "sha256": "a8d18149d0b00bbcaad35093e82fd609202c1bf38b363bde13e7068704c590ce"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "research/gap_paper/test_engine.py",
+      "bytes": 16635,
+      "sha256": "a1bb287e2b3f72b3d7a608619d6492a559cae0bf95fdf9e9ad029bf087f95d9d"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "research/gap_paper/test_live.py",
+      "bytes": 11073,
+      "sha256": "f2a4a0f092a6ce45629e002799580c7c1847ab5a1bb0dd427668f7006b1d8b24"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "research/gap_paper/test_market.py",
+      "bytes": 9288,
+      "sha256": "ff00886018c329271744664bfc1e2420c1b0613b5b47b4d365b923e80cd0312e"
+    },
+    {
+      "project": "nse-dashboard",
+      "path": "research/gap_paper/validation.py",
+      "bytes": 4057,
+      "sha256": "9ccf5bcfe2e3afbb379612bdbce790cdd4935c18d4c2847b1f63bf15c2a7d094"
+    },
+    {
+      "project": "nse-mobile",
+      "path": "app/research/gap-paper.tsx",
+      "bytes": 18170,
+      "sha256": "c4efe0c3214fb51e57554d3a4efb58091374b6c9fdb8bb0c5d1ce9a70b317c09"
+    },
+    {
+      "project": "nse-mobile",
+      "path": "app/research/gap-paper-history.tsx",
+      "bytes": 2383,
+      "sha256": "8684a3507855c0fd0feabaa58059c01ed75b2a718f39c6757aa53cff7db10164"
+    },
+    {
+      "project": "nse-mobile",
+      "path": "lib/gapPaper.ts",
+      "bytes": 4761,
+      "sha256": "b8b14d4034ad47b0b41d7d9132bd9fdc4ca5b44fbffbb17c0423a21e1dc1da6a"
+    },
+    {
+      "project": "nse-mobile",
+      "path": "assets/data/gapPaperPilot.json",
+      "bytes": 29749,
+      "sha256": "d87f2a3c65f1e006bc8af385e41ff0852709df4c3d74cb211d7eabcad3c84149"
+    },
+    {
+      "project": "nse-mobile",
+      "path": "components/GapComparison.tsx",
+      "bytes": 2303,
+      "sha256": "61629cd9aaf0774e31d32b16db1a6aa8c2a6f4a84c396b89a7a01286ca7b9546"
+    },
+    {
+      "project": "nse-mobile",
+      "path": "components/GapSessionStatus.tsx",
+      "bytes": 1676,
+      "sha256": "7c3e441b0f74a0a0196d4005a476d67b627183782e9c9f753c00df92b9038aee"
+    }
+  ],
+  "supplements": [
+    {
+      "feature": "Gap Pullback Paper",
+      "date": "2026-11-01",
+      "revisions": {
+        "nse-dashboard": "1207c59b76258e2bca72b0aee3255dc65b02706a",
+        "nse-mobile": "0d64bbfe3a78307219e14896768c75860ab922d1"
+      },
+      "files": 48
+    },
+    {
+      "feature": "Gap Pullback Paper",
+      "date": "2026-11-01",
+      "revisions": {
+        "nse-dashboard": "1207c59b76258e2bca72b0aee3255dc65b02706a",
+        "nse-mobile": "0d64bbfe3a78307219e14896768c75860ab922d1"
+      },
+      "files": 2
     }
   ]
 }

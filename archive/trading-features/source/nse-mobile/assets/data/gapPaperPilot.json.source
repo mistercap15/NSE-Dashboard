@@ -1,0 +1,1182 @@
+{
+  "version": "gap-first-pullback-v1",
+  "as_of": "2026-09-25",
+  "label": "Exploratory five-stock pilot \u00b7 current-survivor sample",
+  "warning": "No proven edge. Continuity and historical tick sizes are assumptions; strict corporate-action review permits no trades. These years were previously examined.",
+  "summary": {
+    "trades": 16,
+    "net_pnl": -419.62840888740743,
+    "win_rate": 0.4375,
+    "avg_win": 308.73196658750527,
+    "avg_loss": -286.7502416666605,
+    "expectancy": -26.226775555462964,
+    "profit_factor": 0.8374007341919932,
+    "ending_equity": 199580.37159111263,
+    "account_return": -0.0020981420444368126,
+    "max_marked_drawdown_rupees": 1236.936632862431,
+    "max_marked_drawdown_fraction": 0.006175843018612432,
+    "open_positions": {},
+    "annual": [
+      {
+        "year": "2022",
+        "trades": 9,
+        "net_pnl": -782.961406524955,
+        "win_rate": 0.3333333333333333,
+        "avg_win": 314.82971449166956,
+        "avg_loss": -287.90842499999394,
+        "expectancy": -86.99571183610611,
+        "profit_factor": 0.5467532158735476,
+        "net_account_pnl": -782.9614065249625,
+        "net_realized_pnl": -782.961406524955,
+        "account_return": -0.003914807032624812,
+        "end_equity": 199217.03859347504
+      },
+      {
+        "year": "2023",
+        "trades": 2,
+        "net_pnl": 892.4243408500204,
+        "win_rate": 1.0,
+        "avg_win": 446.2121704250102,
+        "avg_loss": null,
+        "expectancy": 446.2121704250102,
+        "profit_factor": null,
+        "net_account_pnl": 892.4243408500333,
+        "net_realized_pnl": 892.4243408500204,
+        "account_return": 0.0044796587036468605,
+        "end_equity": 200109.46293432507
+      },
+      {
+        "year": "2024",
+        "trades": 1,
+        "net_pnl": -315.81649999999655,
+        "win_rate": 0.0,
+        "avg_win": null,
+        "avg_loss": -315.81649999999655,
+        "expectancy": -315.81649999999655,
+        "profit_factor": 0.0,
+        "net_account_pnl": -315.81649999998626,
+        "net_realized_pnl": -315.81649999999655,
+        "account_return": -0.0015782187177406648,
+        "end_equity": 199793.64643432508
+      },
+      {
+        "year": "2025",
+        "trades": 2,
+        "net_pnl": 324.2102817875081,
+        "win_rate": 1.0,
+        "avg_win": 162.10514089375405,
+        "avg_loss": null,
+        "expectancy": 162.10514089375405,
+        "profit_factor": null,
+        "net_account_pnl": 324.2102817874984,
+        "net_realized_pnl": 324.2102817875081,
+        "account_return": 0.0016227256850935845,
+        "end_equity": 200117.85671611258
+      },
+      {
+        "year": "2026",
+        "trades": 2,
+        "net_pnl": -537.4851249999844,
+        "win_rate": 0.0,
+        "avg_win": null,
+        "avg_loss": -268.7425624999922,
+        "expectancy": -268.7425624999922,
+        "profit_factor": 0.0,
+        "net_account_pnl": -537.4851249999483,
+        "net_realized_pnl": -537.4851249999844,
+        "account_return": -0.0026858429018776775,
+        "end_equity": 199580.37159111263
+      }
+    ],
+    "by_stock": {
+      "HDFCBANK": {
+        "trades": 5,
+        "net_pnl": -742.3212078624508,
+        "win_rate": 0.2,
+        "avg_win": 267.347217137513,
+        "avg_loss": -252.41710624999095,
+        "expectancy": -148.46424157249015,
+        "profit_factor": 0.264787142509208
+      },
+      "INFY": {
+        "trades": 2,
+        "net_pnl": -84.19376821249529,
+        "win_rate": 0.5,
+        "avg_win": 231.62273178750127,
+        "avg_loss": -315.81649999999655,
+        "expectancy": -42.09688410624764,
+        "profit_factor": 0.7334092163883261
+      },
+      "ITC": {
+        "trades": 1,
+        "net_pnl": 229.14910812499252,
+        "win_rate": 1.0,
+        "avg_win": 229.14910812499252,
+        "avg_loss": null,
+        "expectancy": 229.14910812499252,
+        "profit_factor": null
+      },
+      "RELIANCE": {
+        "trades": 1,
+        "net_pnl": -285.3485499999956,
+        "win_rate": 0.0,
+        "avg_win": null,
+        "avg_loss": -285.3485499999956,
+        "expectancy": -285.3485499999956,
+        "profit_factor": 0.0
+      },
+      "TATASTEEL": {
+        "trades": 7,
+        "net_pnl": 463.08600906254173,
+        "win_rate": 0.5714285714285714,
+        "avg_win": 358.2511772656326,
+        "avg_loss": -323.30623333332954,
+        "expectancy": 66.15514415179167,
+        "profit_factor": 1.4774482738218648
+      }
+    },
+    "costs": {
+      "brokerage": 640.0,
+      "exchange": 54.68,
+      "sebi": 1.6000000000000008,
+      "ipft": 1.6000000000000008,
+      "gst": 125.64000000000006,
+      "stamp": 23.75,
+      "stt": 198.19
+    },
+    "largest_five_pnl_sum": 1839.3871079875378,
+    "ambiguous_trades": 3,
+    "delayed_exits": 0,
+    "turnover": 1584871.6586411125,
+    "average_capital_utilization": 0.0009149366767300485,
+    "exposed_bar_count": 323,
+    "config_hash": "e13bd6599edcf5029997ef49f94100a7262db10154459c3846324270b6eaddca",
+    "missing_events": 5,
+    "by_stock_year": {
+      "RELIANCE:2022": {
+        "trades": 1,
+        "net_pnl": -285.3485499999956,
+        "win_rate": 0.0,
+        "avg_win": null,
+        "avg_loss": -285.3485499999956,
+        "expectancy": -285.3485499999956,
+        "profit_factor": 0.0
+      },
+      "RELIANCE:2023": {
+        "trades": 0,
+        "net_pnl": 0,
+        "win_rate": null,
+        "avg_win": null,
+        "avg_loss": null,
+        "expectancy": null,
+        "profit_factor": null
+      },
+      "RELIANCE:2024": {
+        "trades": 0,
+        "net_pnl": 0,
+        "win_rate": null,
+        "avg_win": null,
+        "avg_loss": null,
+        "expectancy": null,
+        "profit_factor": null
+      },
+      "RELIANCE:2025": {
+        "trades": 0,
+        "net_pnl": 0,
+        "win_rate": null,
+        "avg_win": null,
+        "avg_loss": null,
+        "expectancy": null,
+        "profit_factor": null
+      },
+      "RELIANCE:2026": {
+        "trades": 0,
+        "net_pnl": 0,
+        "win_rate": null,
+        "avg_win": null,
+        "avg_loss": null,
+        "expectancy": null,
+        "profit_factor": null
+      },
+      "HDFCBANK:2022": {
+        "trades": 3,
+        "net_pnl": -204.8360828624664,
+        "win_rate": 0.3333333333333333,
+        "avg_win": 267.347217137513,
+        "avg_loss": -236.0916499999897,
+        "expectancy": -68.2786942874888,
+        "profit_factor": 0.5661937157403166
+      },
+      "HDFCBANK:2023": {
+        "trades": 0,
+        "net_pnl": 0,
+        "win_rate": null,
+        "avg_win": null,
+        "avg_loss": null,
+        "expectancy": null,
+        "profit_factor": null
+      },
+      "HDFCBANK:2024": {
+        "trades": 0,
+        "net_pnl": 0,
+        "win_rate": null,
+        "avg_win": null,
+        "avg_loss": null,
+        "expectancy": null,
+        "profit_factor": null
+      },
+      "HDFCBANK:2025": {
+        "trades": 0,
+        "net_pnl": 0,
+        "win_rate": null,
+        "avg_win": null,
+        "avg_loss": null,
+        "expectancy": null,
+        "profit_factor": null
+      },
+      "HDFCBANK:2026": {
+        "trades": 2,
+        "net_pnl": -537.4851249999844,
+        "win_rate": 0.0,
+        "avg_win": null,
+        "avg_loss": -268.7425624999922,
+        "expectancy": -268.7425624999922,
+        "profit_factor": 0.0
+      },
+      "INFY:2022": {
+        "trades": 0,
+        "net_pnl": 0,
+        "win_rate": null,
+        "avg_win": null,
+        "avg_loss": null,
+        "expectancy": null,
+        "profit_factor": null
+      },
+      "INFY:2023": {
+        "trades": 0,
+        "net_pnl": 0,
+        "win_rate": null,
+        "avg_win": null,
+        "avg_loss": null,
+        "expectancy": null,
+        "profit_factor": null
+      },
+      "INFY:2024": {
+        "trades": 1,
+        "net_pnl": -315.81649999999655,
+        "win_rate": 0.0,
+        "avg_win": null,
+        "avg_loss": -315.81649999999655,
+        "expectancy": -315.81649999999655,
+        "profit_factor": 0.0
+      },
+      "INFY:2025": {
+        "trades": 1,
+        "net_pnl": 231.62273178750127,
+        "win_rate": 1.0,
+        "avg_win": 231.62273178750127,
+        "avg_loss": null,
+        "expectancy": 231.62273178750127,
+        "profit_factor": null
+      },
+      "INFY:2026": {
+        "trades": 0,
+        "net_pnl": 0,
+        "win_rate": null,
+        "avg_win": null,
+        "avg_loss": null,
+        "expectancy": null,
+        "profit_factor": null
+      },
+      "ITC:2022": {
+        "trades": 1,
+        "net_pnl": 229.14910812499252,
+        "win_rate": 1.0,
+        "avg_win": 229.14910812499252,
+        "avg_loss": null,
+        "expectancy": 229.14910812499252,
+        "profit_factor": null
+      },
+      "ITC:2023": {
+        "trades": 0,
+        "net_pnl": 0,
+        "win_rate": null,
+        "avg_win": null,
+        "avg_loss": null,
+        "expectancy": null,
+        "profit_factor": null
+      },
+      "ITC:2024": {
+        "trades": 0,
+        "net_pnl": 0,
+        "win_rate": null,
+        "avg_win": null,
+        "avg_loss": null,
+        "expectancy": null,
+        "profit_factor": null
+      },
+      "ITC:2025": {
+        "trades": 0,
+        "net_pnl": 0,
+        "win_rate": null,
+        "avg_win": null,
+        "avg_loss": null,
+        "expectancy": null,
+        "profit_factor": null
+      },
+      "ITC:2026": {
+        "trades": 0,
+        "net_pnl": 0,
+        "win_rate": null,
+        "avg_win": null,
+        "avg_loss": null,
+        "expectancy": null,
+        "profit_factor": null
+      },
+      "TATASTEEL:2022": {
+        "trades": 4,
+        "net_pnl": -521.9258817874854,
+        "win_rate": 0.25,
+        "avg_win": 447.9928182125031,
+        "avg_loss": -323.30623333332954,
+        "expectancy": -130.48147044687136,
+        "profit_factor": 0.4618869789937119
+      },
+      "TATASTEEL:2023": {
+        "trades": 2,
+        "net_pnl": 892.4243408500204,
+        "win_rate": 1.0,
+        "avg_win": 446.2121704250102,
+        "avg_loss": null,
+        "expectancy": 446.2121704250102,
+        "profit_factor": null
+      },
+      "TATASTEEL:2024": {
+        "trades": 0,
+        "net_pnl": 0,
+        "win_rate": null,
+        "avg_win": null,
+        "avg_loss": null,
+        "expectancy": null,
+        "profit_factor": null
+      },
+      "TATASTEEL:2025": {
+        "trades": 1,
+        "net_pnl": 92.58755000000686,
+        "win_rate": 1.0,
+        "avg_win": 92.58755000000686,
+        "avg_loss": null,
+        "expectancy": 92.58755000000686,
+        "profit_factor": null
+      },
+      "TATASTEEL:2026": {
+        "trades": 0,
+        "net_pnl": 0,
+        "win_rate": null,
+        "avg_win": null,
+        "avg_loss": null,
+        "expectancy": null,
+        "profit_factor": null
+      }
+    }
+  },
+  "scenarios": [
+    {
+      "scenario": "strict",
+      "trades": 0,
+      "net_pnl": 0,
+      "account_return": 0.0,
+      "profit_factor": null,
+      "max_marked_drawdown_rupees": 0
+    },
+    {
+      "scenario": "continuity-assumption",
+      "trades": 16,
+      "net_pnl": -419.62840888740743,
+      "account_return": -0.0020981420444368126,
+      "profit_factor": 0.8374007341919932,
+      "max_marked_drawdown_rupees": 1236.936632862431
+    },
+    {
+      "scenario": "stress",
+      "trades": 16,
+      "net_pnl": -2171.041009150005,
+      "account_return": -0.010855205045749883,
+      "profit_factor": 0.3994734936562484,
+      "max_marked_drawdown_rupees": 2499.053859149979
+    },
+    {
+      "scenario": "exclude-ambiguous",
+      "trades": 13,
+      "net_pnl": 512.466739512585,
+      "account_return": 0.0025623336975630906,
+      "profit_factor": 1.3092979672539322,
+      "max_marked_drawdown_rupees": 627.1040250000078
+    },
+    {
+      "scenario": "complete-only",
+      "trades": 16,
+      "net_pnl": -419.62840888740743,
+      "account_return": -0.0020981420444368126,
+      "profit_factor": 0.8374007341919932,
+      "max_marked_drawdown_rupees": 1236.936632862431
+    }
+  ],
+  "coverage": [
+    {
+      "symbol": "RELIANCE",
+      "earliest": "2022-01-03T09:15:00+05:30",
+      "latest": "2026-09-25T15:25:00+05:30",
+      "valid_unique_rows": 87680,
+      "invalid_rows": 0,
+      "zero_volume_bars": 80
+    },
+    {
+      "symbol": "HDFCBANK",
+      "earliest": "2022-01-03T09:15:00+05:30",
+      "latest": "2026-09-25T15:25:00+05:30",
+      "valid_unique_rows": 87688,
+      "invalid_rows": 1,
+      "zero_volume_bars": 81
+    },
+    {
+      "symbol": "INFY",
+      "earliest": "2022-01-03T09:15:00+05:30",
+      "latest": "2026-09-25T15:25:00+05:30",
+      "valid_unique_rows": 87689,
+      "invalid_rows": 0,
+      "zero_volume_bars": 81
+    },
+    {
+      "symbol": "ITC",
+      "earliest": "2022-01-03T09:15:00+05:30",
+      "latest": "2026-09-25T15:25:00+05:30",
+      "valid_unique_rows": 87685,
+      "invalid_rows": 0,
+      "zero_volume_bars": 85
+    },
+    {
+      "symbol": "TATASTEEL",
+      "earliest": "2022-01-03T09:15:00+05:30",
+      "latest": "2026-09-25T15:25:00+05:30",
+      "valid_unique_rows": 87689,
+      "invalid_rows": 0,
+      "zero_volume_bars": 80
+    }
+  ],
+  "trades": [
+    {
+      "symbol": "HDFCBANK",
+      "qty": 67.0,
+      "entry_at": "2022-02-09T09:45:00+05:30",
+      "exit_at": "2022-02-09T14:00:00+05:30",
+      "entry": 741.820725,
+      "exit": 746.7885939125002,
+      "pnl": 267.347217137513,
+      "stop": 739.15,
+      "target": 747.1621750000002,
+      "reason": "target",
+      "entry_costs": {
+        "brokerage": 20.0,
+        "exchange": 1.71,
+        "sebi": 0.05,
+        "ipft": 0.05,
+        "gst": 3.93,
+        "stamp": 1.49,
+        "stt": 0.0
+      },
+      "exit_costs": {
+        "brokerage": 20.0,
+        "exchange": 1.73,
+        "sebi": 0.05,
+        "ipft": 0.05,
+        "gst": 3.93,
+        "stamp": 0.0,
+        "stt": 12.51
+      }
+    },
+    {
+      "symbol": "HDFCBANK",
+      "qty": 68.0,
+      "entry_at": "2022-02-25T10:10:00+05:30",
+      "exit_at": "2022-02-25T10:20:00+05:30",
+      "entry": 727.613625,
+      "exit": 724.987325,
+      "pnl": -243.84839999999326,
+      "stop": 725.35,
+      "target": 732.1408749999998,
+      "reason": "stop",
+      "entry_costs": {
+        "brokerage": 20.0,
+        "exchange": 1.71,
+        "sebi": 0.05,
+        "ipft": 0.05,
+        "gst": 3.93,
+        "stamp": 1.48,
+        "stt": 0.0
+      },
+      "exit_costs": {
+        "brokerage": 20.0,
+        "exchange": 1.7,
+        "sebi": 0.05,
+        "ipft": 0.05,
+        "gst": 3.92,
+        "stamp": 0.0,
+        "stt": 12.32
+      }
+    },
+    {
+      "symbol": "RELIANCE",
+      "qty": 39.0,
+      "entry_at": "2022-05-30T09:45:00+05:30",
+      "exit_at": "2022-05-30T09:45:00+05:30",
+      "entry": 1252.275825,
+      "exit": 1246.626375,
+      "pnl": -285.3485499999956,
+      "stop": 1247.25,
+      "target": 1262.3274749999998,
+      "reason": "stop",
+      "entry_costs": {
+        "brokerage": 20.0,
+        "exchange": 1.68,
+        "sebi": 0.05,
+        "ipft": 0.05,
+        "gst": 3.92,
+        "stamp": 1.47,
+        "stt": 0.0
+      },
+      "exit_costs": {
+        "brokerage": 20.0,
+        "exchange": 1.68,
+        "sebi": 0.05,
+        "ipft": 0.05,
+        "gst": 3.92,
+        "stamp": 0.0,
+        "stt": 12.15
+      }
+    },
+    {
+      "symbol": "TATASTEEL",
+      "qty": 608.0,
+      "entry_at": "2022-06-24T10:25:00+05:30",
+      "exit_at": "2022-06-24T10:25:00+05:30",
+      "entry": 81.94095,
+      "exit": 81.509225,
+      "pnl": -327.8588000000001,
+      "stop": 81.55,
+      "target": 82.72285000000001,
+      "reason": "stop",
+      "entry_costs": {
+        "brokerage": 20.0,
+        "exchange": 1.72,
+        "sebi": 0.05,
+        "ipft": 0.05,
+        "gst": 3.93,
+        "stamp": 1.49,
+        "stt": 0.0
+      },
+      "exit_costs": {
+        "brokerage": 20.0,
+        "exchange": 1.71,
+        "sebi": 0.05,
+        "ipft": 0.05,
+        "gst": 3.93,
+        "stamp": 0.0,
+        "stt": 12.39
+      }
+    },
+    {
+      "symbol": "TATASTEEL",
+      "qty": 482.0,
+      "entry_at": "2022-08-30T10:15:00+05:30",
+      "exit_at": "2022-08-30T10:40:00+05:30",
+      "entry": 103.2516,
+      "exit": 102.898525,
+      "pnl": -235.56214999999509,
+      "stop": 102.95,
+      "target": 103.85479999999998,
+      "reason": "stop",
+      "entry_costs": {
+        "brokerage": 20.0,
+        "exchange": 1.72,
+        "sebi": 0.05,
+        "ipft": 0.05,
+        "gst": 3.93,
+        "stamp": 1.49,
+        "stt": 0.0
+      },
+      "exit_costs": {
+        "brokerage": 20.0,
+        "exchange": 1.71,
+        "sebi": 0.05,
+        "ipft": 0.05,
+        "gst": 3.93,
+        "stamp": 0.0,
+        "stt": 12.4
+      }
+    },
+    {
+      "symbol": "TATASTEEL",
+      "qty": 489.0,
+      "entry_at": "2022-09-20T09:55:00+05:30",
+      "exit_at": "2022-09-20T12:50:00+05:30",
+      "entry": 101.500725,
+      "exit": 102.55087391250001,
+      "pnl": 447.9928182125031,
+      "stop": 100.95,
+      "target": 102.602175,
+      "reason": "target",
+      "entry_costs": {
+        "brokerage": 20.0,
+        "exchange": 1.71,
+        "sebi": 0.05,
+        "ipft": 0.05,
+        "gst": 3.93,
+        "stamp": 1.49,
+        "stt": 0.0
+      },
+      "exit_costs": {
+        "brokerage": 20.0,
+        "exchange": 1.73,
+        "sebi": 0.05,
+        "ipft": 0.05,
+        "gst": 3.93,
+        "stamp": 0.0,
+        "stt": 12.54
+      }
+    },
+    {
+      "symbol": "TATASTEEL",
+      "qty": 530.0,
+      "entry_at": "2022-09-29T09:40:00+05:30",
+      "exit_at": "2022-09-29T11:15:00+05:30",
+      "entry": 93.99697499999999,
+      "exit": 93.3533,
+      "pnl": -406.4977499999934,
+      "stop": 93.4,
+      "target": 95.19092499999996,
+      "reason": "stop",
+      "entry_costs": {
+        "brokerage": 20.0,
+        "exchange": 1.72,
+        "sebi": 0.05,
+        "ipft": 0.05,
+        "gst": 3.93,
+        "stamp": 1.49,
+        "stt": 0.0
+      },
+      "exit_costs": {
+        "brokerage": 20.0,
+        "exchange": 1.71,
+        "sebi": 0.05,
+        "ipft": 0.05,
+        "gst": 3.93,
+        "stamp": 0.0,
+        "stt": 12.37
+      }
+    },
+    {
+      "symbol": "ITC",
+      "qty": 150.0,
+      "entry_at": "2022-10-04T09:55:00+05:30",
+      "exit_at": "2022-10-04T11:40:00+05:30",
+      "entry": 330.315075,
+      "exit": 332.27900238749993,
+      "pnl": 229.14910812499252,
+      "stop": 329.25,
+      "target": 332.44522499999994,
+      "reason": "target",
+      "entry_costs": {
+        "brokerage": 20.0,
+        "exchange": 1.71,
+        "sebi": 0.05,
+        "ipft": 0.05,
+        "gst": 3.93,
+        "stamp": 1.49,
+        "stt": 0.0
+      },
+      "exit_costs": {
+        "brokerage": 20.0,
+        "exchange": 1.72,
+        "sebi": 0.05,
+        "ipft": 0.05,
+        "gst": 3.93,
+        "stamp": 0.0,
+        "stt": 12.46
+      }
+    },
+    {
+      "symbol": "HDFCBANK",
+      "qty": 67.0,
+      "entry_at": "2022-10-19T09:40:00+05:30",
+      "exit_at": "2022-10-19T10:20:00+05:30",
+      "entry": 735.9177749999999,
+      "exit": 733.4830750000001,
+      "pnl": -228.33489999998613,
+      "stop": 733.85,
+      "target": 740.0533249999996,
+      "reason": "stop",
+      "entry_costs": {
+        "brokerage": 20.0,
+        "exchange": 1.7,
+        "sebi": 0.05,
+        "ipft": 0.05,
+        "gst": 3.92,
+        "stamp": 1.48,
+        "stt": 0.0
+      },
+      "exit_costs": {
+        "brokerage": 20.0,
+        "exchange": 1.7,
+        "sebi": 0.05,
+        "ipft": 0.05,
+        "gst": 3.92,
+        "stamp": 0.0,
+        "stt": 12.29
+      }
+    },
+    {
+      "symbol": "TATASTEEL",
+      "qty": 441.0,
+      "entry_at": "2023-01-02T09:55:00+05:30",
+      "exit_at": "2023-01-02T10:10:00+05:30",
+      "entry": 112.606275,
+      "exit": 113.6619655875,
+      "pnl": 400.03954908750427,
+      "stop": 112.05,
+      "target": 113.718825,
+      "reason": "target",
+      "entry_costs": {
+        "brokerage": 20.0,
+        "exchange": 1.71,
+        "sebi": 0.05,
+        "ipft": 0.05,
+        "gst": 3.93,
+        "stamp": 1.49,
+        "stt": 0.0
+      },
+      "exit_costs": {
+        "brokerage": 20.0,
+        "exchange": 1.73,
+        "sebi": 0.05,
+        "ipft": 0.05,
+        "gst": 3.93,
+        "stamp": 0.0,
+        "stt": 12.53
+      }
+    },
+    {
+      "symbol": "TATASTEEL",
+      "qty": 381.0,
+      "entry_at": "2023-12-15T09:45:00+05:30",
+      "exit_at": "2023-12-15T13:30:00+05:30",
+      "entry": 130.715325,
+      "exit": 132.17985201250005,
+      "pnl": 492.3847917625161,
+      "stop": 129.95,
+      "target": 132.24597500000004,
+      "reason": "target",
+      "entry_costs": {
+        "brokerage": 20.0,
+        "exchange": 1.72,
+        "sebi": 0.05,
+        "ipft": 0.05,
+        "gst": 3.93,
+        "stamp": 1.49,
+        "stt": 0.0
+      },
+      "exit_costs": {
+        "brokerage": 20.0,
+        "exchange": 1.74,
+        "sebi": 0.05,
+        "ipft": 0.05,
+        "gst": 3.93,
+        "stamp": 0.0,
+        "stt": 12.59
+      }
+    },
+    {
+      "symbol": "INFY",
+      "qty": 30.0,
+      "entry_at": "2024-01-15T09:55:00+05:30",
+      "exit_at": "2024-01-15T09:55:00+05:30",
+      "entry": 1654.72695,
+      "exit": 1646.3764,
+      "pnl": -315.81649999999655,
+      "stop": 1647.2,
+      "target": 1669.7808499999999,
+      "reason": "stop",
+      "entry_costs": {
+        "brokerage": 20.0,
+        "exchange": 1.71,
+        "sebi": 0.05,
+        "ipft": 0.05,
+        "gst": 3.93,
+        "stamp": 1.49,
+        "stt": 0.0
+      },
+      "exit_costs": {
+        "brokerage": 20.0,
+        "exchange": 1.7,
+        "sebi": 0.05,
+        "ipft": 0.05,
+        "gst": 3.92,
+        "stamp": 0.0,
+        "stt": 12.35
+      }
+    },
+    {
+      "symbol": "TATASTEEL",
+      "qty": 315.0,
+      "entry_at": "2025-03-19T09:55:00+05:30",
+      "exit_at": "2025-03-19T15:15:00+05:30",
+      "entry": 157.97895,
+      "exit": 158.48072000000002,
+      "pnl": 92.58755000000686,
+      "stop": 157.1,
+      "target": 159.73685,
+      "reason": "squareoff",
+      "entry_costs": {
+        "brokerage": 20.0,
+        "exchange": 1.72,
+        "sebi": 0.05,
+        "ipft": 0.05,
+        "gst": 3.93,
+        "stamp": 1.49,
+        "stt": 0.0
+      },
+      "exit_costs": {
+        "brokerage": 20.0,
+        "exchange": 1.72,
+        "sebi": 0.05,
+        "ipft": 0.05,
+        "gst": 3.93,
+        "stamp": 0.0,
+        "stt": 12.48
+      }
+    },
+    {
+      "symbol": "INFY",
+      "qty": 29.0,
+      "entry_at": "2025-12-22T09:30:00+05:30",
+      "exit_at": "2025-12-22T13:15:00+05:30",
+      "entry": 1676.387775,
+      "exit": 1686.6195933375,
+      "pnl": 231.62273178750127,
+      "stop": 1670.85,
+      "target": 1687.463325,
+      "reason": "target",
+      "entry_costs": {
+        "brokerage": 20.0,
+        "exchange": 1.68,
+        "sebi": 0.05,
+        "ipft": 0.05,
+        "gst": 3.92,
+        "stamp": 1.46,
+        "stt": 0.0
+      },
+      "exit_costs": {
+        "brokerage": 20.0,
+        "exchange": 1.69,
+        "sebi": 0.05,
+        "ipft": 0.05,
+        "gst": 3.92,
+        "stamp": 0.0,
+        "stt": 12.23
+      }
+    },
+    {
+      "symbol": "HDFCBANK",
+      "qty": 66.0,
+      "entry_at": "2026-04-01T09:40:00+05:30",
+      "exit_at": "2026-04-01T10:20:00+05:30",
+      "entry": 747.5235749999999,
+      "exit": 743.7279500000001,
+      "pnl": -315.6912499999907,
+      "stop": 744.1,
+      "target": 754.3707249999998,
+      "reason": "stop",
+      "entry_costs": {
+        "brokerage": 20.0,
+        "exchange": 1.7,
+        "sebi": 0.05,
+        "ipft": 0.05,
+        "gst": 3.92,
+        "stamp": 1.48,
+        "stt": 0.0
+      },
+      "exit_costs": {
+        "brokerage": 20.0,
+        "exchange": 1.69,
+        "sebi": 0.05,
+        "ipft": 0.05,
+        "gst": 3.92,
+        "stamp": 0.0,
+        "stt": 12.27
+      }
+    },
+    {
+      "symbol": "HDFCBANK",
+      "qty": 65.0,
+      "entry_at": "2026-06-12T09:55:00+05:30",
+      "exit_at": "2026-06-12T11:20:00+05:30",
+      "entry": 759.87975,
+      "exit": 757.471075,
+      "pnl": -221.79387499999368,
+      "stop": 757.85,
+      "target": 763.9392499999998,
+      "reason": "stop",
+      "entry_costs": {
+        "brokerage": 20.0,
+        "exchange": 1.7,
+        "sebi": 0.05,
+        "ipft": 0.05,
+        "gst": 3.92,
+        "stamp": 1.48,
+        "stt": 0.0
+      },
+      "exit_costs": {
+        "brokerage": 20.0,
+        "exchange": 1.7,
+        "sebi": 0.05,
+        "ipft": 0.05,
+        "gst": 3.92,
+        "stamp": 0.0,
+        "stt": 12.31
+      }
+    }
+  ],
+  "equity_curve": [
+    {
+      "at": "2022-01-31T15:30:00+05:30",
+      "equity": 200000.0
+    },
+    {
+      "at": "2022-02-28T15:30:00+05:30",
+      "equity": 200023.49881713753
+    },
+    {
+      "at": "2022-03-31T15:30:00+05:30",
+      "equity": 200023.49881713753
+    },
+    {
+      "at": "2022-04-29T15:30:00+05:30",
+      "equity": 200023.49881713753
+    },
+    {
+      "at": "2022-05-31T15:30:00+05:30",
+      "equity": 199738.15026713753
+    },
+    {
+      "at": "2022-06-30T15:30:00+05:30",
+      "equity": 199410.29146713755
+    },
+    {
+      "at": "2022-07-29T15:30:00+05:30",
+      "equity": 199410.29146713755
+    },
+    {
+      "at": "2022-08-30T15:30:00+05:30",
+      "equity": 199174.72931713756
+    },
+    {
+      "at": "2022-09-30T15:30:00+05:30",
+      "equity": 199216.22438535004
+    },
+    {
+      "at": "2022-10-31T15:30:00+05:30",
+      "equity": 199217.03859347504
+    },
+    {
+      "at": "2022-11-30T15:30:00+05:30",
+      "equity": 199217.03859347504
+    },
+    {
+      "at": "2022-12-30T15:30:00+05:30",
+      "equity": 199217.03859347504
+    },
+    {
+      "at": "2023-01-31T15:30:00+05:30",
+      "equity": 199617.07814256253
+    },
+    {
+      "at": "2023-02-28T15:30:00+05:30",
+      "equity": 199617.07814256253
+    },
+    {
+      "at": "2023-03-31T15:30:00+05:30",
+      "equity": 199617.07814256253
+    },
+    {
+      "at": "2023-04-28T15:30:00+05:30",
+      "equity": 199617.07814256253
+    },
+    {
+      "at": "2023-05-31T15:30:00+05:30",
+      "equity": 199617.07814256253
+    },
+    {
+      "at": "2023-06-30T15:30:00+05:30",
+      "equity": 199617.07814256253
+    },
+    {
+      "at": "2023-07-31T15:30:00+05:30",
+      "equity": 199617.07814256253
+    },
+    {
+      "at": "2023-08-31T15:30:00+05:30",
+      "equity": 199617.07814256253
+    },
+    {
+      "at": "2023-09-29T15:30:00+05:30",
+      "equity": 199617.07814256253
+    },
+    {
+      "at": "2023-10-31T15:30:00+05:30",
+      "equity": 199617.07814256253
+    },
+    {
+      "at": "2023-11-30T15:30:00+05:30",
+      "equity": 199617.07814256253
+    },
+    {
+      "at": "2023-12-29T15:30:00+05:30",
+      "equity": 200109.46293432507
+    },
+    {
+      "at": "2024-01-31T15:30:00+05:30",
+      "equity": 199793.64643432508
+    },
+    {
+      "at": "2024-02-29T15:30:00+05:30",
+      "equity": 199793.64643432508
+    },
+    {
+      "at": "2024-03-28T15:30:00+05:30",
+      "equity": 199793.64643432508
+    },
+    {
+      "at": "2024-04-30T15:30:00+05:30",
+      "equity": 199793.64643432508
+    },
+    {
+      "at": "2024-05-31T15:30:00+05:30",
+      "equity": 199793.64643432508
+    },
+    {
+      "at": "2024-06-28T15:30:00+05:30",
+      "equity": 199793.64643432508
+    },
+    {
+      "at": "2024-07-31T15:30:00+05:30",
+      "equity": 199793.64643432508
+    },
+    {
+      "at": "2024-08-30T15:30:00+05:30",
+      "equity": 199793.64643432508
+    },
+    {
+      "at": "2024-09-30T15:30:00+05:30",
+      "equity": 199793.64643432508
+    },
+    {
+      "at": "2024-10-31T15:30:00+05:30",
+      "equity": 199793.64643432508
+    },
+    {
+      "at": "2024-11-29T15:30:00+05:30",
+      "equity": 199793.64643432508
+    },
+    {
+      "at": "2024-12-31T15:30:00+05:30",
+      "equity": 199793.64643432508
+    },
+    {
+      "at": "2025-01-31T15:30:00+05:30",
+      "equity": 199793.64643432508
+    },
+    {
+      "at": "2025-02-28T15:30:00+05:30",
+      "equity": 199793.64643432508
+    },
+    {
+      "at": "2025-03-28T15:30:00+05:30",
+      "equity": 199886.2339843251
+    },
+    {
+      "at": "2025-04-30T15:30:00+05:30",
+      "equity": 199886.2339843251
+    },
+    {
+      "at": "2025-05-30T15:30:00+05:30",
+      "equity": 199886.2339843251
+    },
+    {
+      "at": "2025-06-30T15:30:00+05:30",
+      "equity": 199886.2339843251
+    },
+    {
+      "at": "2025-07-31T15:30:00+05:30",
+      "equity": 199886.2339843251
+    },
+    {
+      "at": "2025-08-29T15:30:00+05:30",
+      "equity": 199886.2339843251
+    },
+    {
+      "at": "2025-09-30T15:30:00+05:30",
+      "equity": 199886.2339843251
+    },
+    {
+      "at": "2025-10-31T15:30:00+05:30",
+      "equity": 199886.2339843251
+    },
+    {
+      "at": "2025-11-28T15:30:00+05:30",
+      "equity": 199886.2339843251
+    },
+    {
+      "at": "2025-12-31T15:30:00+05:30",
+      "equity": 200117.85671611258
+    },
+    {
+      "at": "2026-01-30T15:30:00+05:30",
+      "equity": 200117.85671611258
+    },
+    {
+      "at": "2026-02-27T15:30:00+05:30",
+      "equity": 200117.85671611258
+    },
+    {
+      "at": "2026-03-30T15:30:00+05:30",
+      "equity": 200117.85671611258
+    },
+    {
+      "at": "2026-04-30T15:30:00+05:30",
+      "equity": 199802.1654661126
+    },
+    {
+      "at": "2026-05-29T15:30:00+05:30",
+      "equity": 199802.1654661126
+    },
+    {
+      "at": "2026-06-30T15:30:00+05:30",
+      "equity": 199580.37159111263
+    },
+    {
+      "at": "2026-07-31T15:30:00+05:30",
+      "equity": 199580.37159111263
+    },
+    {
+      "at": "2026-08-31T15:30:00+05:30",
+      "equity": 199580.37159111263
+    },
+    {
+      "at": "2026-09-25T15:30:00+05:30",
+      "equity": 199580.37159111263
+    }
+  ],
+  "equity_sampling": "Month-end observations; not the full drawdown path.",
+  "ambiguity_warning": "Excluding ambiguous bars is an ex-post diagnostic, not an executable trading rule.",
+  "config_hash": "e13bd6599edcf5029997ef49f94100a7262db10154459c3846324270b6eaddca"
+}

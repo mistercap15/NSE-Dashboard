@@ -11,19 +11,19 @@ for (const path of RETIRED_TRADING_PATHS) {
   assert.equal(isRetiredTradingPath(path + '/nested'), true);
   assert.equal(isRetiredTradingPath(path + '-unrelated'), false);
 }
-for (const path of ['/', '/rankings', '/analysis', '/api/upstox/status', '/api/research/gap-paper', '/api/auth/login']) {
+for (const path of ['/', '/rankings', '/analysis', '/api/upstox/status', '/api/research/other', '/api/auth/login']) {
   assert.equal(isRetiredTradingPath(path), false, path);
 }
 const sidebar = await read('app/components/Sidebar.js');
-for (const path of ['/fib', '/fib-5m', '/crypto-fib', '/protection']) {
+for (const path of ['/fib', '/fib-5m', '/crypto-fib', '/protection', '/research/gap-paper']) {
   assert.ok(!sidebar.includes(`href: "${path}"`), path);
 }
-for (const path of ['fib', 'fib-5m', 'crypto-fib', 'protection', 'protection/tracked', 'protection/tracked/[id]']) {
+for (const path of ['fib', 'fib-5m', 'crypto-fib', 'protection', 'protection/tracked', 'protection/tracked/[id]', 'research/gap-paper']) {
   const source = await read(`app/${path}/page.js`);
   assert.match(source, /notFound\(\)/);
   assert.doesNotMatch(source, /fetch\(|useEffect|setInterval/);
 }
-for (const path of ['fib/signal', 'fib-5m/signal', 'crypto-fib/signal', 'protection', 'protection/inbox', 'bot/sync', 'bot/status', 'inside-bar/signal']) {
+for (const path of ['fib/signal', 'fib-5m/signal', 'crypto-fib/signal', 'protection', 'protection/inbox', 'bot/sync', 'bot/status', 'inside-bar/signal', 'research/gap-paper', 'research/gap-paper/pilot']) {
   const source = await read(`app/api/${path}/route.js`);
   assert.match(source, /status: 410/);
   assert.doesNotMatch(source, /fetch\(|process\.env|fetchResilient/);
