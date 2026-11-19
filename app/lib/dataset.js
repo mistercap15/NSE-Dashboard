@@ -5,14 +5,20 @@
 // snapshot instantly. Returns change only monthly, matching the seasonal cadence.
 
 import { sanitizeReturns } from "./stats";
+import { overlayLotSizes } from "./lotSizes.mjs";
 import snapshot from "../../data/universe.json";
+import lotCache from "../../data/lotSizes.json";
 
 // Build the in-memory model once per server instance.
 let _model = null;
 
 function build() {
   if (_model) return _model;
-  const { series = {}, sectors = {}, lotSize = {}, minYear, maxYear, symbols = [], generatedAt } = snapshot;
+  const { series = {}, sectors = {}, lotSize: snapshotLots = {}, minYear, maxYear, symbols = [], generatedAt } = snapshot;
+  // The seasonality file keeps the lots it was built with. The traded lot is
+  // overlaid from data/lotSizes.json (refreshed daily) and is not written back,
+  // so a lot-size update never rewrites a monthly return.
+  const lotSize = overlayLotSizes(snapshotLots, lotCache);
 
   const model = {};
   for (const sym of Object.keys(series)) {

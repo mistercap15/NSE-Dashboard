@@ -1,0 +1,49 @@
+name: Refresh F&O lot sizes
+
+# NSE publishes fo_mktlots.csv in the open. The Upstox instrument master is
+# public too. This job uses neither a token nor a repository secret: a lot
+# size is not an account credential, and the script refuses a file that fails
+# the sanity checks instead of committing it.
+
+on:
+  schedule:
+    # 13:30 UTC every day. The near-month column is what the resolver reads,
+    # and a contract's lot can change when the series rolls.
+    - cron: "30 13 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh-lot-sizes
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Refresh the lot-size cache
+        run: node scripts/refresh-lot-sizes.mjs
+
+      - name: Commit if lots changed
+        run: |
+          if git diff --quiet -- data/lotSizes.json; then
+            echo "Lot sizes unchanged — nothing to commit."
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/lotSizes.json
+          git commit -m "chore: refresh F&O lot sizes from NSE fo_mktlots.csv"
+          git push
