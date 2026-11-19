@@ -52,10 +52,20 @@ export default function RankingsTable({ stocks, showRank = true }) {
                 </span>
                 {s.sig && (
                   <span
-                    className={`ml-1 text-[10px] ${s.sig.significant ? "text-green" : "text-muted"}`}
-                    title={`Seasonal edge ${s.sig.significant ? "is statistically significant" : "not yet significant"} — p=${s.sig.p < 0.001 ? "<0.001" : s.sig.p.toFixed(3)}, 95% CI [${s.sig.ciLow}%, ${s.sig.ciHigh}%], n=${s.sig.n} yrs`}
+                    className={`ml-1 text-[10px] ${
+                      s.sig.significantFdr ? "text-green" : s.sig.significant ? "text-amber" : "text-muted"
+                    }`}
+                    title={`Seasonal edge ${
+                      s.sig.significantFdr
+                        ? "survives a Benjamini-Hochberg false-discovery check across this month"
+                        : s.sig.significant
+                          ? "is significant on its own test, but not after the monthly false-discovery check"
+                          : "is not statistically significant"
+                    } — p=${s.sig.p < 0.001 ? "<0.001" : s.sig.p.toFixed(3)}${
+                      Number.isFinite(s.sig.q) ? `, q=${s.sig.q < 0.001 ? "<0.001" : s.sig.q.toFixed(3)}` : ""
+                    }, 95% CI [${s.sig.ciLow}%, ${s.sig.ciHigh}%], n=${s.sig.n} yrs`}
                   >
-                    {s.sig.significant ? "✓" : "≈"}
+                    {s.sig.significantFdr ? "FDR" : s.sig.significant ? "✓" : "≈"}
                   </span>
                 )}
               </td>

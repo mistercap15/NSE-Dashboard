@@ -126,6 +126,67 @@ export function significance(rawReturns, conf = 0.95) {
   };
 }
 
+// ── Benjamini-Hochberg false-discovery rate ───────────────────────────────────
+// `significance` above is one test. A month ranks ~180 symbols, so a raw
+// p < 0.05 will light up several names by chance. BH adjusts the whole family:
+// sort the p-values, then
+//   q_(k) = min_{j >= k} (m / j) * p_(j)
+// walking from the largest p downward so q is monotone. `significant` on the
+// per-series result stays the unadjusted test. `significantFdr` is q <= alpha.
+
+function clampP(p) {
+  const n = Number(p);
+  if (!Number.isFinite(n)) return 1;
+  if (n < 0) return 0;
+  if (n > 1) return 1;
+  return n;
+}
+
+/**
+ * BH q-values aligned to the input order.
+ * @param {number[]} pValues
+ * @param {number} [alpha=0.05]
+ * @returns {{ q: number, significantFdr: boolean }[]}
+ */
+export function benjaminiHochberg(pValues, alpha = 0.05) {
+  const m = pValues?.length || 0;
+  if (!m) return [];
+  const order = pValues.map((p, i) => ({ i, p: clampP(p) }));
+  order.sort((a, b) => a.p - b.p || a.i - b.i);
+  const qOf = new Array(m);
+  let running = 1;
+  for (let k = m; k >= 1; k--) {
+    const raw = (m / k) * order[k - 1].p;
+    running = Math.min(running, raw);
+    qOf[order[k - 1].i] = Math.min(1, running);
+  }
+  return qOf.map((q) => ({ q, significantFdr: q <= alpha }));
+}
+
+/**
+ * Copy each result and attach `q` / `significantFdr`. The unadjusted `p` and
+ * `significant` fields are left as they were.
+ */
+export function applyBenjaminiHochberg(results, alpha = 0.05) {
+  const adj = benjaminiHochberg((results || []).map((r) => r?.p), alpha);
+  return (results || []).map((r, i) => ({ ...r, q: adj[i].q, significantFdr: adj[i].significantFdr }));
+}
+
+/**
+ * Sanitized returns for one calendar month, dropping the in-progress month and
+ * anything later. `cutoffYm` is the IST "YYYY-MM" that has not closed yet.
+ * Points are `{ ym, month, ret }`, the shape `loadUniverse` builds.
+ */
+export function returnsForMonth(points, month, cutoffYm) {
+  const xs = [];
+  for (const p of points || []) {
+    if (!p || p.month !== month) continue;
+    if (cutoffYm && String(p.ym) >= cutoffYm) continue;
+    xs.push(p.ret);
+  }
+  return sanitizeReturns(xs);
+}
+
 // ── Backtest performance metrics ───────────────────────────────────────────────
 // All take an array of periodic (monthly) returns in PERCENT.
 
