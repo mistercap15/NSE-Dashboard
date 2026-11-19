@@ -27,7 +27,7 @@ import { getCurrentMonth, getCurrentYear } from "@/app/lib/date";
 import { upstoxTokenFor } from "@/app/lib/auth";
 import { qualify, promoterActivity } from "@/app/lib/qualify";
 import { filingsFor, snapshotMeta, snapshotAgeDays } from "@/app/lib/promoter";
-import { lastThursday } from "@/app/lib/events";
+import { monthlyFoExpiry, listedNiftyExpiryFor } from "@/app/lib/events";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // The Playbook: the month's few highest-conviction trades, ready to act on.
@@ -169,18 +169,20 @@ export async function GET(request) {
     const prevMonth = month === 1 ? 12 : month - 1;
     const nextMonthName = MONTH_NAMES[month - 1];
 
-    // The hold runs to the month's F&O expiry — the same last-Thursday rule the
-    // calendar uses. Everything date-based in the qualifiers is measured in IST
-    // so a run just after midnight UTC doesn't shift the window by a day.
+    // The hold runs to the month's F&O expiry — last Thursday before September
+    // 2025, last Tuesday after, rolled back for weekends and NSE holidays. The
+    // date is an IST civil day, so a run just after midnight UTC doesn't shift
+    // the window. When the instrument master has the NIFTY future for that
+    // month, its listed expiry replaces the computed one.
     const istToday = istDay();
-    let expiry = lastThursday(getCurrentYear(), month);
+    const holdFor = (year) => listedNiftyExpiryFor(year, month) || monthlyFoExpiry(year, month);
+    let holdEndsOn = holdFor(getCurrentYear());
     // Planning January while it's December means next year's expiry, not one
     // eight months gone. Without this the event gates see a negative horizon
     // and silently stay quiet for exactly the month you're planning.
-    if (`${expiry.getFullYear()}-${String(expiry.getMonth() + 1).padStart(2, "0")}` < istToday.slice(0, 7)) {
-      expiry = lastThursday(getCurrentYear() + 1, month);
+    if (holdEndsOn.slice(0, 7) < istToday.slice(0, 7)) {
+      holdEndsOn = holdFor(getCurrentYear() + 1);
     }
-    const holdEndsOn = `${expiry.getFullYear()}-${String(expiry.getMonth() + 1).padStart(2, "0")}-${String(expiry.getDate()).padStart(2, "0")}`;
 
     // ── 3. One candle fetch per symbol, everything derived from it ────────
     const candidates = [];

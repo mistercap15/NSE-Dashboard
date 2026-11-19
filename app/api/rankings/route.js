@@ -3,6 +3,7 @@ import { loadUniverse, monthReturns } from "../../lib/dataset";
 import { significance } from "../../lib/stats";
 import { trendState, marketRegime } from "../../lib/regime";
 import { getCalendar } from "../../lib/events";
+import { ensureInstrumentMap } from "../../lib/instrumentMaster";
 
 const MCP_URL    = process.env.MCP_URL    || "https://nse-data-mcp.vercel.app/mcp";
 
@@ -120,7 +121,13 @@ export async function GET(request) {
       try { payload.regime = marketRegime(universe); } catch { /* ignore */ }
     }
 
-    try { payload.calendar = getCalendar(); } catch { /* ignore */ }
+    // Load the instrument master when we can so the calendar's next expiry is
+    // the listed NIFTY future, not only the computed Tuesday/Thursday. A failed
+    // fetch leaves the computed IST date in place.
+    try {
+      await ensureInstrumentMap();
+      payload.calendar = getCalendar();
+    } catch { /* ignore */ }
 
     // Get sentiment from early-entry endpoint (uses same Upstox token, guaranteed to work)
     try {
